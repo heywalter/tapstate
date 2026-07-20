@@ -139,10 +139,15 @@ read source, the write target, and the pipeline that connects them:
 
 ```sh
 mkdir -p work/source work/pipeline
-cd work
 ```
 
-`source/db_src.tap.yml` — the read source (the dev MySQL):
+Stay at the repository root; the commands below name this workspace explicitly — the
+verbs take it as an argument (`tapstate validate work`) and the REPL takes it as a
+flag (`tapstate -w work`). Unnamed, the CLI falls back to its default workspace,
+`tap-work`, and finds nothing. (`TAPSTATE_WORKDIR=work` in the environment does the
+same job for both.)
+
+`work/source/db_src.tap.yml` — the read source (the dev MySQL):
 
 ```yaml
 version: tapstate/v1
@@ -154,7 +159,7 @@ mode: cdc
 tables: [ orders ]
 ```
 
-`source/warehouse.tap.yml` — the write target (also `kind: source`):
+`work/source/warehouse.tap.yml` — the write target (also `kind: source`):
 
 ```yaml
 version: tapstate/v1
@@ -164,7 +169,7 @@ connector: mongodb
 config: { isUri: true, uri: "mongodb://127.0.0.1:27017/warehouse" }
 ```
 
-`pipeline/sync_orders.tap.yml` — the data flow:
+`work/pipeline/sync_orders.tap.yml` — the data flow:
 
 ```yaml
 version: tapstate/v1
@@ -186,7 +191,7 @@ serve:
 Validate offline before going online (no server needed):
 
 ```sh
-tapstate validate            # expects: valid: 3 resources in work
+tapstate validate work       # expects: valid: 3 resources in work
 ```
 
 ## 5. Go online and run
@@ -195,7 +200,7 @@ Start the interactive REPL and drive it. The connection is session state, so the
 run inside one REPL session:
 
 ```console
-$ tapstate
+$ tapstate -w work
 tapstate(offline:work)> connect http://localhost:8080
 tapstate(localhost:8080)> login admin
 Password:                       # type the password from step 3 (not echoed)
@@ -207,9 +212,10 @@ tapstate(admin@localhost:8080)> start sync_orders
 ```
 
 - **`register`** uploads a connector jar to the server (content-addressed and
-  idempotent; re-registering the same jar is a no-op). The paths above are relative
-  to `work/`, where step 4 left you — hence `../connectors/`. An absolute path works
-  too.
+  idempotent; re-registering the same jar is a no-op). Its paths resolve against the
+  workspace root — `work/` here — which is why the jars in `connectors/` next to it
+  are reached as `../connectors/`. An absolute path works too, as does naming a
+  directory: `register ../connectors` uploads every `*.jar` under it as one batch.
 - **`apply`** with no argument applies the whole workspace as one batch. The batch is
   the reference closure — a pipeline and the sources it names must be applied
   together, so apply the workspace, not one file at a time.
