@@ -25,3 +25,10 @@ node_modules/
 logs/
 *.log
 *.tmp
+
+# Scratch directories the online-runtime walkthrough creates at the repository root:
+# downloaded connector jars, the plugin cache the server unpacks them into, and the
+# authored workspace. Tens of megabytes of binaries a reader would otherwise commit.
+/connectors/
+/plugins/
+/work/
