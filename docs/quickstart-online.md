@@ -179,14 +179,43 @@ source: db_src
 settings: { read_mode: snapshot_and_cdc }
 transforms:
   - { id: keep_writes, from: [ orders ], type: filter, expr: "op != 'd'" }
+  - id: shape_orders
+    from: [ keep_writes ]
+    type: map
+    fields:
+      customer_name: $customer
+      label: "=after.customer + ' <' + src + '>'"
 serve:
-  from: keep_writes
+  from: shape_orders
   sync:
     - source: warehouse
 ```
 
-> `serve.from` must name a transform `id` (here `keep_writes`) or a concrete
-> resource — **not** a regex such as `/.*/`.
+Two steps, chained: `filter` drops deletes, then `map` reshapes what survives.
+
+A `map` step lists only the fields it changes — anything unlisted passes through
+untouched, so `id` and `amount` arrive at the target as they left the source. Each
+entry takes one of four forms:
+
+| Form | Meaning |
+|---|---|
+| `new: $old` | rename; the source field is consumed |
+| `field: false` | drop the field |
+| `field: <value>` | set a constant |
+| `field: "=<CEL>"` | compute from a CEL row expression |
+
+So `customer_name: $customer` renames the column, and `label` builds a new value from
+the row (`after.<field>`) and the change envelope (`src`, plus `op` and `ts`).
+
+> **Numeric columns cannot be used in CEL expressions in this preview.** Row values
+> reach CEL as the connector produced them, so an `int` or `decimal` column matches no
+> CEL overload — `=string(after.amount)` and `=after.id > 2` both compile offline and
+> then fail at runtime with `No matching overload`. Keep expressions to string and
+> envelope fields for now; type conversion is not yet usable.
+
+> `serve.from` must name the **last** step you want served — `shape_orders` here, not
+> `keep_writes`. It takes a transform `id` or a concrete resource, **not** a regex such
+> as `/.*/`.
 
 Validate offline before going online (no server needed):
 
