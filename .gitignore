@@ -1,0 +1,27 @@
+# Build output
+target/
+build/
+dist/
+*.class
+.flattened-pom.xml
+
+# macOS
+.DS_Store
+
+# IDE / editor (per-developer, never shared)
+.idea/
+.vscode/
+*.iml
+
+# Node (web tooling, if any)
+node_modules/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Server logs, written under the working directory by any test that boots the product
+logs/
+*.log
+*.tmp

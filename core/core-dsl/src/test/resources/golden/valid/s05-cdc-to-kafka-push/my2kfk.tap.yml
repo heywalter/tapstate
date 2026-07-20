@@ -1,0 +1,13 @@
+version: tapstate/v1
+kind: pipeline
+id: my2kfk
+source: src_my
+serve:
+  id: serve
+  from: orders
+  push:
+    - id: push_1
+      source: tgt_kfk
+      topic: orders_events
+settings:
+  read_mode: cdc_only

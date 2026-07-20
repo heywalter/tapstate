@@ -1,0 +1,310 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  app — the service assembly root.
+
+  This is the single deliverable that brings the whole platform up in one process. It is the only
+  non-adapter module permitted to depend on the adapters ring (rule R7): the assembly root is where
+  the adapter bridges are bound into the runtime under the conditional role wiring. Because it is
+  the assembly point it carries no ring whitelist of its own — it is allowed to depend on every ring;
+  the dependency laws are enforced on the rings it wires, not on the root that wires them.
+
+  The server runs on the JVM (Spring Boot), not as a native image: it dynamically class-loads PDK
+  connector jars at runtime, which a closed-world native image cannot pre-analyse (the CLI stays
+  native). Maven profiles are never used for environment switching (build once, run anywhere).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.tapstate</groupId>
+    <artifactId>tapstate</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>app</artifactId>
+  <name>Tapstate :: App</name>
+  <description>Service assembly root: single-process bootstrap (--role=all at L1), the only module
+    permitted to depend on the adapters ring (rule R7). Runs on the JVM, not native.</description>
+
+  <properties>
+    <mainClass>io.tapstate.app.Bootstrap</mainClass>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.tapstate</groupId>
+        <artifactId>bom</artifactId>
+        <version>${revision}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- The service runtime substrate: a single Spring application context. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <!-- The password-hashing primitive (adaptive salted hash) backing the control ring's hasher port.
+         A self-contained crypto library, version-managed by the platform BOM; the raw hash algorithm
+         only, not the full security framework. -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-crypto</artifactId>
+    </dependency>
+    <!-- The embedded Hazelcast member + Jet execution engine. The assembly root creates and owns
+         the one full member per process; join discovery is explicitly disabled so the member is
+         structurally undiscoverable. -->
+    <dependency>
+      <groupId>com.hazelcast</groupId>
+      <artifactId>hazelcast</artifactId>
+    </dependency>
+
+    <!-- The error-code contract (TapstateException / Severity) for coded startup diagnostics. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-common</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The node-local log tail: the assembly root owns the one in-process log sink, feeds it from a
+         logging appender it attaches, and exposes it to the logs read face. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-logging</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The logging implementation (already the runtime backend via the Boot logging starter): the
+         assembly root attaches its own appender to feed the node-local log sink. Version-managed by the
+         platform BOM. -->
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+    </dependency>
+    <!-- The control ring's ports the assembly root binds concrete implementations to: the password
+         hasher and the session-token signer are framework-free interfaces in the control kernel, and
+         their real (library-backed) implementations live here at the assembly point. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>control-core</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The HTTP control face (Spring Web MVC): the assembly root imports its ControlHttpFace bundle to
+         serve the authenticated /api verb surface. This brings the servlet web starter transitively, so
+         the server runs an embedded web container; the CLI stays native and never depends on it. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>rest-api</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The shared error-code message catalog + renderer: the server renders coded diagnostics
+         through the same catalog as the CLI. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>messages</artifactId>
+      <version>${revision}</version>
+    </dependency>
+
+    <!-- The adapters ring: the assembly root is the only non-adapter module allowed to depend on it
+         (rule R7); the bridges are wired into the runtime here. Placeholders at L1. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>adapter-pdk</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The PDK runtime, on the host classpath so a real connector's base class can bootstrap TapRuntime
+         through the host loader (a single-arg Class.forName resolved by the host, not the isolated
+         connector loader). Runtime scope, not compile: adapter-pdk still compiles against the frozen API
+         only (rule R3 is an import lock, untouched by a runtime dependency). This is the one place the
+         runtime enters a shipped artifact; the connector plugins themselves never do (they load in
+         isolation at runtime). Load-bearing though compile-invisible — no app source references it, yet a
+         real connector will not construct without it; do not remove it as unused, and do not downgrade it
+         to test scope (that drops it from the boot jar). PdkRuntimeInBootJarIT guards its presence in the
+         packaged boot jar. Version managed by the platform BOM. -->
+    <dependency>
+      <groupId>io.tapdata</groupId>
+      <artifactId>tapdata-pdk-runner</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>adapter-mongo-store</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>adapter-transform</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The driver-free storage port the assembly root exposes to the service rings (StorePort),
+         implemented by the store adapter above; wiring it here keeps the port type off any adapter. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>spi-store</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The runtime probe seam: the connection-test verb drives the runtime probe, whose adapter-backed
+         connection tester is composed here at the assembly root. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>runtime-probe</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The runtime convergence loop the assembly root drives: the app is the one place a runtime-ring
+         module is wired in (rule R7), and the Spring scheduler that ticks it lives here, not in the
+         runtime ring where the framework is banned. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>scheduler</artifactId>
+      <version>${revision}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>engine</artifactId>
+      <version>${revision}</version>
+    </dependency>
+
+    <!-- The SRS capture runtime the assembly root makes the embedded member capable of: the change-ring
+         item serializer registered on the member and the meta-store user-context key bound onto it. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>srs</artifactId>
+      <version>${revision}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Spring Boot test harness (ApplicationContextRunner) to assert the store connection is wired
+         into startup and that a failure surfaces as a coded diagnostic. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Test scope only: the assembly root never ships the CLI, but the single-node integration drives the
+         production CLI websocket client against a real server to prove the client<->server stream round-trip. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>cli</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Testcontainers: a throwaway Mongo replica-set to witness that the assembly root exposes a
+         working StorePort bean (the all role) against a real store. Skipped automatically where
+         Docker is absent, so a Docker-less build stays green. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>mongodb</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Stamp Add-Opens into the jar manifest so the shipped boot jar opens java.base/java.lang to
+           unnamed modules under a bare `java -jar` (the spring-boot repackage below preserves the jar
+           manifest's own entries). A real PDK connector binds its configuration through cglib, which
+           reflects into ClassLoader.defineClass; JDK 17+ denies that without this open and the
+           connector fails at construction. The launcher script sets the same flag for the unpacked
+           distribution; this manifest entry covers launching the fat-jar directly. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Add-Opens>java.base/java.lang</Add-Opens>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+
+      <!-- Testcontainers-backed witness tests (*IT) run in the integration-test phase, so `mvn test`
+           stays fast and `mvn verify` exercises them. Each is annotated to skip automatically where
+           Docker is unavailable, so a Docker-less build stays green. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <!-- The packaged boot jar, handed to the boot-jar guard IT so it can assert the PDK runtime is
+               bundled into the shipped artifact (repackage runs in package, before integration-test). -->
+          <systemPropertyVariables>
+            <tapstate.app.boot-jar>${project.build.directory}/${project.build.finalName}-boot.jar</tapstate.app.boot-jar>
+          </systemPropertyVariables>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Repackage the thin jar into a runnable Spring Boot fat-jar. Attached under the `boot`
+           classifier so the plain library jar (app-<ver>.jar) remains the main artifact: arch-tests
+           consumes it to scan this module's classes for rule R7 and the error-code gates, which a
+           fat-jar's nested BOOT-INF/classes layout would hide. The deliverable is
+           app/target/app-<ver>-boot.jar, started with `java -jar` (role defaults to all). -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>repackage-boot-jar</id>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+            <configuration>
+              <classifier>boot</classifier>
+              <mainClass>${mainClass}</mainClass>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Assemble the distribution: a tar.gz unpacking to bin/ (launcher) + conf/ (external config)
+           + lib/ (the boot jar). This is the only service deliverable — other modules ship no
+           executable package (the CLI is the separate second deliverable, native-image packaged).
+           Bound to package after the repackage above, so the boot jar exists when it is bundled. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>dist-tarball</id>
+            <phase>package</phase>
+            <goals>
+              <goal>single</goal>
+            </goals>
+            <configuration>
+              <descriptors>
+                <descriptor>src/assembly/dist.xml</descriptor>
+              </descriptors>
+              <tarLongFileMode>posix</tarLongFileMode>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

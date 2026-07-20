@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.tapstate</groupId>
+    <artifactId>runtime</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>runtime-probe</artifactId>
+  <name>Tapstate :: Runtime :: Connection Probe</name>
+  <description>The synchronous control-to-runtime seam (the probe whitelist, a closed set of two): the connection-probe and schema-discovery-probe interfaces plus the runtime-side delegates that drive the connector-plane tester and discoverer ports. Carries no third-party so control-core stays clean when it holds this narrow reference.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>spi-store</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

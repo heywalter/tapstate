@@ -1,0 +1,9 @@
+version: tapstate/v1
+kind: source
+id: src_kfk
+connector: kafka
+config:
+  brokers: k1:9092,k2:9092
+  group_id: tapstate_orders
+mode: stream
+tables: [orders_topic]

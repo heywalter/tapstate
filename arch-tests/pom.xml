@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ArchUnit architecture-rules module.
+  Exception by design (rule R10): this module test-depends on every ring, because its
+  purpose is to assert the ring dependency rules R1-R10.
+  Keep it last in the reactor. Register every new production module as a test dependency
+  here, otherwise its classes are invisible to the scan.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.tapstate</groupId>
+    <artifactId>tapstate</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>arch-tests</artifactId>
+  <name>Tapstate :: Architecture Tests</name>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.tapstate</groupId>
+        <artifactId>bom</artifactId>
+        <version>${revision}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- Production modules under scan (all test scope; every new module must be registered here) -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-common</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-model</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-dsl</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-schema</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-lifecycle</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- shared presentation catalog: registered so its dependency rule scans the renderer classes
+         and the D5-3 / D5-4 catalog gates read the bundled messages/en.yml it now owns -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>messages</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- surface ring: registered so the R6 rule actually scans the cli classes -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>cli</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- spi ring: registered so the R2 rule scans the port classes -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>spi-capture</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>spi-sink</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>spi-store</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>spi-transform</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- adapters ring: registered so the R3 rule scans the adapter classes -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>adapter-pdk</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>adapter-mongo-store</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>adapter-transform</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- runtime ring: registered so the R4 rule scans the runtime classes -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>runtime-probe</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>engine</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>scheduler</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>srs</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- control ring: registered so the R5 rule scans the control classes -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>control-core</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>rest-api</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- assembly root: registered so the R7 rule scans the app classes and the error-code gates
+         scan its role-domain codes -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>app</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Reads the bundled message catalog for the D5-3 / D5-4 gates. Test scope only: the catalog
+         reader at runtime is the surface ring's own zero-dependency reader (rule R6); the build-time
+         gate may use a YAML library because it never reaches any ring's runtime classpath (D5-6). -->
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The single dependencyManagement for the whole repo.
+  - Submodules never declare dependency versions; new dependencies are registered here first.
+  - Independently publishable so external consumers can align versions against it.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.tapstate</groupId>
+    <artifactId>tapstate</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>bom</artifactId>
+  <packaging>pom</packaging>
+  <name>Tapstate :: BOM</name>
+
+  <properties>
+    <!-- The core ring serializes with Jackson 2 (annotations + YAML dataformat) and must not depend
+         on spring-boot-dependencies, so jackson is pinned here and imported first (below) to win over
+         the platform's managed version. Spring Boot 4.1 ships both Jackson lines side by side: it
+         defaults to Jackson 3 (group tools.jackson) for the HTTP wire codec now that the web layer
+         exists (rest-api), while retaining the Jackson 2 line (group com.fasterxml.jackson) for
+         everything else. The two have disjoint coordinates, so this Jackson 2 pin — held at the exact
+         version the platform manages its Jackson-2 line to — coexists with the platform's Jackson 3
+         with no skew; the core ring keeps its Jackson 2 annotations untouched. -->
+    <jackson.version>2.21.4</jackson.version>
+    <snakeyaml.version>2.6</snakeyaml.version>
+    <cel.version>0.10.1</cel.version>
+    <!-- GraalVM polyglot + the JavaScript language: the full-power escape-hatch evaluator that runs
+         a js transform's script per event. The community language artifact (js-community) is the
+         UPL-licensed open build (the Oracle GraalVM 'js' artifact carries the GFTC terms, the same
+         license split the hazelcast pin navigates), so the product stays OSS-clean. On a stock JDK the
+         language runs on the Truffle interpreter; only the runtime evaluation adapter draws it (rule
+         R3), never the core or spi rings. -->
+    <graaljs.version>24.1.2</graaljs.version>
+    <!-- Spring Boot is the service runtime substrate (assembly root + control ring): Spring Boot 4.1.x
+         on Spring Framework 7 (Jakarta EE 11 / Jackson 3 default), running on JDK 21. The version
+         (spring.boot.version) is the single source of truth defined in the root POM and inherited here,
+         so the spring-boot-dependencies import below and the spring-boot-maven-plugin that repackages
+         the app fat-jar always move together. The repo's own pins still win over Spring Boot's managed
+         versions: jackson is imported via jackson-bom FIRST (competing imported BOMs resolve
+         first-import-wins), and snakeyaml is a direct managed pin (a direct entry always overrides any
+         imported BOM, order-independent). The spring-boot-dependencies import is placed last only to
+         read as the lowest-priority substrate, not as the cause of that precedence. -->
+    <!-- CLI facade libraries (surface ring): the command framework and the REPL line reader.
+         Both are self-contained (picocli has no transitive deps; jline aggregates its own
+         modules at one version) and are allowlisted to the cli module only (rule R6). -->
+    <picocli.version>4.7.7</picocli.version>
+    <jline.version>3.26.3</jline.version>
+    <!-- MongoDB driver stack (sync + core + bson + bson-record-codec): the store adapter's backing
+         driver (rule R3 locks it to adapter-mongo-store). The family must resolve to one version — the
+         sync driver calls into core/bson internals and core pulls bson-record-codec, so a split version
+         skews the classpath and fails at runtime. The platform's dependency management (imported below)
+         also manages these, so all four are pinned here to a single version aligned with the platform's
+         managed Mongo line; the stack moves as a unit and cannot skew. -->
+    <mongodb.driver.version>5.8.0</mongodb.driver.version>
+    <!-- Hazelcast: the distributed-coordination substrate and the Jet execution engine (Jet ships
+         inside the core artifact). The official Maven Central artifact is used as-is — it is pure
+         Apache-2.0 (the HCL-licensed pieces live in separate artifacts, which are banned by the
+         global enforcer rule); the runtime ring and the app assembly root are the only consumers
+         (rule R4 / R7). -->
+    <hazelcast.version>5.7.0</hazelcast.version>
+    <!-- Spring Security crypto: the password-hashing primitive (adaptive salted hash) the assembly
+         root binds behind the control ring's hasher port. The platform's dependency management does
+         not manage this module, so it is pinned here explicitly and held to the platform's Spring
+         Security line. A self-contained crypto library with no transitive dependencies — the raw hash
+         algorithm, not the full security framework — so it cannot skew the classpath. The assembly
+         root is the only consumer. -->
+    <spring-security.version>7.1.0</spring-security.version>
+    <!-- PDK API: the frozen connector contract surface (TapConnector / TapEvent / ConnectorFunctions
+         and the tapdata-api entity types they reference). It is the single shared layer the isolated
+         connector class loaders delegate to, so every connector binds to the same contract types; rule
+         R3 locks it to adapter-pdk. This small contract tree is managed here as one snapshot line. The
+         connector plugin jars load at runtime inside per-connector class loaders and never reach the host
+         classpath. The PDK runtime (TapRuntime and its transitive libraries) is the deliberate exception:
+         the assembly root carries it on the host classpath at runtime scope, so a real connector's base
+         class can bootstrap the runtime through the host loader (see the pdk-runner managed entry below).
+
+         Tracks the 2.0.8 working baseline as a snapshot. There is deliberately NO byte-level pin: an
+         upstream snapshot cannot be reproducibly pinned from the POM. The nexus retains only the most
+         recent snapshot builds, so naming an older timestamped build fails once it is purged; the base
+         -SNAPSHOT always resolves whatever build the nexus currently serves. That drift is accepted —
+         compatibility is judged by version/level, not by byte content, and a same-version rebuild is
+         treated as contract-equivalent; a byte-level content / drift gate is a later hardening step.
+         These artifacts are published only to the tapdata nexus (a public, anonymously readable
+         snapshot repository declared in the root POM), not to Maven Central. This property is also the
+         home of the version -> API-level mapping the compatibility check reads (the level table lands
+         with the resolver). The contract (tapdata-api) and its error-code libraries carry a different
+         base version, so both are set. -->
+    <pdk-api.version>2.0.8-SNAPSHOT</pdk-api.version>
+    <pdk-errorcode.version>2.8-SNAPSHOT</pdk-errorcode.version>
+    <!-- The PDK runtime (pdk-runner): a connector base class bootstraps TapRuntime through the host
+         loader at construction, so the assembly root carries this on its runtime classpath. A separate
+         line from the API contract above (the runner tracks the 2.x line, the contract the 2.0.x line). -->
+    <pdk-runner.version>2.8-SNAPSHOT</pdk-runner.version>
+    <!-- Testcontainers: brings up a throwaway Mongo replica-set in tests so the storage CAS
+         contract is witnessed against a real Mongo, not only the pure in-memory contract. Test scope
+         only, in adapter-mongo-store. -->
+    <testcontainers.version>1.20.4</testcontainers.version>
+    <junit.version>5.11.4</junit.version>
+    <assertj.version>3.26.3</assertj.version>
+    <archunit.version>1.3.0</archunit.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-bom</artifactId>
+        <version>${assertj.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.yaml</groupId>
+        <artifactId>snakeyaml</artifactId>
+        <version>${snakeyaml.version}</version>
+      </dependency>
+      <!-- CEL (Common Expression Language): the §12 ② row-expression layer. Used by core-dsl
+           to compile + type-check filter / computed expressions at validate time (never to
+           evaluate). The single 'cel' aggregate artifact pulls its own transitive closure
+           (guava / protobuf / antlr4 / re2j); those are allowlisted in core-dsl's enforcer. -->
+      <dependency>
+        <groupId>dev.cel</groupId>
+        <artifactId>cel</artifactId>
+        <version>${cel.version}</version>
+      </dependency>
+      <!-- Convergence pin for the cel closure: cel depends on error_prone_annotations 2.38.0
+           directly while its transitive guava depends on 2.36.0. Pin the higher version so
+           enforcer's dependencyConvergence stays green (annotations only, no runtime behavior). -->
+      <dependency>
+        <groupId>com.google.errorprone</groupId>
+        <artifactId>error_prone_annotations</artifactId>
+        <version>2.38.0</version>
+      </dependency>
+      <!-- Convergence pins bridging the cel closure and the PDK/tapdata closure. The two are first
+           brought onto one graph at the app assembly root: the store adapter pulls cel through the
+           canonical parser (an artifact is reconstructed from its canonical form on read), while the
+           PDK adapter pulls the tapdata stack. Their transitive guava skews (33.4.8 via cel, 33.4.0
+           via the tapdata stack), as does jsr305 (3.0.2 via the PDK error-code scanner, 3.0.1 via
+           cel). Pin the higher of each so dependencyConvergence stays green — both are annotation /
+           utility libraries and the bump is patch-level, no runtime behavior change. -->
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>33.4.8-jre</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.code.findbugs</groupId>
+        <artifactId>jsr305</artifactId>
+        <version>3.0.2</version>
+      </dependency>
+      <!-- GraalVM polyglot API + the community JavaScript language: the full-power escape hatch that
+           evaluates a js transform's script per event. Two coordinates move as one version: the
+           polyglot API the adapter compiles against and the js-community language that pulls its own
+           Truffle closure (truffle-api / regex / sdk / icu4j). Locked to adapter-transform by rule R3;
+           the language artifact is the UPL-licensed community build, so no restricted-license artifact
+           enters the graph. -->
+      <dependency>
+        <groupId>org.graalvm.polyglot</groupId>
+        <artifactId>polyglot</artifactId>
+        <version>${graaljs.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.graalvm.polyglot</groupId>
+        <artifactId>js-community</artifactId>
+        <version>${graaljs.version}</version>
+        <type>pom</type>
+      </dependency>
+      <dependency>
+        <groupId>com.tngtech.archunit</groupId>
+        <artifactId>archunit-junit5</artifactId>
+        <version>${archunit.version}</version>
+      </dependency>
+      <!-- CLI framework + REPL line reader; allowlisted to the cli module only (R6). -->
+      <dependency>
+        <groupId>info.picocli</groupId>
+        <artifactId>picocli</artifactId>
+        <version>${picocli.version}</version>
+      </dependency>
+      <!-- picocli's annotation processor: at compile time it emits the native-image reflection
+           config for the command tree, so the native binary needs no hand-written reflect config.
+           Used only as a compiler annotationProcessorPath in cli (not a runtime dependency); managed
+           here so that path can omit the version and stay pinned to the picocli version above. -->
+      <dependency>
+        <groupId>info.picocli</groupId>
+        <artifactId>picocli-codegen</artifactId>
+        <version>${picocli.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.jline</groupId>
+        <artifactId>jline</artifactId>
+        <version>${jline.version}</version>
+      </dependency>
+      <!-- MongoDB driver stack, locked to adapter-mongo-store by rule R3. core + bson +
+           bson-record-codec are pinned alongside sync so the whole family stays on one version: the
+           platform manages them too, and pinning them here keeps them from skewing against each other
+           on a version bump (core hard-depends on bson-record-codec; a split stack throws
+           NoClassDefFoundError at runtime). -->
+      <dependency>
+        <groupId>org.mongodb</groupId>
+        <artifactId>mongodb-driver-sync</artifactId>
+        <version>${mongodb.driver.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.mongodb</groupId>
+        <artifactId>mongodb-driver-core</artifactId>
+        <version>${mongodb.driver.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.mongodb</groupId>
+        <artifactId>bson</artifactId>
+        <version>${mongodb.driver.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.mongodb</groupId>
+        <artifactId>bson-record-codec</artifactId>
+        <version>${mongodb.driver.version}</version>
+      </dependency>
+      <!-- Hazelcast core artifact (member + Jet in one jar, no compile-scope transitives). Only the
+           official Apache-2.0 core artifact is managed here; hazelcast-sql / hazelcast-spring / EE
+           artifacts carry a different license and are banned by the global enforcer rule. -->
+      <dependency>
+        <groupId>com.hazelcast</groupId>
+        <artifactId>hazelcast</artifactId>
+        <version>${hazelcast.version}</version>
+      </dependency>
+      <!-- Spring Security crypto: the password hasher backing the control ring's hasher port at the
+           assembly root. Pinned here (a direct managed entry overrides the platform BOM) so the
+           consuming module references it version-less; only the app assembly root draws it. -->
+      <dependency>
+        <groupId>org.springframework.security</groupId>
+        <artifactId>spring-security-crypto</artifactId>
+        <version>${spring-security.version}</version>
+      </dependency>
+      <!-- PDK API contract, locked to adapter-pdk by rule R3. Only the small contract tree is managed
+           into the reactor (tapdata-pdk-api + the tapdata-api entity types it exposes + the error-code
+           libraries they pull); the transitive io.tapdata versions are managed explicitly so the whole
+           contract tree tracks one snapshot line together. The connector plugins load in isolation at
+           runtime and are deliberately NOT managed here. The PDK runtime (pdk-runner) IS managed here so
+           its version is single-sourced: the assembly root carries it at runtime scope, where a real
+           connector's base class bootstraps the runtime through the host loader, and adapter-pdk pulls it
+           (test scope) under its pdk-it profile for the real-connector regression. Managing the version
+           pulls nothing on its own: a module gets the heavy tree only by declaring the runner (the
+           assembly root at runtime, that profile at test) or by depending on a module that does (the
+           tests that consume the assembly root). -->
+      <dependency>
+        <groupId>io.tapdata</groupId>
+        <artifactId>tapdata-pdk-api</artifactId>
+        <version>${pdk-api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.tapdata</groupId>
+        <artifactId>tapdata-api</artifactId>
+        <version>${pdk-api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.tapdata</groupId>
+        <artifactId>error-code-scanner</artifactId>
+        <version>${pdk-errorcode.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.tapdata</groupId>
+        <artifactId>error-code-core</artifactId>
+        <version>${pdk-errorcode.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>io.tapdata</groupId>
+        <artifactId>tapdata-pdk-runner</artifactId>
+        <version>${pdk-runner.version}</version>
+      </dependency>
+      <!-- Testcontainers module set (aligns testcontainers-core + mongodb + junit-jupiter). Its own
+           third-party transitives (jackson / slf4j / commons-compress) still resolve against the
+           pins above, so the reactor's dependencyConvergence stays green. -->
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers-bom</artifactId>
+        <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <!-- Spring Boot dependency management. The pins above keep precedence on overlap (jackson-bom
+           is imported first; snakeyaml is a direct managed pin), so this import is placed last as the
+           lowest-priority substrate. Only the service modules (the app assembly root, and the control
+           ring later) draw Spring artifacts from it. -->
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <plugins>
+      <!-- Publishing shape: keep dependencyManagement, drop the parent (independently consumable) -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>flatten-maven-plugin</artifactId>
+        <configuration>
+          <flattenMode>bom</flattenMode>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

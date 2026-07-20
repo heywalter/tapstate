@@ -1,0 +1,10 @@
+version: tapstate/v1
+kind: source
+id: src_ledger
+connector: mysql
+config:
+  host: 10.10.0.20
+  password: Ldg_2026
+  username: cdc_user
+mode: cdc
+tables: [ledger]

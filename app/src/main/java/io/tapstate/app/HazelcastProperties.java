@@ -1,0 +1,41 @@
+package io.tapstate.app;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+/**
+ * Settings for the embedded Hazelcast member ({@code tapstate.hz.*}). Follows the configuration
+ * layering: packaged defaults, overridable from the external conf file or the environment.
+ */
+@ConfigurationProperties(prefix = "tapstate.hz")
+class HazelcastProperties {
+
+    private String clusterName = "tapstate";
+    private final Jet jet = new Jet();
+
+    String getClusterName() {
+        return clusterName;
+    }
+
+    void setClusterName(String clusterName) {
+        this.clusterName = clusterName;
+    }
+
+    Jet getJet() {
+        return jet;
+    }
+
+    /** Jet engine knobs. */
+    static class Jet {
+
+        /** Cooperative worker thread count; {@code null} keeps the engine default (CPU cores). */
+        private Integer cooperativeThreadCount;
+
+        Integer getCooperativeThreadCount() {
+            return cooperativeThreadCount;
+        }
+
+        void setCooperativeThreadCount(Integer cooperativeThreadCount) {
+            this.cooperativeThreadCount = cooperativeThreadCount;
+        }
+    }
+}

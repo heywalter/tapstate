@@ -1,0 +1,10 @@
+/**
+ * Control core: the verb layer (apply / export / run / delete) and the single write entry.
+ *
+ * <p>Placeholder package reserving the module; the verbs and the desired-state writes are
+ * added when the control layer lands. Rule R5: this module depends on core + the storage port,
+ * stays framework-free (no Spring — Spring lives in rest-api, the HTTP face), and reaches the
+ * runtime only through the store — save the synchronous probe whitelist (a closed set of two),
+ * the sole compile reference it holds into the runtime ring.
+ */
+package io.tapstate.control.core;

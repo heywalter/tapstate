@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.tapstate</groupId>
+    <artifactId>control</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>control-core</artifactId>
+  <name>Tapstate :: Control :: Core</name>
+  <description>Control core (the apply / export / run / delete verb layer, the single write entry); placeholder, verbs land later</description>
+
+  <dependencies>
+    <!-- The error-code contract (coded control diagnostics) — core ring, permitted by R5. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-common</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The audit-log port the audit gate writes through; control-core reaches persistence only
+         through the storage port, never the runtime (R5). -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>spi-store</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The synchronous control-to-runtime seam: the probe whitelist (a closed set of two — the
+         connection probe and the schema-discovery probe). Every other control<->runtime interaction
+         decouples through the store; this narrow channel is the sole compile reference control-core
+         holds into the runtime ring — the R5 exception to R9. It carries no third-party, so
+         control-core stays framework-free. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>runtime-probe</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The apply pipeline reaches into the core ring only (R5 admits io.tapstate.core..): core-dsl
+         runs the full semantic validation stack, core-model normalizes to canonical form and
+         content-hashes it, core-catalog supplies the connector capability matrix. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-model</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-dsl</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-catalog</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The pipeline lifecycle contract (core ring, R5): the four-verb state machine that validates a
+         transition, and the desired-intent record the lifecycle write verbs persist through the store. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-lifecycle</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <!-- The node-local log tail (core ring, R5): the logs read face reads the in-process log sink
+         directly instead of the store — logs are node-local, not published cross-node like the other
+         observation reads. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>core-logging</artifactId>
+      <version>${revision}</version>
+    </dependency>
+
+    <!-- Test only. Production code stays framework-free (no Spring); versions come from the reactor BOM. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

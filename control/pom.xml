@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Control ring aggregate parent.
+  Ring rules R5 / R9: control-core depends on core + spi-store; rest-api depends on
+  control-core + core. Control reaches the runtime only through the store (control writes desired
+  state, the runtime watches and converges — they decouple through the store). The sole exception
+  is the synchronous probe whitelist (io.tapstate:runtime-probe), a closed set of two that
+  control-core may depend on; the runtime's execution modules (engine / scheduler), Hazelcast, the
+  PDK and every adapter stay banned. Spring is allowed in rest-api (the HTTP presentation face)
+  only; control-core stays framework-free. The coarse enforcer gate below bans the runtime engine /
+  scheduler / Hazelcast / PDK / adapters ring-wide; the precise per-module checks (rest-api must not
+  depend on spi directly; control-core must not depend on Spring) are the ArchUnit R5 rules.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.tapstate</groupId>
+    <artifactId>tapstate</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>control</artifactId>
+  <packaging>pom</packaging>
+  <name>Tapstate :: Control Ring</name>
+
+  <modules>
+    <module>control-core</module>
+    <module>rest-api</module>
+  </modules>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.tapstate</groupId>
+        <artifactId>bom</artifactId>
+        <version>${revision}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <plugins>
+      <!-- Coarse ring gate (R5 / R9): the control ring reaches the runtime only through the store,
+           save the probe whitelist (io.tapstate:runtime-probe, a closed set of two). The
+           runtime engine / scheduler, Hazelcast, the PDK and every adapter stay banned. Spring is
+           allowed in rest-api only. The precise per-module checks (incl. control-core must not depend
+           on Spring) are the ArchUnit R5 rules. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>enforce-control-ring-blacklist</id>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <bannedDependencies>
+                  <excludes>
+                    <exclude>io.tapstate:engine</exclude>
+                    <exclude>io.tapstate:scheduler</exclude>
+                    <exclude>io.tapstate:adapter-*</exclude>
+                    <exclude>com.hazelcast*</exclude>
+                    <exclude>io.tapdata*</exclude>
+                  </excludes>
+                  <message>
+Forbidden dependency in the Control ring (rules R5 / R9). Control reaches the runtime only
+through the store (control writes desired state, the runtime watches and converges), save the
+synchronous probe whitelist (io.tapstate:runtime-probe, a closed set of two). The
+runtime engine / scheduler, Hazelcast, the PDK and every adapter stay banned. Spring is allowed
+in rest-api only; control-core stays framework-free. The precise per-module checks are the
+ArchUnit R5 rules.
+                  </message>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

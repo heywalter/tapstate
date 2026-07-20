@@ -1,0 +1,235 @@
+# Tapstate error-code message catalog — locale: en (the mandatory locale).
+#
+# One entry per canonical <domain>.<symbol> code. `message` is the user-facing diagnostic;
+# `solution` is an optional next-step hint. Placeholders use named {name} syntax; the union of
+# names across a code's templates must equal that code's declared placeholders() (build gate D5-4).
+# Adding a code means adding its entry here in the same change set (build gate D5-3). Render order
+# bottoms out at the bare canonical code when an entry or locale is missing.
+#
+# Values are double-quoted single-line scalars; colons, apostrophes and backticks inside the quotes
+# are fine. Keep literal double-quotes out of values (use backticks for inline code).
+actuation.pipeline-not-found:
+  message: "No pipeline artifact `{pipeline}` is stored to run."
+  solution: "Apply the pipeline before starting it, and check the id for typos."
+actuation.not-a-pipeline:
+  message: "Resource `{pipeline}` is a `{kind}`, not a pipeline, so it cannot be run."
+  solution: "Start a pipeline resource; check the id names a pipeline and not another kind of resource."
+boot.hazelcast-unavailable:
+  message: "The embedded Hazelcast member could not start."
+  solution: "Another process may already be using the member port on loopback; stop it or set a different port, then restart."
+capture.start-from-unparsable:
+  message: "Cannot start consuming from `{value}`; expected `earliest`, `latest`, or an ISO-8601 timestamp."
+  solution: "Set start_from to earliest, latest, or an ISO-8601 timestamp like 2026-07-11T00:00:00Z."
+cli.artifact-exists:
+  message: "An artifact already exists at {path}."
+  solution: "Choose a different id or --out, or pass --force to overwrite."
+cli.unknown-connector:
+  message: "No connector '{connector}' in the catalog."
+  solution: "Pick a connector id from the catalog; run `tapstate new` interactively to choose one."
+cli.kind-dir-mismatch:
+  message: "Artifact {path} declares kind '{kind}' but sits in a '{dir}' directory."
+  solution: "Move it under a '{kind}' directory, or change its declared kind to match."
+cli.resource-not-found:
+  message: "No resource with id '{id}' in the workspace."
+  solution: "Run `tapstate ls` to see the available resources."
+cli.connect-failed:
+  message: "Could not reach any Tapstate server among the seeds: {seeds}."
+  solution: "Check the addresses are correct and that a Tapstate server is running there, then try connect again."
+cli.not-connected:
+  message: "The `{verb}` command needs a connection to a Tapstate server."
+  solution: "Run `connect <host:port>` to reach a server first, then try again."
+cli.not-authenticated:
+  message: "The `{verb}` command needs you to sign in first."
+  solution: "Run `login <username>` to authenticate, then try again."
+cli.verb-not-implemented:
+  message: "The `{verb}` command is reserved but not implemented yet."
+  solution: "Use the commands it will be built from in the meantime; `help` lists what this build can do."
+dsl.unknown-field:
+  message: "Unknown field '{field}' at {path}."
+  solution: "Remove it, or run `tapstate explain` to see the fields allowed here."
+dsl.forbidden-field:
+  message: "Field '{field}' is not allowed at {path}."
+  solution: "It is valid elsewhere but not in this position; run `tapstate explain` to confirm."
+dsl.missing-reference:
+  message: "Reference '{ref}' at {path} points to nothing in this workspace."
+  solution: "Define the referenced resource, or fix the name to match an existing one."
+dsl.ambiguous-reference:
+  message: "Reference '{ref}' at {path} is ambiguous across more than one source."
+  solution: "Qualify the table with its source, e.g. `source.table`."
+dsl.mode-mismatch:
+  message: "Field '{field}' at {path} is not allowed for mode '{mode}'."
+  solution: "Remove the field, or change the source mode to one that supports it."
+dsl.illegal-value:
+  message: "Value '{value}' at {path} is not allowed; expected {expected}."
+  solution: "Use one of the accepted values."
+dsl.illegal-expression:
+  message: "Expression at {path} did not compile: {detail} (expression: {expr})."
+  solution: "Fix the CEL expression; only the row envelope fields are in scope."
+dsl.composition:
+  message: "Composition rule broken at {path}: {detail}."
+  solution: "Review how the resources are wired together."
+dsl.duplicate-id:
+  message: "Duplicate id '{id}' at {path}."
+  solution: "Ids must be unique within the workspace; rename one of them."
+dsl.unsupported-mode:
+  message: "Connector '{connector}' does not support mode '{mode}' at {path}."
+  solution: "Choose one of the connector's supported modes: {allowed}."
+dsl.config-type-mismatch:
+  message: "Config field '{field}' of connector '{connector}' at {path} has the wrong type; expected {expected}."
+  solution: "Provide a value of the expected type."
+dsl.invalid-config-value:
+  message: "Config field '{field}' of connector '{connector}' at {path} has an invalid value '{value}'."
+  solution: "Use one of the allowed values: {allowed}."
+dsl.malformed-yaml:
+  message: "Malformed YAML: {detail}."
+  solution: "Fix the YAML syntax; the line and column point at the problem."
+dsl.undefined-variable:
+  message: "Variable '{name}' is not set, and the reference to it gives no default."
+  solution: "Set '{name}' in the environment you apply from, or give the reference a fallback with the ${var:NAME:default} form."
+dsl.malformed-interpolation:
+  message: "Reference '{ref}' is not a form the grammar defines."
+  solution: "A reference names a variable, as in ${var:NAME:default} for one with a fallback; a lone dollar sign is ordinary text."
+lifecycle.illegal-transition:
+  message: "Cannot {verb} a pipeline in state {from}."
+  solution: "Only certain actions are valid from each state; check the pipeline's current state first."
+lifecycle.incompatible-revision:
+  message: "The pipeline's revision {requested} is not compatible with the latest applied revision {latest}."
+  solution: "Re-apply the pipeline so its revision matches the latest applied one, then retry."
+lifecycle.unknown-pipeline:
+  message: "No pipeline named {pipeline} is applied."
+  solution: "Apply the pipeline before running a lifecycle verb on it, and check the id for typos."
+role.unsupported:
+  message: "Unsupported --role value '{role}'."
+  solution: "L1 runs the whole platform in one process; use --role=all (the default)."
+store.unreachable:
+  message: "Cannot reach the store at {target}."
+  solution: "Check the store is running and the connection settings are correct, then restart."
+store.not-replica-set:
+  message: "The store at {target} is not a replica-set."
+  solution: "Start MongoDB as a single-node replica-set; the checkpoint transaction requires one."
+store.invalid-uri:
+  message: "The store connection string is not a valid MongoDB URI."
+  solution: "Check the store URI setting; it must start with mongodb:// or mongodb+srv://."
+store.tls-ca-unreadable:
+  message: "The store TLS CA certificate file at {path} could not be read."
+  solution: "Check the path points at a readable PEM certificate for the store's TLS chain."
+io.store-unavailable:
+  message: "A store operation could not complete: {detail}."
+  solution: "Check the store is reachable and healthy, then retry."
+io.store-unauthorized:
+  message: "The store rejected the credentials for the operation."
+  solution: "Check the store username and password in the connection settings."
+io.document-unreadable:
+  message: "A stored document with id '{id}' could not be read back."
+  solution: "The stored document is corrupt or was written by a newer version; inspect or restore it."
+connector.not-registered:
+  message: "No connector '{connector}' is registered."
+  solution: "Register the connector's artifact — or place it in the connector seed directory — before using it."
+connector.ambiguous-registration:
+  message: "Connector '{connector}' resolves to more than one registered artifact: {artifacts}."
+  solution: "Keep a single registered artifact per connector id; selecting among connector versions is not supported."
+connector.registration-conflict:
+  message: "Connector '{connector}' is already registered under artifact {existing}; a different artifact {incoming} was refused."
+  solution: "Keep a single registered artifact per connector id; unregister the existing artifact before registering a different one."
+connector.load-failed:
+  message: "Connector '{connector}' could not be loaded."
+  solution: "Check the connector jar and its dependencies are present and readable."
+connector.class-not-found:
+  message: "Connector '{connector}' entry class '{class}' was not found or is not a connector."
+  solution: "Check the connector id resolves to a connector jar that declares this entry class."
+connector.no-connector-class:
+  message: "No connector class found in artifact '{artifact}'."
+  solution: "Check the jar is a PDK connector: it must contain a class annotated with @TapConnectorClass."
+connector.not-found:
+  message: "Connector '{connector}' is not present in the online catalog."
+  solution: "Choose a connector returned by `connector.list`, or register it before requesting its form metadata."
+connector.ambiguous-connector-class:
+  message: "Artifact '{artifact}' declares more than one connector class: {classes}."
+  solution: "Register one connector per artifact; split unrelated connectors into separate jars."
+connector.spec-not-found:
+  message: "Connector artifact '{artifact}' names spec '{spec}' but the jar does not contain it."
+  solution: "Check the connector build packages the spec resource named by its @TapConnectorClass annotation."
+connector.spec-invalid:
+  message: "Connector artifact '{artifact}' spec '{spec}' does not identify the connector: {detail}."
+  solution: "Ensure the spec resource is valid JSON and declares the connector id under properties.id."
+connector.api-level-incompatible:
+  message: "Connector '{connector}' requires PDK API level {required} but this engine provides level {provided}."
+  solution: "Use a connector build compatible with API level {provided}, or upgrade the engine."
+connector.api-level-unknown:
+  message: "Connector '{connector}' declares PDK API version {version}, which this engine build does not recognize."
+  solution: "Use a connector built against a PDK API version this engine registers, or add {version} to the Tapstate-side level table if it is API-compatible."
+connector.projection-failed:
+  message: "Connector '{connector}' produced an event that could not be projected: {detail}."
+  solution: "This is a bridge-level projection failure between the connector and the event envelope."
+connector.capture-failed:
+  message: "Connector '{connector}' failed while reading: {detail}."
+  solution: "Check the source is reachable and the connection settings are correct."
+connector.discover-failed:
+  message: "Connector '{connector}' could not discover its schema: {detail}."
+  solution: "The connector failed while discovering the source model; check the source is reachable and the connection settings are correct."
+connector.test-failed:
+  message: "Connector '{connector}' could not complete its connection test: {detail}."
+  solution: "The connector failed while testing; check the connection settings and that the target is reachable."
+connector.write-failed:
+  message: "Connector '{connector}' failed while writing: {detail}."
+  solution: "Check the target is reachable and the connection settings are correct."
+control.audit-blocked:
+  message: "Operation '{op}' was refused because its required audit record could not be written."
+  solution: "An audited operation must leave an audit record before it runs; check the store is reachable and healthy, then retry."
+control.auth-failed:
+  message: "Authentication failed: invalid username or password."
+  solution: "Check the username and password are correct, then sign in again."
+control.bootstrap-closed:
+  message: "The initial-admin bootstrap channel is closed because an admin account already exists."
+  solution: "Sign in with an existing admin account to create more users."
+control.bootstrap-forbidden:
+  message: "The initial-admin bootstrap channel accepts only local (loopback) connections."
+  solution: "Create the first admin from a session on the server host itself, or pre-seed one at deployment."
+control.forbidden:
+  message: "Operation '{op}' requires {required} capability."
+  solution: "Sign in as a user with that capability, or use a token issued with that scope."
+control.malformed-request:
+  message: "The request is malformed: {reason}."
+  solution: "Correct the request body, then send it again."
+control.unauthenticated:
+  message: "This operation requires authentication."
+  solution: "Sign in with `login` to obtain a session token, or present a machine token with `--token`."
+engine.no-such-job:
+  message: "Pipeline {pipeline} has no running job to act on."
+  solution: "Start the pipeline before pausing or resuming it, and check the id for typos."
+monitor.no-observation:
+  message: "No observation is available for pipeline {pipeline}."
+  solution: "Check the pipeline id for typos; a freshly started pipeline may take a moment to publish its first observation."
+source.already-exists:
+  message: "A Source with id '{id}' already exists."
+  solution: "Choose a different id, or replace the existing Source with its current ETag."
+source.id-mismatch:
+  message: "Source id '{bodyId}' in the request body does not match path id '{pathId}'."
+  solution: "Use the same immutable Source id in the request path and body."
+source.in-use:
+  message: "Source '{id}' is still referenced by: {referrers}."
+  solution: "Remove those references before deleting the Source."
+source.not-found:
+  message: "No Source with id '{id}' exists."
+  solution: "List Sources to find an existing id."
+source.precondition-required:
+  message: "Source '{id}' requires its current ETag for this operation."
+  solution: "Read the Source, then retry with its ETag in If-Match."
+source.version-conflict:
+  message: "Source '{id}' changed after it was read."
+  solution: "Read the current Source and retry the operation with its new ETag."
+transform.expression-failed:
+  message: "Expression {expr} could not be evaluated for a row: {detail}."
+  solution: "Check the expression against the fields and types the row actually carries at runtime."
+transform.script-compile-failed:
+  message: "The js transform script could not be compiled: {detail}."
+  solution: "Fix the script so it parses as valid JavaScript."
+transform.script-failed:
+  message: "The js transform script raised an error while processing a row: {detail}."
+  solution: "Fix the script so it does not throw for this input, or guard the failing operation."
+transform.script-no-process:
+  message: "The js transform script defines no process(record, ctx) function."
+  solution: "Add a process(record, ctx) function; it is the required entry point of a js transform."
+transform.script-output-invalid:
+  message: "The js transform script produced output that is not a valid record: {detail}."
+  solution: "Ensure process returns a record (or emits one) whose before, after and schema are objects or null."

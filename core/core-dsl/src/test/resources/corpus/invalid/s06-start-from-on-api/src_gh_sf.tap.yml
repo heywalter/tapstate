@@ -1,0 +1,12 @@
+# Invalid: start_from is no longer a source option — the read/consume axis moved to the pipeline
+# (pipeline.settings.start_from, read_mode amendment §11.8). A stale artifact that still writes it
+# under source options is rejected as an unknown field, not silently passed to the connector (§11.5).
+version: tapstate/v1
+kind: source
+id: src_gh_sf
+connector: quickapi
+config: { base_url: "https://api.github.com", token: ghp_a1b2c3d4 }
+mode: api
+tables:
+  - { name: issues, pk: [id] }
+options: { poll_interval: 5m, cursor: updated_at, start_from: earliest }
