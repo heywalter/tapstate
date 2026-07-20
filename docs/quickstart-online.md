@@ -21,8 +21,23 @@ any PDK connector works the same way.
 - **Docker** — to bring up throwaway MySQL and MongoDB for this walkthrough (next
   section). Already have a MySQL (with binary logging on, for CDC) and a MongoDB
   replica set? Use those and substitute their host/port/credentials below.
-- **Connector plugin jars** for the datastores you use (here: a MySQL and a MongoDB
-  connector jar). Put them somewhere you can reference by path.
+- **Connector plugin jars** for the datastores you use. This walkthrough needs a MySQL
+  and a MongoDB connector; prebuilt ones are published as release assets, so download
+  them into `connectors/` at the repository root:
+
+  ```sh
+  mkdir -p connectors && cd connectors
+  base=https://github.com/tapstate/tapstate/releases/download/connectors-preview
+  curl -fL -O "$base/mysql-connector.jar"
+  curl -fL -O "$base/mongodb-connector.jar"
+  cd ..
+  ```
+
+  Any PDK connector jar works the same way — these two are published only so this
+  page runs without building the connector repositories first. They are shaded and
+  carry their own drivers on an isolated loader; `mysql-connector.jar` bundles Oracle
+  MySQL Connector/J under GPL-2.0 with the Universal FOSS Exception (see
+  [`NOTICE`](../NOTICE)).
 
 ## Set up development databases (Docker)
 
@@ -124,10 +139,15 @@ read source, the write target, and the pipeline that connects them:
 
 ```sh
 mkdir -p work/source work/pipeline
-cd work
 ```
 
-`source/db_src.tap.yml` — the read source (the dev MySQL):
+Stay at the repository root; the commands below name this workspace explicitly — the
+verbs take it as an argument (`tapstate validate work`) and the REPL takes it as a
+flag (`tapstate -w work`). Unnamed, the CLI falls back to its default workspace,
+`tap-work`, and finds nothing. (`TAPSTATE_WORKDIR=work` in the environment does the
+same job for both.)
+
+`work/source/db_src.tap.yml` — the read source (the dev MySQL):
 
 ```yaml
 version: tapstate/v1
@@ -139,7 +159,7 @@ mode: cdc
 tables: [ orders ]
 ```
 
-`source/warehouse.tap.yml` — the write target (also `kind: source`):
+`work/source/warehouse.tap.yml` — the write target (also `kind: source`):
 
 ```yaml
 version: tapstate/v1
@@ -149,7 +169,7 @@ connector: mongodb
 config: { isUri: true, uri: "mongodb://127.0.0.1:27017/warehouse" }
 ```
 
-`pipeline/sync_orders.tap.yml` — the data flow:
+`work/pipeline/sync_orders.tap.yml` — the data flow:
 
 ```yaml
 version: tapstate/v1
@@ -171,7 +191,7 @@ serve:
 Validate offline before going online (no server needed):
 
 ```sh
-tapstate validate            # expects: valid: 3 resources in work
+tapstate validate work       # expects: valid: 3 resources in work
 ```
 
 ## 5. Go online and run
@@ -180,19 +200,22 @@ Start the interactive REPL and drive it. The connection is session state, so the
 run inside one REPL session:
 
 ```console
-$ tapstate
+$ tapstate -w work
 tapstate(offline:work)> connect http://localhost:8080
 tapstate(localhost:8080)> login admin
 Password:                       # type the password from step 3 (not echoed)
-tapstate(admin@localhost:8080)> register /path/to/mysql-connector.jar
-tapstate(admin@localhost:8080)> register /path/to/mongodb-connector.jar
+tapstate(admin@localhost:8080)> register ../connectors/mysql-connector.jar
+tapstate(admin@localhost:8080)> register ../connectors/mongodb-connector.jar
 tapstate(admin@localhost:8080)> apply
 tapstate(admin@localhost:8080)> discover-schema db_src
 tapstate(admin@localhost:8080)> start sync_orders
 ```
 
 - **`register`** uploads a connector jar to the server (content-addressed and
-  idempotent; re-registering the same jar is a no-op).
+  idempotent; re-registering the same jar is a no-op). Its paths resolve against the
+  workspace root — `work/` here — which is why the jars in `connectors/` next to it
+  are reached as `../connectors/`. An absolute path works too, as does naming a
+  directory: `register ../connectors` uploads every `*.jar` under it as one batch.
 - **`apply`** with no argument applies the whole workspace as one batch. The batch is
   the reference closure — a pipeline and the sources it names must be applied
   together, so apply the workspace, not one file at a time.
