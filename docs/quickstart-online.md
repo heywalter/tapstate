@@ -232,8 +232,10 @@ tapstate(admin@localhost:8080)> metrics sync_orders           # recordCount / er
 tapstate(admin@localhost:8080)> logs sync_orders              # node-local operational log tail
 ```
 
-- Immediately after `start`, the first `status`/`metrics` may report no observation
-  yet — use `--watch` or retry after a second.
+- The read faces lag the write verbs: they report observed state, which converges to
+  what you asked for rather than changing with the command. Immediately after `start`
+  the first `status`/`metrics` may report no observation yet, and a `status` right
+  after `stop` can still say `running`. Use `--watch`, or retry after a second.
 - `metrics` is the signal for progress: `recordCount` climbing, `errorCount` at 0.
 
 Verify the rows landed, straight from the target:
