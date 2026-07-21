@@ -1,0 +1,5 @@
+# Deny everything, then admit only what an image build reads. A mono-repo reactor leaves large
+# target/ trees behind, and shipping them to the daemon as build context costs far more than the
+# image itself.
+*
+!app/target/app-*-boot.jar
