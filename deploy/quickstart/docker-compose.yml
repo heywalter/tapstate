@@ -84,6 +84,20 @@ services:
       # connection gives up election and failover awareness, which is why it belongs here in the
       # single-node stack's configuration and not in the server's own defaults.
       TAPSTATE_STORE_MONGO_URI: mongodb://mongo:27017/tapstate?directConnection=true
+      # Pin the connector seed directory to an absolute path. The setting defaults to a path relative to
+      # the image's working directory, so it would shift silently if that directory ever moved; naming it
+      # in full keeps it fixed to the mount target below, whatever the image's working directory is. This
+      # is only a scan location for optional pre-seeding (see the volume) -- a registered connector's
+      # bytes live in the store, in Mongo, not here.
+      TAPSTATE_CONNECTORS_SEED_DIR: /var/lib/tapstate/connectors
+    volumes:
+      # Optional bulk pre-seeding, and nothing more. Any *.jar left in ./connectors before the stack
+      # starts is registered once at boot, through the very same register-if-absent path that `tapstate
+      # register` uploads to -- staging a jar here is a convenience, never a precondition for registering
+      # one. Registration needs no mount at all: the CLI uploads the jar's bytes over HTTP and the server
+      # never reads this directory for it. Leaving ./connectors empty is the normal case. Read-only,
+      # because the sweep only ever reads it.
+      - ./connectors:/var/lib/tapstate/connectors:ro
     ports:
       # Bound to the loopback interface: an unauthenticated first run must not be reachable from
       # other machines on the network.
