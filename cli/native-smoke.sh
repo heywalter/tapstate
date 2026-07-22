@@ -6,7 +6,8 @@
 # JVM build does, with every bundled resource (connector catalog / grammar schema / message catalog)
 # reachable inside the image and startup under the acceptance budget. JVM unit tests cannot catch a
 # missing resource or a reflection gap — only the produced binary can — so this script is the
-# executable spec for native packaging.
+# executable spec for native packaging. A final check drives one loopback online round-trip
+# (connect / login / register) so the authenticated HTTP path is proven reachable in the image too.
 #
 # Usage:
 #   cli/native-smoke.sh [--build] [path-to-binary]
@@ -304,6 +305,68 @@ if (( PTY_RC == 0 )) \
   ok "Tab completed 'va'→'validate' and ran it over a pty (completer reachable in the image)"
 else
   bad "Tab completion pty session failed (rc=$PTY_RC) or did not complete 'va'→'validate'; output:"; echo "$PTY_OUT"
+fi
+
+# --- 9. online register under a pty (HttpClient POST + Bearer + JSON reachable in the image) -----
+# Sections 1-8 never open a socket. register / discover-schema were added after the CLI online path was
+# last proven native, and register in particular POSTs a base64 jar body and parses a JSON registration —
+# code a missing reflection/resource entry would break only in the image. Stand up a throwaway loopback
+# stub (healthz + login + register) and drive connect -> login -> register end to end, so the whole
+# authenticated online path runs through the native binary. A stack frame here is an AOT fault, not a
+# coded outcome. The stub double-forks and publishes its port + pid to files, so there is no sleep race.
+bold "[9] online register — connect + login + register under a pty (HTTP path reachable in the image)"
+STUB_DIR="$(mktemp -d)"
+trap 'if [[ -f "$STUB_DIR/pid" ]]; then kill "$(cat "$STUB_DIR/pid")" 2>/dev/null || true; fi; rm -rf "$STUB_DIR"' EXIT
+printf 'PK\003\004smoke-jar' > "$STUB_DIR/smoke.jar"   # any bytes; the stub does not inspect the jar
+cat > "$STUB_DIR/stub.py" <<'PY'
+import http.server, json, os, socketserver, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def _send(self, code, obj=None):
+        self.send_response(code)
+        if obj is not None:
+            body = json.dumps(obj).encode()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.end_headers()
+    def do_GET(self):
+        self._send(200 if self.path == "/healthz" else 404)
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path == "/auth/login":
+            self._send(200, {"token": "smoke-token"})
+        elif self.path == "/api/connectors:register":
+            self._send(200, {"connectorId": "smoke", "contentHash": "h1", "newlyRegistered": True})
+        else:
+            self._send(404)
+    def log_message(self, *a):
+        pass
+srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+with open(sys.argv[1], "w") as f:                       # publish the ephemeral port before serving
+    f.write(str(srv.server_address[1]))
+if os.fork() > 0:                                       # parent returns so bash proceeds; child serves
+    os._exit(0)
+os.setsid()
+with open(sys.argv[2], "w") as f:                       # publish the child pid so bash can reap it
+    f.write(str(os.getpid()))
+srv.serve_forever()
+PY
+python3 "$STUB_DIR/stub.py" "$STUB_DIR/port" "$STUB_DIR/pid"
+STUB_PORT="$(cat "$STUB_DIR/port" 2>/dev/null || true)"
+printf -v online_in 'connect 127.0.0.1:%s\nlogin admin\nsmoke-pw\nregister %s\nexit\n' "$STUB_PORT" "$STUB_DIR/smoke.jar"
+pty_session "$online_in"
+ONLINE_CLEAN=$(printf '%s' "$PTY_OUT" | strip_ansi)
+if (( PTY_RC == 0 )) \
+   && [[ -n "$STUB_PORT" ]] \
+   && printf '%s' "$ONLINE_CLEAN" | grep -q "connected to 127.0.0.1:$STUB_PORT" \
+   && printf '%s' "$ONLINE_CLEAN" | grep -q "logged in as admin" \
+   && printf '%s' "$ONLINE_CLEAN" | grep -qE 'registered[[:space:]]+smoke' \
+   && ! printf '%s' "$ONLINE_CLEAN" | grep -qE '\.java:[0-9]+\)'; then
+  ok "connect + login + register ran end to end through the native binary (no AOT fault)"
+else
+  bad "online register pty session failed (rc=$PTY_RC, port=${STUB_PORT:-none}); output:"; echo "$PTY_OUT"
 fi
 
 # --- summary ------------------------------------------------------------------------------------
