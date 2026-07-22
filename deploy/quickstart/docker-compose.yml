@@ -59,5 +59,44 @@ services:
     # wider than the stop has been observed to need.
     stop_grace_period: 30s
 
+  # Creates the first administrator, then exits. The endpoint that creates it accepts only loopback
+  # callers -- a safeguard against an unauthenticated first run being seized over the network -- and
+  # this container reaches it by sharing the server's network namespace, so its own loopback is the
+  # server's. Sharing the namespace is also why it declares no ports of its own: they would belong to
+  # the server. A throwaway image with nothing but curl keeps this out of the server image, so the
+  # server never has to carry a shell to be bootstrapped.
+  bootstrap:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      server:
+        condition: service_healthy
+    network_mode: "service:server"
+    # One shot: it runs once and is not brought back. Re-running the stack runs it again, and it is
+    # written to succeed the second time (see below), so that is safe.
+    restart: "no"
+    environment:
+      # The demo's first-admin credentials. They fall back to a known default so the stack runs with
+      # no prompting, and read from the environment (an adjacent .env file, or the quickstart script's
+      # generated password) when set. A real deployment must override the default.
+      TAPSTATE_ADMIN_USER: ${TAPSTATE_ADMIN_USER:-admin}
+      TAPSTATE_ADMIN_PASSWORD: ${TAPSTATE_ADMIN_PASSWORD:-admin}
+    entrypoint: ["/bin/sh", "-c"]
+    # The doubled $$ keeps the values out of Compose interpolation so the container's own shell reads
+    # them from its environment. A fresh store answers 204 and a bootstrapped one answers 409; both
+    # mean "an admin now exists", so both exit 0 and re-running the stack never fails here. Any other
+    # status -- including the 403 a non-loopback caller would draw -- is a real failure.
+    command:
+      - |
+        set -eu
+        code=$$(curl -s -o /dev/null -w '%{http_code}' \
+          -X POST http://127.0.0.1:8080/auth/bootstrap \
+          -H 'Content-Type: application/json' \
+          -d "{\"username\":\"$${TAPSTATE_ADMIN_USER}\",\"password\":\"$${TAPSTATE_ADMIN_PASSWORD}\"}")
+        case "$$code" in
+          204) echo "bootstrap: first admin created" ;;
+          409) echo "bootstrap: an admin already exists, nothing to do" ;;
+          *)   echo "bootstrap: failed with HTTP $$code" >&2; exit 1 ;;
+        esac
+
 volumes:
   tapstate-quickstart-mongo:
