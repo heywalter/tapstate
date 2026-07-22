@@ -32,6 +32,40 @@ services:
       # discards them, which then costs a full re-registration of every connector jar.
       - tapstate-quickstart-mongo:/data/db
 
+  mysql:
+    # The demo's source database, seeded and ready so the stack has something real to read. It is a
+    # standing service, not a dependency of the server: the server's own store is Mongo, and this is
+    # reached only later, by the connector a pipeline runs. A user pointing at their own database
+    # instead simply ignores it.
+    image: mysql:8.0
+    # Row-based binary logging and a server id are what change-data-capture tails; the mysql:8 image
+    # defaults would already serve CDC, but these are set explicitly so the demo advertises the same
+    # replication posture the walkthrough documents. root already holds every replication grant, so
+    # the demo needs no extra GRANT for the connector to read the binlog.
+    command:
+      - "--server-id=1"
+      - "--log-bin=mysql-bin"
+      - "--binlog-format=ROW"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: appdb
+    healthcheck:
+      # Hold red until the server actually answers, mirroring the store check: mysqladmin ping fails
+      # non-zero until the socket serves, and the credential proves the server finished its first-boot
+      # initialization rather than merely opening the port.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-psecret", "--silent"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
+    volumes:
+      # The seed runs on an empty data directory only, so a named volume means it seeds once and then
+      # the demo's rows persist across a restart, the same as the store.
+      - tapstate-quickstart-mysql:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+
   server:
     # Built locally until the published image exists; the released stack pins a registry reference
     # here instead, so that a user runs this stack without a build.
@@ -100,3 +134,4 @@ services:
 
 volumes:
   tapstate-quickstart-mongo:
+  tapstate-quickstart-mysql:
