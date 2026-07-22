@@ -17,8 +17,14 @@
 # were built from.
 #
 # workflow_dispatch is only offered for workflows on the default branch, so this becomes runnable once
-# the branch it lives on merges to main. The multi-arch container image lane (GHCR :<version> / :preview,
-# never :latest) is intentionally not here yet; it joins this same tag lane in a later change.
+# the branch it lives on merges to main.
+#
+# The multi-arch server image shares this same tag lane: one dispatch builds linux/amd64 + linux/arm64
+# and pushes ghcr.io/<owner>/tapstate:<version> and :preview, never :latest (the lever that keeps a
+# preview build from looking production-ready). Mind one asymmetry with the CLI assets: an image has no
+# draft state, so it publishes the instant the workflow is dispatched, whereas the CLI release is staged
+# as a draft for a human to publish afterwards. Dispatching this workflow is therefore itself the
+# decision to publish the images.
 name: release
 
 on:
@@ -37,6 +43,47 @@ jobs:
       - id: v
         # Portable read of the single ${revision} version source (works with BSD and GNU sed); no Maven.
         run: echo "version=$(sed -n 's/.*<revision>\(.*\)<\/revision>.*/\1/p' pom.xml | head -1)" >> "$GITHUB_OUTPUT"
+
+  server-image:
+    # The server-image half of the tag lane. The Spring Boot jar is platform-independent, so both
+    # architectures share the one jar and differ only in the JRE base image and its apt layer -- which
+    # is what makes building arm64 under QEMU emulation cheap here. The jar is built first and copied in
+    # by the Dockerfile (the image is a runtime image, it does not build the jar itself), so the tiny
+    # build context the .dockerignore admits stays tiny. Pushes on dispatch; there is no draft for an
+    # image.
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push the image to GHCR under the repository's own namespace
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: build the boot jar the image ships
+        run: mvn -B -pl app -am -DskipTests package
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # :<version> pins this exact build; :preview is the moving pointer the quickstart stack
+          # tracks. No :latest, deliberately -- the runtime is single-node and in-memory and must not
+          # be mistaken for a production default.
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.version }}
+            ghcr.io/${{ github.repository }}:preview
 
   cli-native:
     needs: prepare
