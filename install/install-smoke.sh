@@ -76,6 +76,36 @@ for triple in "Darwin arm64 darwin-arm64" "Darwin x86_64 darwin-x64" "Linux x86_
   fi
 done
 
+# --- detect-only: --print-platform maps and prints the tuple, downloading and writing nothing -------
+# The demo bootstrap (quickstart.sh) reuses this to gate on the platform before it fetches anything, so
+# an unsupported platform leaves the working directory untouched. It must print only the tuple, need no
+# network (no version resolution), and create no install directory.
+detect_shim="$(mktemp -d)"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; *) echo unknown ;; esac\n' > "$detect_shim/uname"
+chmod +x "$detect_shim/uname"
+idir="$(mktemp -d)/bin"
+out="$(PATH="$detect_shim:$PATH" TAPSTATE_INSTALL_DIR="$idir" sh "$INSTALL_SH" --print-platform 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = darwin-arm64 ] && [ ! -e "$idir/tapstate" ] && [ ! -d "$idir" ]; then
+  ok "--print-platform prints the tuple and downloads/writes nothing"
+else
+  bad "--print-platform (rc=$rc, out='$out', install dir present=$( [ -e "$idir" ] && echo yes || echo no ))"
+fi
+# and unsupported platforms still fail loudly in detect-only mode, pointing the user elsewhere
+cat > "$detect_shim/uname" <<'EOF'
+#!/bin/sh
+case "$1" in -s) echo MINGW64_NT-10.0 ;; -m) echo x86_64 ;; *) echo unknown ;; esac
+EOF
+chmod +x "$detect_shim/uname"
+idir="$(mktemp -d)/bin"
+out="$(PATH="$detect_shim:$PATH" TAPSTATE_INSTALL_DIR="$idir" sh "$INSTALL_SH" --print-platform 2>&1)"; rc=$?
+rm -rf "$detect_shim"
+if [ "$rc" -ne 0 ] && [ ! -e "$idir" ] && printf '%s' "$out" | grep -qiE 'wsl|source'; then
+  ok "--print-platform on an unsupported platform fails loudly and writes nothing"
+else
+  bad "--print-platform unsupported (rc=$rc, out='$out')"
+fi
+
 # --- idempotent: a second run over the same dir upgrades in place, still exit 0 ----------------------
 idir="$(mktemp -d)/bin"
 run_install Darwin arm64 glibc "$idir"; rc1=$RC

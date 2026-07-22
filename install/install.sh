@@ -124,6 +124,13 @@ main() {
     install_dir="${TAPSTATE_INSTALL_DIR:-$HOME/.tapstate/bin}"
 
     detect_platform
+    # Detect-only mode: print the <os>-<arch> tuple and stop. detect_platform has already refused any
+    # unsupported platform above, so this doubles as a zero-side-effect platform gate -- the demo
+    # bootstrap calls it before downloading anything, and shares this one copy of the mapping.
+    if [ "${1:-}" = --print-platform ]; then
+        printf '%s\n' "$platform"
+        return
+    fi
     resolve_version
     asset="tapstate-${version}-${platform}.tar.gz"
     url="${base_url}/download/v${version}/${asset}"
