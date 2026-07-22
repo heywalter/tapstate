@@ -143,7 +143,7 @@ main() {
         # until cleared; install.sh's atomic move preserves it. Strip it -- only on macOS, only if xattr
         # is present, and tolerating the case where the attribute was never set.
         case "$platform" in
-            darwin-*) command -v xattr >/dev/null 2>&1 && xattr -d com.apple.quarantine ./tapstate 2>/dev/null || true ;;
+            darwin-*) if command -v xattr >/dev/null 2>&1; then xattr -d com.apple.quarantine ./tapstate 2>/dev/null || true; fi ;;
         esac
     fi
 

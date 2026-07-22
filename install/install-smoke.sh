@@ -190,7 +190,7 @@ PY
   chmod +x "$shim/uname"
   idir="$(mktemp -d)/bin"
   out="$(PATH="$shim:$PATH" TAPSTATE_BASE_URL="http://127.0.0.1:$port/releases" TAPSTATE_INSTALL_DIR="$idir" sh "$INSTALL_SH" 2>&1)"; rc=$?
-  [ -f "$STUB/pid" ] && kill "$(cat "$STUB/pid")" 2>/dev/null || true
+  if [ -f "$STUB/pid" ]; then kill "$(cat "$STUB/pid")" 2>/dev/null || true; fi
   rm -rf "$shim"
   if [ "$rc" -eq 0 ] && [ -x "$idir/tapstate" ] && printf '%s' "$out" | grep -q "tapstate $VERSION"; then
     ok "resolves the latest version via the /releases/latest 302 (no version pinned) and installs over HTTP"
