@@ -31,6 +31,9 @@ enum CliError implements TapstateErrorCode {
     /** No server among the connect seeds answered the reachability probe. */
     CONNECT_FAILED("cli.connect-failed", Set.of("seeds")),
 
+    /** A heavy online verb reached the server but no response arrived within its timeout window. */
+    REQUEST_TIMED_OUT("cli.request-timed-out", Set.of("server")),
+
     /** A verb that needs a live connection was run before the session connected; {@code verb} names it. */
     NOT_CONNECTED("cli.not-connected", Set.of("verb")),
 

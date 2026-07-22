@@ -16,7 +16,11 @@ sealed interface ConnectorRegisterOutcome {
     record Rejected(String code, String message) implements ConnectorRegisterOutcome {
     }
 
-    /** The server could not be reached (connection refused, timeout, or a malformed target). */
+    /** The server could not be reached (connection refused, connect timeout, or a malformed target). */
     record Unreachable() implements ConnectorRegisterOutcome {
+    }
+
+    /** The server was reached but did not answer within the request's timeout window — busy, not gone. */
+    record TimedOut() implements ConnectorRegisterOutcome {
     }
 }

@@ -12,6 +12,7 @@ cli.connect-failed
 cli.kind-dir-mismatch
 cli.not-authenticated
 cli.not-connected
+cli.request-timed-out
 cli.resource-not-found
 cli.unknown-connector
 cli.verb-not-implemented

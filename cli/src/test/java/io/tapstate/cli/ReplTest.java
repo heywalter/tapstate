@@ -1335,6 +1335,23 @@ class ReplTest {
     }
 
     @Test
+    void registerRendersATimedOutOutcomeAsACodedDiagnosticDistinctFromUnreachable(@TempDir Path workdir)
+            throws Exception {
+        Files.write(workdir.resolve("orders.jar"), new byte[] {1, 2, 3, 4});
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.registerOutcome = new ConnectorRegisterOutcome.TimedOut();
+        Harness h = onlineSession(workdir, client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("register orders.jar")).isTrue();
+
+        // A timeout is a distinct, coded outcome — it must not be reported as the server being unreachable.
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("cli.request-timed-out").contains("node1:7900");
+        assertThat(out).doesNotContain("unreachable");
+    }
+
+    @Test
     void registerRendersAnAlreadyRegisteredArtifactAsANoOp(@TempDir Path workdir) throws Exception {
         Files.write(workdir.resolve("orders.jar"), new byte[] {1, 2, 3});
         FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));

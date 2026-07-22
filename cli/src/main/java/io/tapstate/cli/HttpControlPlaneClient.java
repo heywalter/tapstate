@@ -6,8 +6,10 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.net.http.WebSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -32,15 +34,52 @@ import java.util.function.Consumer;
  */
 final class HttpControlPlaneClient implements ControlPlaneClient {
 
-    /** Short enough that an unreachable seed does not stall the connect walk. */
-    private static final Duration TIMEOUT = Duration.ofSeconds(3);
+    /**
+     * The probe / connect budget: short enough that an unreachable seed does not stall the connect walk,
+     * and the read budget for the light verbs, whose work is a lookup the server answers at once.
+     */
+    static final Duration PROBE_TIMEOUT = Duration.ofSeconds(3);
 
+    /**
+     * The read budget for the heavy verbs — {@code connections:test} and {@code discover-schema} drive a
+     * live round-trip to a remote database, and {@code connectors:register} uploads a multi-MB jar the
+     * server then class-loads. The flat probe budget starved them; register scales further with size (see
+     * {@link #registerTimeout(int)}). A slow answer within this window means "busy", not "unreachable".
+     */
+    static final Duration HEAVY_TIMEOUT = Duration.ofSeconds(30);
+
+    /** A conservative floor upload rate (~1 MB/s); below it even a healthy server is presumed too slow. */
+    private static final long REGISTER_FLOOR_BYTES_PER_SECOND = 1_000_000;
+
+    private final Duration probeTimeout;
+    private final Duration heavyTimeout;
     private HttpClient httpClient;
+
+    HttpControlPlaneClient() {
+        this(PROBE_TIMEOUT, HEAVY_TIMEOUT);
+    }
+
+    /**
+     * A seam for tests to shrink the budgets so a deliberately slow server trips the timeout path in
+     * milliseconds rather than the production tens of seconds. Production always uses the no-arg form.
+     */
+    HttpControlPlaneClient(Duration probeTimeout, Duration heavyTimeout) {
+        this.probeTimeout = probeTimeout;
+        this.heavyTimeout = heavyTimeout;
+    }
+
+    /**
+     * The register read budget for an upload of {@code artifactBytes}: the heavy floor plus a second per
+     * ~megabyte, so a 47MB connector jar is not judged unreachable while it is still legitimately uploading.
+     */
+    Duration registerTimeout(int artifactBytes) {
+        return heavyTimeout.plusSeconds(Math.max(0, artifactBytes) / REGISTER_FLOOR_BYTES_PER_SECOND);
+    }
 
     /** The client is built lazily so constructing a REPL that never connects costs nothing. */
     private HttpClient client() {
         if (httpClient == null) {
-            httpClient = HttpClient.newBuilder().connectTimeout(TIMEOUT).build();
+            httpClient = HttpClient.newBuilder().connectTimeout(probeTimeout).build();
         }
         return httpClient;
     }
@@ -49,7 +88,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     public boolean isHealthy(URI baseUrl) {
         try {
             HttpRequest request = HttpRequest.newBuilder(endpoint(baseUrl, "/healthz"))
-                    .timeout(TIMEOUT)
+                    .timeout(probeTimeout)
                     .GET()
                     .build();
             HttpResponse<Void> response = client().send(request, HttpResponse.BodyHandlers.discarding());
@@ -71,7 +110,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             payload.put("username", username);
             payload.put("password", password);
             HttpRequest request = HttpRequest.newBuilder(endpoint(baseUrl, "/auth/login"))
-                    .timeout(TIMEOUT)
+                    .timeout(probeTimeout)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(JsonOut.write(payload), StandardCharsets.UTF_8))
                     .build();
@@ -166,7 +205,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     public ConnectionTestOutcome test(
             URI baseUrl, String credential, String id, String connectorId, Map<String, Object> settings) {
         try {
-            HttpRequest request = authed(baseUrl, "/api/connections:test", credential)
+            HttpRequest request = authed(baseUrl, "/api/connections:test", credential, heavyTimeout)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(
                             connectionBody(id, connectorId, settings), StandardCharsets.UTF_8))
@@ -185,6 +224,10 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new ConnectionTestOutcome.Unreachable();
+        } catch (HttpConnectTimeoutException e) {
+            return new ConnectionTestOutcome.Unreachable();   // never connected: not reachable
+        } catch (HttpTimeoutException e) {
+            return new ConnectionTestOutcome.TimedOut();       // reached the server, but no answer in time
         } catch (IOException | RuntimeException e) {
             return new ConnectionTestOutcome.Unreachable();
         }
@@ -222,7 +265,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     public ConnectionDiscoverSchemaOutcome discoverSchema(
             URI baseUrl, String credential, String id, String connectorId, Map<String, Object> settings) {
         try {
-            HttpRequest request = authed(baseUrl, "/api/connections:discover-schema", credential)
+            HttpRequest request = authed(baseUrl, "/api/connections:discover-schema", credential, heavyTimeout)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(
                             connectionBody(id, connectorId, settings), StandardCharsets.UTF_8))
@@ -241,6 +284,10 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new ConnectionDiscoverSchemaOutcome.Unreachable();
+        } catch (HttpConnectTimeoutException e) {
+            return new ConnectionDiscoverSchemaOutcome.Unreachable();   // never connected: not reachable
+        } catch (HttpTimeoutException e) {
+            return new ConnectionDiscoverSchemaOutcome.TimedOut();       // reached the server, but no answer in time
         } catch (IOException | RuntimeException e) {
             return new ConnectionDiscoverSchemaOutcome.Unreachable();
         }
@@ -276,7 +323,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     @Override
     public ConnectorRegisterOutcome register(URI baseUrl, String credential, byte[] artifact) {
         try {
-            HttpRequest request = authed(baseUrl, "/api/connectors:register", credential)
+            HttpRequest request = authed(baseUrl, "/api/connectors:register", credential, registerTimeout(artifact.length))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(registerBody(artifact), StandardCharsets.UTF_8))
                     .build();
@@ -294,6 +341,10 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new ConnectorRegisterOutcome.Unreachable();
+        } catch (HttpConnectTimeoutException e) {
+            return new ConnectorRegisterOutcome.Unreachable();   // never connected: the server is not reachable
+        } catch (HttpTimeoutException e) {
+            return new ConnectorRegisterOutcome.TimedOut();       // reached the server, but no answer in time
         } catch (IOException | RuntimeException e) {
             return new ConnectorRegisterOutcome.Unreachable();
         }
@@ -794,10 +845,15 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         }
     }
 
-    /** A request builder for {@code path} against a base, carrying the timeout and the bearer credential. */
-    private static HttpRequest.Builder authed(URI baseUrl, String path, String credential) {
+    /** A request builder for a light verb: the short probe read budget and the bearer credential. */
+    private HttpRequest.Builder authed(URI baseUrl, String path, String credential) {
+        return authed(baseUrl, path, credential, probeTimeout);
+    }
+
+    /** A request builder carrying an explicit read {@code timeout} — the heavy verbs pass a larger one. */
+    private HttpRequest.Builder authed(URI baseUrl, String path, String credential, Duration timeout) {
         return HttpRequest.newBuilder(endpoint(baseUrl, path))
-                .timeout(TIMEOUT)
+                .timeout(timeout)
                 .header("Authorization", "Bearer " + credential);
     }
 
