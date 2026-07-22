@@ -38,3 +38,17 @@ jobs:
           cache: maven
       - name: Build and test
         run: mvn -B verify
+
+  installer:
+    # The download-and-install script is shell, not Java: shellcheck it (ubuntu-latest ships shellcheck)
+    # and run its smoke, which drives platform detection, the unsupported-platform refusals, checksum
+    # verification and idempotency against a local file:// / loopback stub — no network.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck the installer scripts
+        run: |
+          shellcheck -s sh install/install.sh
+          shellcheck install/install-smoke.sh
+      - name: installer smoke
+        run: bash install/install-smoke.sh
