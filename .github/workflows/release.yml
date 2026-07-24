@@ -2,7 +2,7 @@
 # tapstate binary for their platform instead of installing GraalVM and building it from source.
 #
 # Manual only (workflow_dispatch): nothing outward-facing fires on a push. On each of the four target
-# platforms it builds the GraalVM native binary, runs the full native smoke suite against it (offline
+# platforms it builds the native binary with Liberica NIK, runs the full native smoke suite against it (offline
 # verbs + one online connect/login/register round-trip), then packages
 # tapstate-<version>-<os>-<arch>.tar.gz (bare binary + LICENSE + NOTICE). A final job adds a per-asset
 # .sha256 and an aggregate checksums.txt and assembles a DRAFT, prerelease GitHub release. A human
@@ -103,9 +103,9 @@ jobs:
       - uses: graalvm/setup-graalvm@v1
         with:
           java-version: '21'
-          distribution: 'graalvm'   # Oracle GraalVM 21 (GFTC) — the current CLI toolchain
+          distribution: 'liberica'   # Liberica NIK 21 (GPLv2+CPE) — the release toolchain; Oracle GraalVM (GFTC) is local dev only
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: register the GraalVM JDK as the Maven toolchain (version 21, any vendor)
+      - name: register the Liberica NIK JDK as the Maven toolchain (version 21, any vendor)
         shell: bash
         run: |
           mkdir -p ~/.m2

@@ -11,7 +11,8 @@
 #
 # Usage:
 #   cli/native-smoke.sh [--build] [path-to-binary]
-#     --build           build the native image first (mvn -Pnative ...), discovering GraalVM 21
+#     --build           build the native image first (mvn -Pnative ...), discovering a JDK-21
+#                       native-image toolchain (Liberica NIK for release, Oracle GraalVM for local dev)
 #     path-to-binary    the tapstate binary to test (default: cli/target/tapstate)
 #
 # Exit 0 iff every check passes.
@@ -103,28 +104,29 @@ FAIL=0
 ok()   { green "  PASS  $1"; PASS=$((PASS+1)); }
 bad()  { red   "  FAIL  $1"; FAIL=$((FAIL+1)); }
 
-# --- discover GraalVM 21 (only needed for --build) ---------------------------------------------
+# --- discover a JDK-21 native-image toolchain — Liberica NIK or GraalVM (only needed for --build) ---
 discover_graalvm() {
   if [[ -n "${GRAALVM_HOME:-}" && -x "$GRAALVM_HOME/bin/native-image" ]]; then
     echo "$GRAALVM_HOME"; return 0
   fi
-  # ask the macOS java_home registry for a GraalVM 21
+  # ask the macOS java_home registry for a JDK 21 that carries native-image (NIK or GraalVM)
   if [[ -x /usr/libexec/java_home ]]; then
     local home
     home="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
     if [[ -n "$home" && -x "$home/bin/native-image" ]]; then echo "$home"; return 0; fi
   fi
-  # fall back to the jdkHome of the toolchain block that is both vendor=graalvm AND version 21.
-  # Parse per <toolchain> block (not by line proximity) so reordering / extra elements do not break
-  # discovery, and require version 21 so a graalvm 17 toolchain is not picked up by mistake.
+  # fall back to the jdkHome of the toolchain block that is a native-image vendor (Liberica NIK or
+  # GraalVM) AND version 21. Parse per <toolchain> block (not by line proximity) so reordering / extra
+  # elements do not break discovery, and require version 21 so a 17 toolchain is not picked by mistake.
+  # The final -x native-image check below is the real gate; the vendor match only picks the candidate.
   if [[ -f "$HOME/.m2/toolchains.xml" ]]; then
     local home
     home="$(awk '
-      /<toolchain>/   { isg=0; v21=0; jh="" }
-      /graalvm/       { isg=1 }
-      /<version>21</  { v21=1 }
+      /<toolchain>/                              { isni=0; v21=0; jh="" }
+      tolower($0) ~ /graalvm|liberica|bellsoft/  { isni=1 }
+      /<version>21</                             { v21=1 }
       /<jdkHome>/     { line=$0; sub(/.*<jdkHome>/, "", line); sub(/<\/jdkHome>.*/, "", line); jh=line }
-      /<\/toolchain>/ { if (isg && v21 && jh != "") { print jh; exit } }
+      /<\/toolchain>/ { if (isni && v21 && jh != "") { print jh; exit } }
     ' "$HOME/.m2/toolchains.xml")"
     if [[ -n "$home" && -x "$home/bin/native-image" ]]; then echo "$home"; return 0; fi
   fi
@@ -134,10 +136,10 @@ discover_graalvm() {
 if [[ "$DO_BUILD" == 1 ]]; then
   bold "Building native image (mvn -Pnative)…"
   if ! GVM="$(discover_graalvm)"; then
-    red "No GraalVM 21 with native-image found. Set GRAALVM_HOME or install Oracle GraalVM for JDK 21."
+    red "No JDK-21 native-image toolchain found. Set GRAALVM_HOME, or install Liberica NIK (release) or Oracle GraalVM (local dev) for JDK 21."
     exit 1
   fi
-  echo "  GraalVM: $GVM"
+  echo "  native-image toolchain: $GVM"
   ( cd "$REPO_ROOT" && JAVA_HOME="$GVM" mvn -q -Pnative -pl cli -am -DskipTests package )
 fi
 
