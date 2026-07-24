@@ -224,8 +224,12 @@ CLI
   printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo unknown ;; esac\n' > "$shim/uname"
   cat > "$shim/docker" <<'DOCK'
 #!/bin/sh
-# `compose ps ... server` -> report healthy so the wait loop ends; every other subcommand no-ops.
-for a in "$@"; do [ "$a" = ps ] && { echo '{"Health":"healthy"}'; exit 0; }; done
+# `compose ps ... server` -> report healthy so the wait loop ends; `compose exec ... mongosh` (the
+# snapshot count read) -> report a row count so the verify loop ends; every other subcommand no-ops.
+for a in "$@"; do
+  [ "$a" = ps ] && { echo '{"Health":"healthy"}'; exit 0; }
+  [ "$a" = exec ] && { echo 5; exit 0; }
+done
 exit 0
 DOCK
   chmod +x "$shim/uname" "$shim/docker"
@@ -250,6 +254,20 @@ if printf '%s' "$RUN_OUT" | grep -q 'down -v' && printf '%s' "$RUN_OUT" | grep -
   ok "prints teardown on completion (down -v + rm -rf, images noted)"
 else
   bad "no teardown printed: $RUN_OUT"
+fi
+# The snapshot payoff is a real row count, printed with no user action (the fake docker returns 5).
+if printf '%s' "$RUN_OUT" | grep -q 'the target now holds 5 rows'; then
+  ok "prints the snapshot row count automatically (no user action)"
+else
+  bad "snapshot row count not printed: $RUN_OUT"
+fi
+# The CDC section walks all three operations -- consistent with a pipeline that no longer drops deletes.
+if printf '%s' "$RUN_OUT" | grep -q 'INSERT INTO orders' \
+   && printf '%s' "$RUN_OUT" | grep -q 'UPDATE orders' \
+   && printf '%s' "$RUN_OUT" | grep -q 'DELETE FROM orders'; then
+  ok "the CDC section demonstrates insert, update and delete"
+else
+  bad "CDC section does not walk insert/update/delete: $RUN_OUT"
 fi
 
 # --- summary ----------------------------------------------------------------------------------------

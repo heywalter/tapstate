@@ -178,9 +178,8 @@ id: sync_orders
 source: db_src
 settings: { read_mode: snapshot_and_cdc }
 transforms:
-  - { id: keep_writes, from: [ orders ], type: filter, expr: "op != 'd'" }
   - id: shape_orders
-    from: [ keep_writes ]
+    from: [ orders ]
     type: map
     fields:
       customer_name: $customer
@@ -191,7 +190,10 @@ serve:
     - source: warehouse
 ```
 
-Two steps, chained: `filter` drops deletes, then `map` reshapes what survives.
+One `map` step reshapes the stream, and it carries every change through — insert, update
+and delete. An insert or update is reshaped by the fields below; a delete has no `after`
+image, so the map leaves it untouched and the sink removes the row from the target by its
+key.
 
 A `map` step lists only the fields it changes — anything unlisted passes through
 untouched, so `id` and `amount` arrive at the target as they left the source. Each
@@ -213,9 +215,8 @@ the row (`after.<field>`) and the change envelope (`src`, plus `op` and `ts`).
 > then fail at runtime with `No matching overload`. Keep expressions to string and
 > envelope fields for now; type conversion is not yet usable.
 
-> `serve.from` must name the **last** step you want served — `shape_orders` here, not
-> `keep_writes`. It takes a transform `id` or a concrete resource, **not** a regex such
-> as `/.*/`.
+> `serve.from` must name the **last** step you want served — `shape_orders` here. It
+> takes a transform `id` or a concrete resource, **not** a regex such as `/.*/`.
 
 Validate offline before going online (no server needed):
 
@@ -274,13 +275,27 @@ docker exec tapstate-mongo mongosh --quiet "mongodb://127.0.0.1:27017/warehouse"
   --eval "print(db.orders.countDocuments())"    # should reach 5
 ```
 
-To see CDC, insert a row into the source and watch the target count grow to 6. The
-sink upserts on the discovered key, so re-reads and the snapshot→CDC overlap do not
-produce duplicates:
+Now exercise CDC: change the source and watch the target follow. The pipeline carries
+insert, update and delete — a delete removes the row from the target by key. Each change
+reaches MongoDB in about a second, so give the read a moment (or re-run it):
 
 ```sh
+# insert -> the target grows to 6 (the sink upserts on the discovered key, so the
+# snapshot->CDC overlap never doubles a row)
 docker exec tapstate-mysql mysql -uroot -psecret appdb \
   -e "INSERT INTO orders (id, customer, amount) VALUES (6,'frank',60.00);"
+docker exec tapstate-mongo mongosh --quiet "mongodb://127.0.0.1:27017/warehouse" \
+  --eval "printjson(db.orders.findOne({id:6}))"   # customer_name: 'frank', label: 'frank <orders>'
+
+# update -> the mapped label follows the change
+docker exec tapstate-mysql mysql -uroot -psecret appdb \
+  -e "UPDATE orders SET customer='franky' WHERE id=6;"
+
+# delete -> the row leaves the target too
+docker exec tapstate-mysql mysql -uroot -psecret appdb \
+  -e "DELETE FROM orders WHERE id=6;"
+docker exec tapstate-mongo mongosh --quiet "mongodb://127.0.0.1:27017/warehouse" \
+  --eval "print(db.orders.countDocuments())"      # back to 5
 ```
 
 ## 7. Tear down

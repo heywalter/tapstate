@@ -44,9 +44,9 @@ fetch() {
 # addresses are compose service names because the connector runs inside the server container, where
 # loopback is the server itself. The heredocs are quoted so $customer stays the literal DSL rename token
 # it is, not a shell variable. This mirrors the online walkthrough's sample on purpose -- one sample, not
-# two that drift -- including its filter, which drops delete envelopes so the map never dereferences a
-# null `after`. The decimal `amount` column is only ever passed through, never named in a CEL: numeric
-# columns have no CEL overload in this preview.
+# two that drift. The pipeline carries every change through, deletes included: a map leaves a delete (which
+# has no after image) untouched, so the sink removes the row by key. The decimal `amount` column is only
+# ever passed through, never named in a CEL: numeric columns have no CEL overload in this preview.
 generate_workspace() {
     mkdir -p work/source work/pipeline
     cat > work/source/db_src.tap.yml <<'YAML'
@@ -72,9 +72,8 @@ id: sync_orders
 source: db_src
 settings: { read_mode: snapshot_and_cdc }
 transforms:
-  - { id: keep_writes, from: [ orders ], type: filter, expr: "op != 'd'" }
   - id: shape_orders
-    from: [ keep_writes ]
+    from: [ orders ]
     type: map
     fields:
       customer_name: $customer
@@ -87,20 +86,35 @@ YAML
 }
 
 # Closing instructions: how to watch the pipeline, exercise CDC, and remove everything. The teardown is
-# printed because "back to a clean machine" is only honest if the images are called out too. A later pass
-# refines the CDC section (delay handling, and keeping its operations consistent with the pipeline's
-# delete filter); the demo pipeline drops deletes, so only an insert is shown here.
+# printed because "back to a clean machine" is only honest if the images are called out too. The CDC
+# section walks insert, update and delete -- the pipeline carries all three -- and each read retries for a
+# second or two so a change still in flight is never misread as a change that did not happen.
 print_next_steps() {
     demo_dir="$(basename "$PWD")"
+    uri="mongodb://mongo:27017/warehouse?directConnection=true"
     cat <<EOF
 quickstart: pipeline started. The stack is running.
 
 Watch it (from this directory):
   ./tapstate -w work        then: connect http://127.0.0.1:8080 ; login admin ; status sync_orders --watch
 
-See change-data-capture (run in this directory):
+See change-data-capture: change the source in MySQL, watch the target in MongoDB follow (run in this
+directory). A change reaches the target in about a second, so each read waits for it rather than guessing.
+
+  # insert a row, then wait for it to appear in the target
   docker compose exec mysql mysql -uroot -psecret appdb -e "INSERT INTO orders VALUES (6,'frank',60.00);"
-  docker compose exec mongo mongosh --quiet "mongodb://mongo:27017/warehouse?directConnection=true" --eval "db.orders.countDocuments()"
+  until docker compose exec -T mongo mongosh --quiet "$uri" --eval 'quit(db.orders.countDocuments({id:6})?0:1)'; do sleep 1; done
+  docker compose exec mongo mongosh --quiet "$uri" --eval 'db.orders.find({id:6}).pretty()'
+
+  # update it, and watch the mapped label follow the change
+  docker compose exec mysql mysql -uroot -psecret appdb -e "UPDATE orders SET customer='franky' WHERE id=6;"
+  until docker compose exec -T mongo mongosh --quiet "$uri" --eval 'quit((db.orders.findOne({id:6})||{}).customer_name=="franky"?0:1)'; do sleep 1; done
+  docker compose exec mongo mongosh --quiet "$uri" --eval 'db.orders.find({id:6}).pretty()'
+
+  # delete it, and watch it leave the target too
+  docker compose exec mysql mysql -uroot -psecret appdb -e "DELETE FROM orders WHERE id=6;"
+  until docker compose exec -T mongo mongosh --quiet "$uri" --eval 'quit(db.orders.countDocuments({id:6})?1:0)'; do sleep 1; done
+  echo "row 6 is gone from MongoDB, too"
 
 Tear down (run in this directory):
   docker compose down -v     stop the stack and delete its data (a re-run re-registers the connectors)
@@ -199,6 +213,21 @@ main() {
     admin_pw="$(sed -n 's/^TAPSTATE_ADMIN_PASSWORD=//p' .env)"
     printf 'connect http://127.0.0.1:8080\nlogin admin\n%s\nregister ../mysql-connector.jar\nregister ../mongodb-connector.jar\napply\ndiscover-schema db_src\nstart sync_orders\nexit\n' "$admin_pw" \
         | ./tapstate -w work
+
+    # Snapshot verification, printed automatically: the demo's payoff is a real row count in the target,
+    # not an "it should have worked". A fresh snapshot of the seeded rows is quick, but the read still
+    # retries so a slow first run is not misreported as an empty target.
+    echo 'quickstart: waiting for the snapshot to reach the target'
+    rows=0; i=0
+    while [ "$i" -lt 30 ]; do
+        rows="$(docker compose exec -T mongo mongosh --quiet \
+            'mongodb://mongo:27017/warehouse?directConnection=true' \
+            --eval 'db.orders.countDocuments()' 2>/dev/null | tr -d '[:space:]')"
+        case "$rows" in ''|*[!0-9]*) rows=0 ;; esac
+        [ "$rows" -ge 5 ] && break
+        i=$((i + 1)); sleep 2
+    done
+    printf 'quickstart: the target now holds %s rows (MySQL orders -> MongoDB warehouse.orders)\n' "$rows"
 
     print_next_steps
 }
