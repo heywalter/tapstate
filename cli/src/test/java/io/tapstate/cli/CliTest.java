@@ -51,6 +51,10 @@ class CliTest {
         }
     }
 
+    static Stream<String> offlineVerbs() {
+        return Cli.OFFLINE_VERBS.stream();
+    }
+
     static Stream<String> connectedVerbs() {
         return Cli.CONNECTED_VERBS.stream();
     }
@@ -82,6 +86,18 @@ class CliTest {
         registeredOffline.removeAll(Cli.CONNECTED_VERBS);
         registeredOffline.removeAll(Cli.UNIMPLEMENTED_COMPOSITE_VERBS);
         assertThat(registeredOffline).containsExactlyInAnyOrderElementsOf(Cli.OFFLINE_VERBS);
+    }
+
+    @ParameterizedTest
+    @MethodSource("offlineVerbs")
+    void everyOfflineVerbSupportsHelp(String verb) {
+        // every offline verb must accept --help like the root command does, printing its own usage
+        // rather than being rejected as an unknown option (or, worse, masked behind a required-param
+        // error for verbs with a mandatory positional, as desc's ID was before mixinStandardHelpOptions)
+        Run r = run(verb, "--help");
+        assertThat(r.code()).isZero();
+        assertThat(r.out()).contains("Usage: tapstate " + verb);
+        assertThat(r.err()).isEmpty();
     }
 
     @Test

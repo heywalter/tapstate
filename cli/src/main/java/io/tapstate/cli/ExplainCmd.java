@@ -25,7 +25,7 @@ import java.util.concurrent.Callable;
  * stable node envelope for scripts and AI. A path that does not exist in the grammar is a CLI usage
  * affordance — a plain stderr message and exit 2, not a coded domain diagnostic, in every format.
  */
-@Command(name = "explain",
+@Command(name = "explain", mixinStandardHelpOptions = true,
         description = "Explain a grammar field path (backed by the bundled tapstate/v1 schema).")
 final class ExplainCmd implements Callable<Integer> {
 

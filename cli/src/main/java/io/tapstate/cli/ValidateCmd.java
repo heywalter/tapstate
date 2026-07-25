@@ -35,7 +35,7 @@ import java.util.concurrent.Callable;
  * usage error reported on stderr regardless of format — not a silent success and not a coded domain
  * diagnostic.
  */
-@Command(name = "validate",
+@Command(name = "validate", mixinStandardHelpOptions = true,
         description = "Validate a workspace path (directory of *.tap.yml, or a single artifact).")
 final class ValidateCmd implements Callable<Integer> {
 
