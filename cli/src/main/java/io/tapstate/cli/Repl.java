@@ -443,6 +443,7 @@ final class Repl {
         switch (outcome) {
             case ConnectionTestOutcome.Tested tested -> renderReport(tested.report(), chosen);
             case ConnectionTestOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
+            case ConnectionTestOutcome.TimedOut ignored -> reportRequestTimedOut();
             case ConnectionTestOutcome.Unreachable ignored -> reportRequestFailed();
         }
     }
@@ -522,6 +523,7 @@ final class Repl {
                     renderSchema(discovered.schema(), parsed.format());
             case ConnectionDiscoverSchemaOutcome.Rejected rejected ->
                     renderRejection(rejected.code(), rejected.message());
+            case ConnectionDiscoverSchemaOutcome.TimedOut ignored -> reportRequestTimedOut();
             case ConnectionDiscoverSchemaOutcome.Unreachable ignored -> reportRequestFailed();
         }
     }
@@ -646,6 +648,7 @@ final class Repl {
         switch (outcome) {
             case ConnectorRegisterOutcome.Registered registered -> renderRegistered(registered.connector(), parsed.format());
             case ConnectorRegisterOutcome.Rejected rejected -> renderRegisterRejection(rejected.code(), rejected.message(), parsed.format());
+            case ConnectorRegisterOutcome.TimedOut ignored -> reportRequestTimedOut();
             case ConnectorRegisterOutcome.Unreachable ignored -> reportRequestFailed();
         }
     }
@@ -810,11 +813,12 @@ final class Repl {
     }
 
     /** The counts closing a batch report: newly registered, no-ops, coded refusals, unreachable, unreadable. */
-    private record BatchCounts(int registered, int alreadyRegistered, int rejected, int unreachable, int unreadable) {
+    private record BatchCounts(int registered, int alreadyRegistered, int rejected, int timedOut, int unreachable, int unreadable) {
         static BatchCounts of(List<BatchEntry> outcomes) {
             int registered = 0;
             int alreadyRegistered = 0;
             int rejected = 0;
+            int timedOut = 0;
             int unreachable = 0;
             int unreadable = 0;
             for (BatchEntry entry : outcomes) {
@@ -830,12 +834,13 @@ final class Repl {
                                 }
                             }
                             case ConnectorRegisterOutcome.Rejected ignored -> rejected++;
+                            case ConnectorRegisterOutcome.TimedOut ignored -> timedOut++;
                             case ConnectorRegisterOutcome.Unreachable ignored -> unreachable++;
                         }
                     }
                 }
             }
-            return new BatchCounts(registered, alreadyRegistered, rejected, unreachable, unreadable);
+            return new BatchCounts(registered, alreadyRegistered, rejected, timedOut, unreachable, unreadable);
         }
     }
 
@@ -880,6 +885,7 @@ final class Repl {
             case ConnectorRegisterOutcome.Registered registered -> (registered.connector().newlyRegistered() ? "registered" : "already registered")
                     + "  " + registered.connector().connectorId() + "  " + registered.connector().contentHash();
             case ConnectorRegisterOutcome.Rejected rejected -> "error: " + rejected.code() + "  " + rejected.message();
+            case ConnectorRegisterOutcome.TimedOut ignored -> "timed out";
             case ConnectorRegisterOutcome.Unreachable ignored -> "unreachable";
         };
     }
@@ -899,6 +905,9 @@ final class Repl {
                 .append(counts.rejected()).append(" rejected");
         if (counts.unreadable() > 0) {
             summary.append(", ").append(counts.unreadable()).append(" unreadable");
+        }
+        if (counts.timedOut() > 0) {
+            summary.append(", ").append(counts.timedOut()).append(" timed out");
         }
         if (counts.unreachable() > 0) {
             summary.append(", ").append(counts.unreachable()).append(" unreachable");
@@ -924,6 +933,9 @@ final class Repl {
         summary.put("rejected", counts.rejected());
         if (counts.unreadable() > 0) {
             summary.put("unreadable", counts.unreadable());
+        }
+        if (counts.timedOut() > 0) {
+            summary.put("timedOut", counts.timedOut());
         }
         if (counts.unreachable() > 0) {
             summary.put("unreachable", counts.unreachable());
@@ -954,6 +966,7 @@ final class Repl {
                         row.put("newlyRegistered", connector.newlyRegistered());
                     }
                     case ConnectorRegisterOutcome.Rejected rejected -> row.put("error", errorObject(rejected.code(), rejected.message()));
+                    case ConnectorRegisterOutcome.TimedOut ignored -> row.put("error", errorObject("cli.request-timed-out", "the request timed out before the server answered"));
                     case ConnectorRegisterOutcome.Unreachable ignored -> row.put("error", errorObject(null, "the server is unreachable"));
                 }
             }
@@ -1636,6 +1649,19 @@ final class Repl {
         PrintWriter err = commandLine.getErr();
         err.println("request failed: " + hostPort(session.landingNode()) + " is unreachable");
         err.flush();
+    }
+
+    /**
+     * Reports that a request reached the landing node but the server did not answer within the verb's
+     * timeout window — a distinct, coded outcome from {@link #reportRequestFailed()}, since the server is
+     * busy rather than gone and a heavy verb (a large register) may even have completed there already.
+     */
+    private void reportRequestTimedOut() {
+        if (!session.isConnected()) {
+            return;   // failover already reported the connection loss and went offline
+        }
+        Diagnostics.printText(commandLine.getErr(), CliError.REQUEST_TIMED_OUT,
+                Map.of("server", hostPort(session.landingNode())));
     }
 
     /**

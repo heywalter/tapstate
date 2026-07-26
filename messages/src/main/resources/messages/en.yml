@@ -35,6 +35,9 @@ cli.resource-not-found:
 cli.connect-failed:
   message: "Could not reach any Tapstate server among the seeds: {seeds}."
   solution: "Check the addresses are correct and that a Tapstate server is running there, then try connect again."
+cli.request-timed-out:
+  message: "The request to {server} timed out before the server answered."
+  solution: "The server may be busy or the upload large. It may have completed there anyway — re-running a register is safe (it is idempotent). Wait and retry, or check the server logs."
 cli.not-connected:
   message: "The `{verb}` command needs a connection to a Tapstate server."
   solution: "Run `connect <host:port>` to reach a server first, then try again."

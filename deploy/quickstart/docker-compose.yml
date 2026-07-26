@@ -1,0 +1,151 @@
+# Tapstate quickstart stack: the server and its state store, ready to run without a build.
+#
+# This is a single-node local demo, not a deployment topology. The server keeps pipeline position in
+# memory, so a restart replays rather than resumes.
+#
+# The store service is deliberately defined exactly as the development-only store stack defines it,
+# down to the advertised member address. The two differ only in how the *client* addresses the set
+# (see the server's store URI below), so neither stack has to know about the other.
+services:
+  mongo:
+    image: mongo:7.0
+    # A single-member replica set rather than a standalone: one write path opens a session and
+    # commits a batch as one transaction, and MongoDB offers transactions only on a replica set.
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    healthcheck:
+      # Initiate the set on first boot, then hold the check red until a primary has actually been
+      # elected. Two traps are being avoided here. Testing rs.status().ok would pass on a degraded
+      # set, because a shell that evaluates a falsy value still exits 0 -- the check has to assert
+      # the value, not merely evaluate it. And rs.initiate() returns before the election completes,
+      # so a check that stops at "initiated" lets a dependent start against a set that cannot yet
+      # accept writes.
+      test: >
+        mongosh --quiet --eval
+        "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }) };
+         if (!db.hello().isWritablePrimary) { quit(1) }"
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 20s
+    volumes:
+      # A named volume, so registered connectors and applied artifacts outlive `down`. Only `down -v`
+      # discards them, which then costs a full re-registration of every connector jar.
+      - tapstate-quickstart-mongo:/data/db
+
+  mysql:
+    # The demo's source database, seeded and ready so the stack has something real to read. It is a
+    # standing service, not a dependency of the server: the server's own store is Mongo, and this is
+    # reached only later, by the connector a pipeline runs. A user pointing at their own database
+    # instead simply ignores it.
+    image: mysql:8.0
+    # Row-based binary logging and a server id are what change-data-capture tails; the mysql:8 image
+    # defaults would already serve CDC, but these are set explicitly so the demo advertises the same
+    # replication posture the walkthrough documents. root already holds every replication grant, so
+    # the demo needs no extra GRANT for the connector to read the binlog.
+    command:
+      - "--server-id=1"
+      - "--log-bin=mysql-bin"
+      - "--binlog-format=ROW"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: appdb
+    healthcheck:
+      # Hold red until the server actually answers, mirroring the store check: mysqladmin ping fails
+      # non-zero until the socket serves, and the credential proves the server finished its first-boot
+      # initialization rather than merely opening the port.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-psecret", "--silent"]
+      interval: 3s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
+    volumes:
+      # The seed runs on an empty data directory only, so a named volume means it seeds once and then
+      # the demo's rows persist across a restart, the same as the store.
+      - tapstate-quickstart-mysql:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+
+  server:
+    # Built locally until the published image exists; the released stack pins a registry reference
+    # here instead, so that a user runs this stack without a build.
+    image: tapstate:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      # The set member advertises itself under the address the host reaches it by, which is not
+      # resolvable from inside this network. Addressing the member directly bypasses topology
+      # discovery entirely, so the advertised address is never consulted and the member is reached
+      # under its service name. This is sound only because the set has exactly one member: a direct
+      # connection gives up election and failover awareness, which is why it belongs here in the
+      # single-node stack's configuration and not in the server's own defaults.
+      TAPSTATE_STORE_MONGO_URI: mongodb://mongo:27017/tapstate?directConnection=true
+      # Pin the connector seed directory to an absolute path. The setting defaults to a path relative to
+      # the image's working directory, so it would shift silently if that directory ever moved; naming it
+      # in full keeps it fixed to the mount target below, whatever the image's working directory is. This
+      # is only a scan location for optional pre-seeding (see the volume) -- a registered connector's
+      # bytes live in the store, in Mongo, not here.
+      TAPSTATE_CONNECTORS_SEED_DIR: /var/lib/tapstate/connectors
+    volumes:
+      # Optional bulk pre-seeding, and nothing more. Any *.jar left in ./connectors before the stack
+      # starts is registered once at boot, through the very same register-if-absent path that `tapstate
+      # register` uploads to -- staging a jar here is a convenience, never a precondition for registering
+      # one. Registration needs no mount at all: the CLI uploads the jar's bytes over HTTP and the server
+      # never reads this directory for it. Leaving ./connectors empty is the normal case. Read-only,
+      # because the sweep only ever reads it.
+      - ./connectors:/var/lib/tapstate/connectors:ro
+    ports:
+      # Bound to the loopback interface: an unauthenticated first run must not be reachable from
+      # other machines on the network.
+      - "127.0.0.1:8080:8080"
+    # The orderly stop closes the cluster member and the store client before halting. Docker's
+    # default 10s grace can cut that short and turn a clean exit into a kill, so the window is set
+    # wider than the stop has been observed to need.
+    stop_grace_period: 30s
+
+  # Creates the first administrator, then exits. The endpoint that creates it accepts only loopback
+  # callers -- a safeguard against an unauthenticated first run being seized over the network -- and
+  # this container reaches it by sharing the server's network namespace, so its own loopback is the
+  # server's. Sharing the namespace is also why it declares no ports of its own: they would belong to
+  # the server. A throwaway image with nothing but curl keeps this out of the server image, so the
+  # server never has to carry a shell to be bootstrapped.
+  bootstrap:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      server:
+        condition: service_healthy
+    network_mode: "service:server"
+    # One shot: it runs once and is not brought back. Re-running the stack runs it again, and it is
+    # written to succeed the second time (see below), so that is safe.
+    restart: "no"
+    environment:
+      # The demo's first-admin credentials. They fall back to a known default so the stack runs with
+      # no prompting, and read from the environment (an adjacent .env file, or the quickstart script's
+      # generated password) when set. A real deployment must override the default.
+      TAPSTATE_ADMIN_USER: ${TAPSTATE_ADMIN_USER:-admin}
+      TAPSTATE_ADMIN_PASSWORD: ${TAPSTATE_ADMIN_PASSWORD:-admin}
+    entrypoint: ["/bin/sh", "-c"]
+    # The doubled $$ keeps the values out of Compose interpolation so the container's own shell reads
+    # them from its environment. A fresh store answers 204 and a bootstrapped one answers 409; both
+    # mean "an admin now exists", so both exit 0 and re-running the stack never fails here. Any other
+    # status -- including the 403 a non-loopback caller would draw -- is a real failure.
+    command:
+      - |
+        set -eu
+        code=$$(curl -s -o /dev/null -w '%{http_code}' \
+          -X POST http://127.0.0.1:8080/auth/bootstrap \
+          -H 'Content-Type: application/json' \
+          -d "{\"username\":\"$${TAPSTATE_ADMIN_USER}\",\"password\":\"$${TAPSTATE_ADMIN_PASSWORD}\"}")
+        case "$$code" in
+          204) echo "bootstrap: first admin created" ;;
+          409) echo "bootstrap: an admin already exists, nothing to do" ;;
+          *)   echo "bootstrap: failed with HTTP $$code" >&2; exit 1 ;;
+        esac
+
+volumes:
+  tapstate-quickstart-mongo:
+  tapstate-quickstart-mysql:

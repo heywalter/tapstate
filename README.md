@@ -66,6 +66,27 @@ Tapstate serves continuously fresh operational state through standard query inte
 
 ## Example
 
+Run the live runtime locally as a Docker Compose stack — databases, server, and
+first-admin bootstrap brought up together — driving a real MySQL → MongoDB sync
+(snapshot, then live CDC). A one-command `quickstart.sh` wraps the whole flow:
+
+```sh
+mkdir tapstate-demo && cd tapstate-demo
+curl -fLO https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh
+sh quickstart.sh
+```
+
+See [docs/quickstart-online.md](docs/quickstart-online.md) for the full walkthrough
+and the manual `docker compose` steps behind it.
+
+> **Preview.** The runtime is an early slice: single-node, in-memory, and a restart
+> replays from the source rather than resuming a persisted offset — not for
+> production. `quickstart.sh` downloads a released CLI and server image; until the
+> first preview release is cut, follow the walkthrough's build-from-source path. See
+> [Limitations](docs/quickstart-online.md#limitations).
+
+A one-line installer will collapse the CLI download to a single command:
+
 ```bash
 # Installer coming soon.
 curl -sSL https://install.tapstate.dev | sh

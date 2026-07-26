@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -231,6 +232,22 @@ class HttpControlPlaneClientTest {
         return server;
     }
 
+    /** A server that sleeps past the client's read timeout before answering {@code context}, so a request times out. */
+    private static HttpServer slowServer(String context, long sleepMillis) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext(context, exchange -> {
+            try {
+                Thread.sleep(sleepMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        return server;
+    }
+
     @Test
     void applyPostsTheDraftsWithABearerCredentialAndReturnsTheOutcomes() throws Exception {
         AtomicReference<CapturedRequest> seen = new AtomicReference<>();
@@ -305,6 +322,55 @@ class HttpControlPlaneClientTest {
         ConnectorRegisterOutcome outcome = new HttpControlPlaneClient()
                 .register(URI.create("http://127.0.0.1:" + closedPort), "tok", new byte[] {1});
         assertThat(outcome).isInstanceOf(ConnectorRegisterOutcome.Unreachable.class);
+    }
+
+    @Test
+    void registerWaitsLongerThanTheProbeBudgetAndItsWindowGrowsWithArtifactSize() {
+        HttpControlPlaneClient client = new HttpControlPlaneClient();
+        // The flat 3s probe budget starved a multi-MB upload; register now waits materially longer,
+        assertThat(client.registerTimeout(0)).isGreaterThan(Duration.ofSeconds(3));
+        // and its window scales with the number of bytes it must push to the server.
+        assertThat(client.registerTimeout(50_000_000)).isGreaterThan(client.registerTimeout(1_000));
+    }
+
+    @Test
+    void registerReturnsTimedOutNotUnreachableWhenTheServerAnswersTooSlowly() throws Exception {
+        HttpServer server = slowServer("/api/connectors:register", 2500);
+        try {
+            // A tiny injected budget so a slow (but reachable) server trips the read timeout in well under a second.
+            ConnectorRegisterOutcome outcome =
+                    new HttpControlPlaneClient(Duration.ofMillis(400), Duration.ofMillis(400))
+                            .register(baseOf(server), "tok", new byte[] {1, 2, 3, 4});
+            assertThat(outcome).isInstanceOf(ConnectorRegisterOutcome.TimedOut.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void discoverSchemaReturnsTimedOutWhenTheServerAnswersTooSlowly() throws Exception {
+        HttpServer server = slowServer("/api/connections:discover-schema", 2500);
+        try {
+            ConnectionDiscoverSchemaOutcome outcome =
+                    new HttpControlPlaneClient(Duration.ofMillis(400), Duration.ofMillis(400))
+                            .discoverSchema(baseOf(server), "tok", "conn1", "mysql", Map.of());
+            assertThat(outcome).isInstanceOf(ConnectionDiscoverSchemaOutcome.TimedOut.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void testReturnsTimedOutWhenTheServerAnswersTooSlowly() throws Exception {
+        HttpServer server = slowServer("/api/connections:test", 2500);
+        try {
+            ConnectionTestOutcome outcome =
+                    new HttpControlPlaneClient(Duration.ofMillis(400), Duration.ofMillis(400))
+                            .test(baseOf(server), "tok", "conn1", "mysql", Map.of());
+            assertThat(outcome).isInstanceOf(ConnectionTestOutcome.TimedOut.class);
+        } finally {
+            server.stop(0);
+        }
     }
 
     @Test

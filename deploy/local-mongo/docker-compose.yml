@@ -16,13 +16,19 @@ services:
     ports:
       - "27017:27017"
     healthcheck:
+      # Initiate the set on first boot, then hold the check red until a primary has actually been
+      # elected. Asserting rs.status().ok alone would pass on a degraded set, because a shell that
+      # evaluates a falsy value still exits 0; and rs.initiate() returns before the election completes,
+      # so a check that stops at "initiated" reports healthy while the set still cannot accept writes.
+      # Assert a writable primary, so a dependent that waits on this never connects to a set without one.
       test: >
         mongosh --quiet --eval
-        "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }"
+        "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }) };
+         if (!db.hello().isWritablePrimary) { quit(1) }"
       interval: 5s
       timeout: 10s
       retries: 30
-      start_period: 3s
+      start_period: 20s
     volumes:
       - tapstate-mongo-data:/data/db
 

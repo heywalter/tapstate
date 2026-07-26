@@ -32,13 +32,18 @@ services:
     ports:
       - "27017:27017"
     healthcheck:
+      # Hold the check red until a primary is elected, not merely until the set is initiated: rs.initiate()
+      # returns before the election completes, and asserting rs.status().ok alone exits 0 even on a degraded
+      # set. Assert a writable primary so a dependent never connects before the set can accept writes. The
+      # probe speaks TLS, since this set requires it.
       test: >
         mongosh --quiet --tls --tlsCAFile /etc/mongo/tls/ca.pem --host localhost --eval
-        "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }"
+        "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }) };
+         if (!db.hello().isWritablePrimary) { quit(1) }"
       interval: 5s
       timeout: 10s
       retries: 30
-      start_period: 3s
+      start_period: 20s
     volumes:
       - tapstate-mongo-tls-data:/data/db
       - ./tls:/etc/mongo/tls:ro

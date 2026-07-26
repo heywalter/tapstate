@@ -38,3 +38,46 @@ jobs:
           cache: maven
       - name: Build and test
         run: mvn -B verify
+
+  installer:
+    # The install and quickstart scripts are shell, not Java: shellcheck them (ubuntu-latest ships
+    # shellcheck) and run their smokes. Both drive platform detection, the unsupported-platform refusals,
+    # checksum verification, credential handling and idempotency against local file:// / loopback stubs —
+    # no network, and no Docker (the quickstart smoke stops before the live run phase).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck the shell scripts
+        run: |
+          shellcheck -s sh install/install.sh
+          shellcheck install/install-smoke.sh
+          shellcheck -s sh deploy/quickstart/quickstart.sh
+          shellcheck deploy/quickstart/quickstart-smoke.sh
+          shellcheck deploy/docker/image-smoke.sh
+      - name: installer smoke
+        run: bash install/install-smoke.sh
+      - name: quickstart smoke
+        run: bash deploy/quickstart/quickstart-smoke.sh
+
+  image-smoke:
+    # Build the server image for the runner's native architecture and smoke it as a black box: it boots
+    # against a throwaway replica set until the image's built-in healthcheck reaches healthy (running as
+    # the unprivileged uid), `docker stop` yields an orderly exit 0 (not 137/143), and an unsupported
+    # --role is rejected with a coded non-zero exit. The two legs are native runners for the two
+    # published architectures, so neither image is emulated. The GitHub runners ship a Docker daemon.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    arch: amd64 }
+          - { runner: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: image smoke (builds the boot jar + image, then runs the black-box checks)
+        run: bash deploy/docker/image-smoke.sh --build

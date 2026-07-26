@@ -1,0 +1,174 @@
+# CLI native release assets — the "zero build" enabler for the quickstart: a user downloads a prebuilt
+# tapstate binary for their platform instead of installing GraalVM and building it from source.
+#
+# Manual only (workflow_dispatch): nothing outward-facing fires on a push. On each of the four target
+# platforms it builds the native binary with Liberica NIK, runs the full native smoke suite against it (offline
+# verbs + one online connect/login/register round-trip), then packages
+# tapstate-<version>-<os>-<arch>.tar.gz (bare binary + LICENSE + NOTICE). A final job adds a per-asset
+# .sha256 and an aggregate checksums.txt and assembles a DRAFT, prerelease GitHub release. A human
+# reviews the draft and publishes it — nothing is published automatically, and no :latest / floating
+# pointer is ever produced (make_latest: false), which is the lever that keeps a preview build from
+# looking production-ready.
+#
+# The public v<version> tag currently points at the initial commit with no release attached. Moving it
+# to the release commit is a deliberate, outward-facing, irreversible human step: do it before
+# publishing the draft, never as a side effect of this workflow. A draft release does not create or move
+# the tag; publishing it does, at target_commitish. Keep that commit aligned with the one these assets
+# were built from.
+#
+# workflow_dispatch is only offered for workflows on the default branch, so this becomes runnable once
+# the branch it lives on merges to main.
+#
+# The multi-arch server image shares this same tag lane: one dispatch builds linux/amd64 + linux/arm64
+# and pushes ghcr.io/<owner>/tapstate:<version> and :preview, never :latest (the lever that keeps a
+# preview build from looking production-ready). Mind one asymmetry with the CLI assets: an image has no
+# draft state, so it publishes the instant the workflow is dispatched, whereas the CLI release is staged
+# as a draft for a human to publish afterwards. Dispatching this workflow is therefore itself the
+# decision to publish the images.
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        # Portable read of the single ${revision} version source (works with BSD and GNU sed); no Maven.
+        run: echo "version=$(sed -n 's/.*<revision>\(.*\)<\/revision>.*/\1/p' pom.xml | head -1)" >> "$GITHUB_OUTPUT"
+
+  server-image:
+    # The server-image half of the tag lane. The Spring Boot jar is platform-independent, so both
+    # architectures share the one jar and differ only in the JRE base image and its apt layer -- which
+    # is what makes building arm64 under QEMU emulation cheap here. The jar is built first and copied in
+    # by the Dockerfile (the image is a runtime image, it does not build the jar itself), so the tiny
+    # build context the .dockerignore admits stays tiny. Pushes on dispatch; there is no draft for an
+    # image.
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push the image to GHCR under the repository's own namespace
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: build the boot jar the image ships
+        run: mvn -B -pl app -am -DskipTests package
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # :<version> pins this exact build; :preview is the moving pointer the quickstart stack
+          # tracks. No :latest, deliberately -- the runtime is single-node and in-memory and must not
+          # be mistaken for a production default.
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.version }}
+            ghcr.io/${{ github.repository }}:preview
+
+  cli-native:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      # Platform differences come from the runner + toolchain, never a Maven profile (ADR-0022 D6-3);
+      # os/arch are fixed labels here so the published asset names are a stable contract, not uname output.
+      matrix:
+        include:
+          - { runner: macos-14,         os: darwin, arch: arm64 }
+          - { runner: macos-13,         os: darwin, arch: x64 }
+          - { runner: ubuntu-latest,    os: linux,  arch: x64 }
+          - { runner: ubuntu-24.04-arm, os: linux,  arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'liberica'   # Liberica NIK 21 (GPLv2+CPE) — the release toolchain; Oracle GraalVM (GFTC) is local dev only
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: register the Liberica NIK JDK as the Maven toolchain (version 21, any vendor)
+        shell: bash
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/toolchains.xml <<EOF
+          <toolchains>
+            <toolchain>
+              <type>jdk</type>
+              <provides><version>21</version></provides>
+              <configuration><jdkHome>${JAVA_HOME}</jdkHome></configuration>
+            </toolchain>
+          </toolchains>
+          EOF
+      - name: build the native image
+        run: mvn -B -Pnative -pl cli -am -DskipTests package
+      - name: native smoke (black-box against the produced binary, offline + online)
+        run: bash cli/native-smoke.sh cli/target/tapstate
+      - name: package the release asset
+        shell: bash
+        run: |
+          version='${{ needs.prepare.outputs.version }}'
+          asset="tapstate-${version}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
+          stage="$(mktemp -d)"
+          cp cli/target/tapstate "$stage/tapstate"
+          cp LICENSE NOTICE "$stage/"
+          tar -czf "$asset" -C "$stage" tapstate LICENSE NOTICE
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, cli-native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the draft release (and, only on a human publish, its tag)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: staging
+          merge-multiple: true
+      - name: checksums (per-asset .sha256 + aggregate checksums.txt)
+        working-directory: staging
+        run: |
+          for f in tapstate-*.tar.gz; do sha256sum "$f" > "$f.sha256"; done
+          sha256sum tapstate-*.tar.gz > checksums.txt
+          ls -la
+      - name: assemble the DRAFT prerelease (a human reviews and publishes it)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          draft: true
+          prerelease: true
+          make_latest: false
+          name: tapstate v${{ needs.prepare.outputs.version }} (preview)
+          body: |
+            Preview build — single-node, in-memory runtime, not for production.
+
+            Native CLI binaries for macOS (arm64 / x64) and Linux (x64 / arm64). Verify a download against
+            its `.sha256` or `checksums.txt` before use. No `:latest` / floating pointer is published.
+          files: |
+            staging/tapstate-*.tar.gz
+            staging/tapstate-*.tar.gz.sha256
+            staging/checksums.txt

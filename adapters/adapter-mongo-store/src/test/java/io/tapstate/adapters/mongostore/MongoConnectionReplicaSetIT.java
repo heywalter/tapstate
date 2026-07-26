@@ -57,6 +57,52 @@ class MongoConnectionReplicaSetIT {
     }
 
     @Test
+    void verifySucceedsWhenAddressingTheMemberDirectly() {
+        // A containerized server cannot use topology discovery: the set member advertises the address
+        // its host reaches it by, which resolves to nothing inside another container. Addressing the
+        // member directly skips discovery, and this asserts the replica-set gate still passes when it
+        // does. The gate reads setName out of the hello response -- a field the server reports about
+        // itself -- so it is indifferent to the driver running a single-server topology. Were the gate
+        // ever rewritten to inspect the driver's topology type instead, it would start rejecting every
+        // direct connection and this test would catch it.
+        MongoConnectionSettings settings = new MongoConnectionSettings(
+                REPLICA_SET.getReplicaSetUrl() + "?directConnection=true", null, Duration.ofSeconds(5));
+        try (MongoConnection connection = new MongoConnection(settings)) {
+            connection.verify();
+        }
+    }
+
+    @Test
+    void aDirectConnectionStillCommitsAndRollsBackATransaction() {
+        // Direct addressing must not cost the one capability the replica set is required for. Sessions
+        // depend on the server reporting a logical session timeout, which a set member does whether or
+        // not the driver discovered the set, so both the commit and the abort path are witnessed here
+        // rather than assumed.
+        String uri = REPLICA_SET.getReplicaSetUrl() + "?directConnection=true";
+        try (MongoClient client = MongoClients.create(uri)) {
+            MongoCollection<Document> collection = client.getDatabase("tapstate").getCollection("txn_direct");
+
+            try (var session = client.startSession()) {
+                session.startTransaction();
+                collection.insertOne(session, new Document("_id", "committed").append("v", 1));
+                session.commitTransaction();
+            }
+            assertThat(collection.find(new Document("_id", "committed")).first())
+                    .as("a committed transaction is visible after a direct connection commit")
+                    .isNotNull();
+
+            try (var session = client.startSession()) {
+                session.startTransaction();
+                collection.insertOne(session, new Document("_id", "aborted").append("v", 1));
+                session.abortTransaction();
+            }
+            assertThat(collection.find(new Document("_id", "aborted")).first())
+                    .as("an aborted transaction leaves nothing behind")
+                    .isNull();
+        }
+    }
+
+    @Test
     void verifyReportsAStandaloneAsNotAReplicaSet() {
         try (GenericContainer<?> standalone = new GenericContainer<>(MONGO_IMAGE).withExposedPorts(27017)) {
             standalone.start();
