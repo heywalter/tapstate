@@ -1099,6 +1099,22 @@ class ReplTest {
     }
 
     @Test
+    void testRenderingATimeoutIsCodedAndDistinctFromUnreachable() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = storedConnection();
+        client.testOutcome = new ConnectionTestOutcome.TimedOut();
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        h.repl().dispatch("test my-mongo");
+
+        // A busy server is not a gone server: the timeout carries its own code and names the landing node.
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("cli.request-timed-out").contains("node1:7900");
+        assertThat(out).doesNotContain("unreachable");
+    }
+
+    @Test
     void testOfflineReportsThatAConnectionIsRequired() {
         Harness h = harness(Path.of("tap-work"));
 
@@ -1304,6 +1320,22 @@ class ReplTest {
         h.repl().dispatch("discover-schema my-mongo");
 
         assertThat(h.sink().toString()).contains("control.forbidden").contains("You lack the grade.");
+    }
+
+    @Test
+    void discoverSchemaRenderingATimeoutIsCodedAndDistinctFromUnreachable() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = storedConnection();
+        client.discoverSchemaOutcome = new ConnectionDiscoverSchemaOutcome.TimedOut();
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        h.repl().dispatch("discover-schema my-mongo");
+
+        // Discovery drives a live round-trip to the remote database; a slow answer must not read as "gone".
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("cli.request-timed-out").contains("node1:7900");
+        assertThat(out).doesNotContain("unreachable");
     }
 
     @Test
@@ -1518,6 +1550,55 @@ class ReplTest {
                 .contains("\"connectorId\"").contains("orders")
                 .contains("\"error\"").contains("connector.spec-invalid")
                 .contains("\"total\"");
+    }
+
+    @Test
+    void registerBatchCountsATimedOutArtifactSeparatelyAndKeepsUploadingTheRest(@TempDir Path workdir)
+            throws Exception {
+        Path dir = Files.createDirectory(workdir.resolve("connectors"));
+        // Filename order drives the batch, so the timeout sits between two healthy uploads.
+        Files.write(dir.resolve("a-ok.jar"), new byte[] {1});
+        Files.write(dir.resolve("b-slow.jar"), new byte[] {1, 2});
+        Files.write(dir.resolve("c-ok.jar"), new byte[] {1, 2, 3});
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.registerOutcomeByLength.put(1, new ConnectorRegisterOutcome.Registered(
+                new RegisteredConnector("alpha", "h1", "1.0", true)));
+        client.registerOutcomeByLength.put(2, new ConnectorRegisterOutcome.TimedOut());
+        client.registerOutcomeByLength.put(3, new ConnectorRegisterOutcome.Registered(
+                new RegisteredConnector("charlie", "h3", "1.0", true)));
+        Harness h = onlineSession(workdir, client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("register connectors")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        // The timed-out jar gets its own state and its own tally, kept apart from rejected and unreachable.
+        assertThat(out).contains("b-slow.jar").contains("timed out").contains("1 timed out")
+                .doesNotContain("unreachable");
+        // Unlike an unreachable server, a timeout does not end the batch: the jar after it still uploads.
+        assertThat(client.registerCalls).hasSize(3);
+    }
+
+    @Test
+    void registerBatchAsJsonCarriesTheTimeoutCodeOnTheRowAndCountsItInTheSummary(@TempDir Path workdir)
+            throws Exception {
+        Path dir = Files.createDirectory(workdir.resolve("connectors"));
+        Files.write(dir.resolve("a-ok.jar"), new byte[] {1});
+        Files.write(dir.resolve("b-slow.jar"), new byte[] {1, 2});
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.registerOutcomeByLength.put(1, new ConnectorRegisterOutcome.Registered(
+                new RegisteredConnector("alpha", "h1", "1.0", true)));
+        client.registerOutcomeByLength.put(2, new ConnectorRegisterOutcome.TimedOut());
+        Harness h = onlineSession(workdir, client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("register connectors -o json")).isTrue();
+
+        // The machine surface must carry the code, not a prose sentence a caller would have to match on.
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("b-slow.jar")
+                .contains("\"error\"").contains("cli.request-timed-out")
+                .contains("\"timedOut\"");
     }
 
     @Test
