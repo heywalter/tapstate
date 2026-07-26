@@ -13,6 +13,17 @@
 
 FROM eclipse-temurin:21-jre
 
+# Image self-description (OCI). The source label connects this package to its repository, so the
+# registry renders the repository README on the package page; the description states the preview
+# posture up front so the image is not mistaken for a production default.
+LABEL org.opencontainers.image.title="Tapstate server" \
+      org.opencontainers.image.description="Preview runtime: single-node, in-memory; a restart replays from the source rather than resuming a persisted offset. Not for production." \
+      org.opencontainers.image.source="https://github.com/tapstate/tapstate" \
+      org.opencontainers.image.url="https://tapstate.com" \
+      org.opencontainers.image.documentation="https://github.com/tapstate/tapstate/blob/main/docs/quickstart-online.md" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.vendor="Tapstate"
+
 # curl serves the container healthcheck and leaves a way to inspect the running server from inside.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
