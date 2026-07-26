@@ -17,12 +17,19 @@
 # Environment seams:
 #   TAPSTATE_QUICKSTART_BASE_URL  where install.sh, the compose file, and the seed SQL are fetched from.
 #   TAPSTATE_BASE_URL             CLI release base, passed through to install.sh.
-#   TAPSTATE_VERSION              pin the CLI version (default: the latest release).
+#   TAPSTATE_VERSION              pin the CLI version (default: the pinned CLI_VERSION below).
 #   TAPSTATE_CONNECTORS_URL       base URL for the demo connector jars.
 #   TAPSTATE_QUICKSTART_PREPARE_ONLY  stop after preparing the directory, before Docker (used by tests).
 #
 # POSIX sh, no bashisms. All work is inside main().
 set -eu
+
+# The CLI release this quickstart installs. install.sh's own default resolves /releases/latest, and
+# GitHub fills that only from full releases -- the CLI ships as a prerelease, so that lookup finds
+# nothing and install.sh refuses, which would strand the quickstart at the CLI step on a clean machine.
+# Pin it here instead, the same way the demo connector jars are pinned to a published tag. This must
+# match the version in pom.xml; quickstart-smoke.sh fails the build when the two drift apart.
+CLI_VERSION="0.1.0"
 
 die() {
     printf 'quickstart: %s\n' "$1" >&2
@@ -152,7 +159,8 @@ main() {
     # removes it. install.sh's own stdout (a PATH hint that does not apply in place) is dropped; its
     # errors still surface and abort under set -e.
     if [ ! -x ./tapstate ]; then
-        TAPSTATE_INSTALL_DIR="$PWD" sh "$work/install.sh" >/dev/null
+        TAPSTATE_INSTALL_DIR="$PWD" TAPSTATE_VERSION="${TAPSTATE_VERSION:-$CLI_VERSION}" \
+            sh "$work/install.sh" >/dev/null
         # A binary fetched by a browser carries macOS's quarantine attribute, which blocks it from running
         # until cleared; install.sh's atomic move preserves it. Strip it -- only on macOS, only if xattr
         # is present, and tolerating the case where the attribute was never set.

@@ -25,10 +25,21 @@
 # draft state, so it publishes the instant the workflow is dispatched, whereas the CLI release is staged
 # as a draft for a human to publish afterwards. Dispatching this workflow is therefore itself the
 # decision to publish the images.
+#
+# Hence the dry_run input. The image job and the CLI matrix are parallel siblings, so the images go out
+# whether or not the four native builds succeed -- and a first real dispatch would otherwise be the first
+# time that matrix has ever run. A rehearsal builds and smokes everything and publishes nothing: both
+# image architectures are built but not pushed, all four CLI assets are built, smoked, packaged and
+# checksummed but no draft is created. Rehearse first, then dispatch for real.
 name: release
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Rehearsal: build and smoke everything, publish nothing (no image push, no draft release)."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -77,7 +88,9 @@ jobs:
           context: .
           file: deploy/docker/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
+          # A rehearsal still builds both architectures (that is the part worth proving); it just does
+          # not push. This is the only irreversible step in the job, so it is the only one gated.
+          push: ${{ !inputs.dry_run }}
           # :<version> pins this exact build; :preview is the moving pointer the quickstart stack
           # tracks. No :latest, deliberately -- the runtime is single-node and in-memory and must not
           # be mistaken for a production default.
@@ -155,6 +168,7 @@ jobs:
           sha256sum tapstate-*.tar.gz > checksums.txt
           ls -la
       - name: assemble the DRAFT prerelease (a human reviews and publishes it)
+        if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
@@ -172,3 +186,21 @@ jobs:
             staging/tapstate-*.tar.gz
             staging/tapstate-*.tar.gz.sha256
             staging/checksums.txt
+
+      # A rehearsal has proven the whole lane up to this point: four platforms built, smoked and packaged,
+      # checksums generated, both image architectures built. Say plainly that nothing left the runner, so a
+      # green rehearsal is never mistaken for a release.
+      - name: rehearsal summary (nothing was published)
+        if: ${{ inputs.dry_run }}
+        working-directory: staging
+        run: |
+          {
+            echo "### Rehearsal only — nothing was published"
+            echo
+            echo "No image was pushed to GHCR, no draft release was created, no tag was touched."
+            echo
+            echo "Assets that a real run would have staged:"
+            echo '```'
+            ls -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

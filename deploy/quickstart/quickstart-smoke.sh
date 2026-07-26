@@ -12,7 +12,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"          # deploy/quickstart -> repo root
 QUICKSTART_SH="$HERE/quickstart.sh"
-VERSION=0.1.0
+# Read the version off the script under test rather than restating it, so the release stub always serves
+# exactly what the script will ask for and the two can never drift.
+VERSION="$(sed -n 's/^CLI_VERSION="\(.*\)"$/\1/p' "$QUICKSTART_SH")"
+[ -n "$VERSION" ] || { printf 'cannot read CLI_VERSION from %s\n' "$QUICKSTART_SH" >&2; exit 1; }
 
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -69,7 +72,7 @@ echo "\$*" >> "$DEMO/.xattr-calls"
 EOF
   chmod +x "$shim/xattr"
   OUT="$(cd "$DEMO" && PATH="$shim:$PATH" \
-    TAPSTATE_VERSION="$VERSION" \
+    TAPSTATE_VERSION="${PIN_VERSION-$VERSION}" \
     TAPSTATE_BASE_URL="file://$CLI_STUB" \
     TAPSTATE_QUICKSTART_BASE_URL="file://$QS_STUB" \
     TAPSTATE_CONNECTORS_URL="file://$QS_STUB/connectors-preview" \
@@ -114,6 +117,32 @@ if [ -d "$PREP/connectors" ] && [ -z "$(ls -A "$PREP/connectors" 2>/dev/null)" ]
 else
   bad "connectors/ seed dir missing or non-empty: $(ls -A "$PREP/connectors" 2>/dev/null)"
 fi
+
+# --- the pinned CLI version: it must resolve with TAPSTATE_VERSION unset, and match the build ---------
+# Regression guard for a real defect. Every other check here passes TAPSTATE_VERSION explicitly, so the
+# default path -- the only one a clean-machine user takes -- was never exercised. install.sh's default
+# resolves the /releases/latest redirect, and GitHub fills that from full releases only; the CLI ships as
+# a prerelease, so the lookup returned nothing and install.sh refused, stranding the quickstart at the
+# CLI step. quickstart.sh now carries its own pin; an empty TAPSTATE_VERSION exercises that fallback
+# exactly as an unset one does (both scripts test with :- / -n).
+POM_VERSION="$(sed -n 's/.*<revision>\(.*\)<\/revision>.*/\1/p' "$REPO/pom.xml" | head -1)"
+if [ "$VERSION" = "$POM_VERSION" ]; then
+  ok "the pinned CLI version matches the build ($VERSION)"
+else
+  bad "pinned CLI version $VERSION does not match pom.xml revision $POM_VERSION — bump quickstart.sh"
+fi
+
+# run_prepare writes the shared RC/OUT/DEMO, and later checks still read the first run's; save and
+# restore them so this extra run stays invisible to them.
+saved_rc="$RC"; saved_out="$OUT"; saved_demo="$DEMO"
+PIN_VERSION="" run_prepare Linux x86_64 glibc
+if [ "$RC" -eq 0 ] && [ -x "$DEMO/tapstate" ]; then
+  ok "with TAPSTATE_VERSION unset the CLI still installs, from the script's own pin"
+else
+  bad "with TAPSTATE_VERSION unset the CLI did not install (rc=$RC): $OUT"
+fi
+unset PIN_VERSION
+RC="$saved_rc"; OUT="$saved_out"; DEMO="$saved_demo"
 
 # --- .env: a random admin password, saved with tight perms and announced once ------------------------
 # Replaces the shipped admin/admin default so a demo left running is not trivially reachable, and the
