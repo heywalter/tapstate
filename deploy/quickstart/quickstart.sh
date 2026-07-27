@@ -131,9 +131,11 @@ EOF
 }
 
 main() {
-    # The release process pins this base to the release tag and its final hosting; it tracks the repo
-    # layout for now.
-    qbase="${TAPSTATE_QUICKSTART_BASE_URL:-https://raw.githubusercontent.com/tapstate/tapstate/main}"
+    # Where the stack's assets come from: the same release the CLI is pinned to, derived from that pin
+    # rather than named separately. A branch would keep moving after the release, handing a later user a
+    # CLI frozen at one version beside a compose file from another -- a mismatch that shows up only on
+    # their machine. Deriving it means the release tag decides both, and there is no step to remember.
+    qbase="${TAPSTATE_QUICKSTART_BASE_URL:-https://raw.githubusercontent.com/tapstate/tapstate/v${CLI_VERSION}}"
 
     work="$(mktemp -d)"
     trap 'rm -rf "$work"' EXIT INT TERM

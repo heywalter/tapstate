@@ -299,6 +299,56 @@ else
   bad "CDC section does not walk insert/update/delete: $RUN_OUT"
 fi
 
+# --- what the release serves: one pinned version, and a stack that pulls rather than builds ----------
+# The demo directory a user lands in is not a checkout. Two things follow, and neither can be left as a
+# step someone performs at release time -- an omitted step here does not fail the release, it fails the
+# user, weeks later, on a machine nobody is watching.
+#
+# First, the assets the script fetches must come from the same release as the CLI it pins. Pointing the
+# base at a branch would hand out a CLI frozen at one version alongside a compose file that keeps moving,
+# and the mismatch would appear only on the user's machine. Deriving the base from the pin means the
+# release tag is the single thing that decides, and the pin is already checked against the build above.
+# Both patterns below are read as text, not evaluated: the point is that the source carries an
+# unexpanded ${CLI_VERSION}, so a literal is what must be matched.
+# shellcheck disable=SC2016
+DEFAULT_QBASE="$(sed -n 's/^ *qbase="\${TAPSTATE_QUICKSTART_BASE_URL:-\(.*\)}"$/\1/p' "$QUICKSTART_SH")"
+# shellcheck disable=SC2016
+case "$DEFAULT_QBASE" in
+  *'${CLI_VERSION}'*)
+    ok "the default asset base is derived from the pinned CLI version, not a branch" ;;
+  *)
+    bad "default asset base '$DEFAULT_QBASE' is not derived from CLI_VERSION — a branch keeps moving after the release" ;;
+esac
+
+# Second, the compose file must name a published image. A `build:` key is unusable from a demo directory:
+# its context points into a repository that is not there. The source path keeps its build through an
+# explicit override file instead, so the released stack and the development stack stop being the same
+# file trying to be both.
+COMPOSE="$HERE/docker-compose.yml"
+COMPOSE_DEV="$HERE/docker-compose.dev.yml"
+if grep -qE '^\s*build:' "$COMPOSE"; then
+  bad "docker-compose.yml still carries a build: — a demo directory has no repository to build from"
+else
+  ok "the released compose file has no build: (a demo directory cannot build)"
+fi
+if grep -qE '^\s*image:\s*ghcr\.io/' "$COMPOSE"; then
+  ok "the released compose file pins a published registry image"
+else
+  bad "docker-compose.yml does not pin a ghcr.io image: $(grep -nE '^\s*image:' "$COMPOSE" | tr '\n' ' ')"
+fi
+# The image tag drifting from the build is the same defect as the CLI pin drifting, and gets the same guard.
+COMPOSE_TAG="$(sed -n 's|.*image:.*ghcr\.io/[^:]*:\(.*\)|\1|p' "$COMPOSE" | sed 's/}$//; s/.*:-//')"
+if [ "$COMPOSE_TAG" = "$POM_VERSION" ]; then
+  ok "the compose image tag matches the build ($COMPOSE_TAG)"
+else
+  bad "compose image tag '$COMPOSE_TAG' does not match pom.xml revision $POM_VERSION"
+fi
+if [ -f "$COMPOSE_DEV" ] && grep -qE '^\s*build:' "$COMPOSE_DEV"; then
+  ok "the development override re-adds the build for the from-source path"
+else
+  bad "docker-compose.dev.yml missing or carries no build: — the from-source path would have no way to build"
+fi
+
 # --- summary ----------------------------------------------------------------------------------------
 echo
 printf '\033[1mquickstart smoke: %d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
