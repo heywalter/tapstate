@@ -67,12 +67,12 @@ services:
       - ./mysql-init:/docker-entrypoint-initdb.d:ro
 
   server:
-    # Built locally until the published image exists; the released stack pins a registry reference
-    # here instead, so that a user runs this stack without a build.
-    image: tapstate:dev
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile
+    # A demo directory is not a checkout, so this stack pulls a published image and never builds: a
+    # build: here would point its context at a repository that is not there. Working from the source
+    # tree adds the build back through docker-compose.dev.yml, which only exists inside the repository.
+    # The tag is pinned rather than floating, so a demo brought up months apart runs the same server
+    # both times; the quickstart smoke fails the build if it drifts from the version being built.
+    image: ghcr.io/tapstate/tapstate:0.1.0
     depends_on:
       mongo:
         condition: service_healthy

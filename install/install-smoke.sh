@@ -35,9 +35,12 @@ make_asset() {   # $1 = platform label; the fake binary echoes its platform so a
 }
 for p in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do make_asset "$p"; done
 
-# run install.sh seeing a fake platform. args: OS ARCH MUSL(glibc|musl) INSTALL_DIR ; sets RC + OUT
+# run install.sh seeing a fake platform. args: OS ARCH MUSL(glibc|musl) INSTALL_DIR [MACOS_VERSION]
+# A fifth argument installs a fake `sw_vers` reporting that macOS product version, which drives the
+# minimum-version gate. Leaving it empty means the run sees whatever sw_vers this machine has (on Linux,
+# none at all) -- the same as every test written before the gate existed.
 run_install() {
-  local fos="$1" farch="$2" fmusl="$3" idir="$4" shim
+  local fos="$1" farch="$2" fmusl="$3" idir="$4" fmacos="${5:-}" shim
   shim="$(mktemp -d)"
   cat > "$shim/uname" <<EOF
 #!/bin/sh
@@ -51,6 +54,10 @@ EOF
   if [ "$fmusl" = musl ]; then
     printf '#!/bin/sh\necho "musl libc (x86_64)\\nVersion 1.2.4"\n' > "$shim/ldd"
     chmod +x "$shim/ldd"
+  fi
+  if [ -n "$fmacos" ]; then
+    printf '#!/bin/sh\necho "%s"\n' "$fmacos" > "$shim/sw_vers"
+    chmod +x "$shim/sw_vers"
   fi
   OUT="$(PATH="$shim:$PATH" \
          TAPSTATE_VERSION="$VERSION" \
@@ -199,6 +206,90 @@ PY
   fi
 else
   printf '  SKIP  latest-302 resolution (python3 not available)\n'
+fi
+
+# --- the recommended macOS version: said out loud, never enforced -----------------------------------
+# A native binary carries the deployment target of the machine that built it, so an older macOS may not
+# load it -- and when that happens it happens at launch, from dyld, far from the install that caused it.
+# So the installer says so. It does not refuse: unlike the platforms above, a binary for this one exists,
+# and whether to try it is the user's call. Every case below therefore asserts the install *succeeded*;
+# what varies is only whether the notice was printed. The recommendation belongs to the release (build
+# machines move between releases), so it is published alongside the assets and read from there.
+MINIMUMS="$STUB/download/v$VERSION/platform-minimums.txt"
+FLOOR=
+set_floor() { FLOOR="$1"; printf 'darwin-arm64 macos %s\ndarwin-x64 macos %s\n' "$1" "$1" > "$MINIMUMS"; }
+
+# Detect the notice by a phrase only it carries. Matching on the version alone would be fooled by a
+# temp path that happens to contain the same digits.
+noticed() { printf '%s' "$OUT" | grep -q 'may not launch'; }
+
+say() {   # MACOS_VERSION EXPECT(notice|quiet) LABEL
+  local idir said; idir="$(mktemp -d)/bin"
+  run_install Darwin arm64 glibc "$idir" "$1"
+  if [ "$RC" -ne 0 ] || [ ! -x "$idir/tapstate" ]; then
+    bad "$3 -- the install must never be refused (rc=$RC): $OUT"; return
+  fi
+  if noticed; then said=notice; else said=quiet; fi
+  if [ "$said" != "$2" ]; then
+    bad "$3 (wanted $2, got $said): $OUT"; return
+  fi
+  # a notice that does not name both versions leaves the reader to guess which macOS this needs
+  if [ "$2" = notice ] && ! { printf '%s' "$OUT" | grep -qF "$FLOOR" && printf '%s' "$OUT" | grep -qF "$1"; }; then
+    bad "$3 -- notice names neither the recommendation nor the running version: $OUT"; return
+  fi
+  ok "$3"
+}
+
+set_floor 15.0
+say 14.7 notice "says so below the recommended version, and installs anyway, naming both versions"
+say 15.0 quiet  "stays quiet on exactly the recommended version"
+say 15.5 quiet  "stays quiet on a newer macOS in the same major"
+say 26.1 quiet  "stays quiet on a higher major -- the version the next runner generation will publish"
+
+# Version fields are numbers, not text, and both directions of getting that wrong are covered. Compared
+# as text, 15.9 sorts above 15.10 -- so the machine that most needs telling would hear nothing -- and a
+# bare "15" sorts below "15.0", which would nag a machine sitting exactly on the recommendation. Neither
+# is hypothetical: macOS reports both shapes, and minor versions do reach double digits.
+set_floor 15.10
+say 15.9 notice "says so for 15.9 against a 15.10 recommendation (fields compared as numbers, not as text)"
+set_floor 15.0
+say 15 quiet "stays quiet on a bare major equal to the recommendation (an absent field counts as zero)"
+
+# Each platform carries its own recommendation, and the two darwin legs are built on separate machines
+# that need not move in step. The line is selected by the platform tuple, not by being first in the file.
+printf 'darwin-arm64 macos 15.0\ndarwin-x64 macos 26.0\n' > "$MINIMUMS"
+idir="$(mktemp -d)/bin"
+run_install Darwin x86_64 glibc "$idir" 15.5
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && noticed && printf '%s' "$OUT" | grep -qF 26.0; then
+  ok "reads the recommendation of the platform being installed, not whichever line comes first"
+else
+  bad "platform-keyed lookup (rc=$RC, noticed=$(noticed && echo yes || echo no)): $OUT"
+fi
+idir="$(mktemp -d)/bin"
+run_install Darwin arm64 glibc "$idir" 15.5
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
+  ok "the same file leaves arm64 at 15.5 alone, whose own recommendation is lower"
+else
+  bad "arm64 nagged by the x64 recommendation (rc=$RC): $OUT"
+fi
+
+# a macOS recommendation says nothing about Linux, which has no sw_vers and no entry in the file
+idir="$(mktemp -d)/bin"
+run_install Linux x86_64 glibc "$idir"
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
+  ok "a macOS recommendation does not reach a Linux install"
+else
+  bad "linux install saw the macOS notice (rc=$RC): $OUT"
+fi
+
+# a release that publishes no minimums has nothing to compare against, and must not invent one
+rm -f "$MINIMUMS"
+idir="$(mktemp -d)/bin"
+run_install Darwin arm64 glibc "$idir" 14.7
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
+  ok "a release without published minimums installs silently (nothing to compare against)"
+else
+  bad "missing minimums must produce no notice (rc=$RC): $OUT"
 fi
 
 # --- summary ----------------------------------------------------------------------------------------

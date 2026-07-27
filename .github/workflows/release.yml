@@ -146,6 +146,25 @@ jobs:
         run: mvn -B -Pnative -pl cli -am -DskipTests package
       - name: native smoke (black-box against the produced binary, offline + online)
         run: bash cli/native-smoke.sh cli/target/tapstate
+      # Read the macOS floor back out of the binary instead of asserting one. A native image is stamped
+      # with the deployment target of the machine that built it; dyld enforces that at load time and no
+      # build flag tried so far moves it, so the oldest macOS this binary can run on is a fact about this
+      # runner, not a choice. Only the newest two macOS versions are hosted, so the floor rises on its own
+      # as labels age out -- measuring is what keeps the published number true without anyone remembering.
+      - name: measure the macOS floor this binary was stamped with
+        if: matrix.os == 'darwin'
+        shell: bash
+        run: |
+          floor="$(vtool -show-build cli/target/tapstate | awk '/minos/ { print $2; exit }')"
+          [ -n "$floor" ] || { echo "vtool reported no minos for cli/target/tapstate"; exit 1; }
+          echo "${{ matrix.os }}-${{ matrix.arch }} macos $floor" > "${{ matrix.os }}-${{ matrix.arch }}.minos"
+          cat "${{ matrix.os }}-${{ matrix.arch }}.minos"
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'darwin'
+        with:
+          name: cli-minos-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ matrix.os }}-${{ matrix.arch }}.minos
+          if-no-files-found: error
       - name: package the release asset
         shell: bash
         run: |
@@ -183,6 +202,30 @@ jobs:
           for f in tapstate-*.tar.gz; do sha256sum "$f" > "$f.sha256"; done
           sha256sum tapstate-*.tar.gz > checksums.txt
           ls -la
+      # The measured floors, collected from the darwin legs. This is a separate, explicitly named download
+      # rather than a widening of the one above: that one is narrow because it must not depend on artifacts
+      # this job does not use, and these it does use.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-minos-*
+          path: minos
+          merge-multiple: true
+      # Publish the floors as an asset the installer reads, and say the same thing in the notes. Both come
+      # from the same measurement, so the promise made to a reader and the check made on a user's machine
+      # can never drift apart -- and neither needs anyone to remember to update a number.
+      - name: platform-minimums.txt + the requirement sentence for the notes
+        shell: bash
+        run: |
+          cat minos/*.minos | sort > staging/platform-minimums.txt
+          cat staging/platform-minimums.txt
+          distinct="$(awk '$2 == "macos" { print $3 }' staging/platform-minimums.txt | sort -u)"
+          if [ "$(echo "$distinct" | wc -l)" -eq 1 ]; then
+            sentence="Recommended macOS: $distinct or newer."
+          else
+            sentence="Recommended macOS: $(awk '$2 == "macos" { printf "%s%s or newer on %s", sep, $3, $1; sep="; " } END { print "." }' staging/platform-minimums.txt)"
+          fi
+          echo "MACOS_REQ=$sentence" >> "$GITHUB_ENV"
+          echo "$sentence"
       - name: assemble the DRAFT prerelease (a human reviews and publishes it)
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
@@ -198,10 +241,16 @@ jobs:
 
             Native CLI binaries for macOS (arm64 / x64) and Linux (x64 / arm64). Verify a download against
             its `.sha256` or `checksums.txt` before use. No `:latest` / floating pointer is published.
+
+            ${{ env.MACOS_REQ }} That is the deployment target the build machine stamped into the binary,
+            so it can rise between releases; an older macOS may refuse to launch these. It is a
+            recommendation, not a gate — the installer names it and carries on rather than blocking you.
+            `platform-minimums.txt` carries the same numbers in machine-readable form.
           files: |
             staging/tapstate-*.tar.gz
             staging/tapstate-*.tar.gz.sha256
             staging/checksums.txt
+            staging/platform-minimums.txt
 
       # A rehearsal has proven the whole lane up to this point: four platforms built, smoked and packaged,
       # checksums generated, both image architectures built. Say plainly that nothing left the runner, so a
