@@ -1,0 +1,97 @@
+# End-to-end admission gate.
+#
+# A change to product source is admitted only with an end-to-end case alongside it. What counts:
+#   - a declarative specification, e2e/examples/<name>/spec.e2e.yml — the preferred form
+#   - a bespoke end-to-end test, e2e/src/test/java/**/*IT.java — for behavior the specification
+#     vocabulary cannot yet say
+# In scope: a pull request touching any */src/main/ file. Documentation, build and CI configuration,
+# scripts, and test-only changes are out of scope and pass without a case.
+#
+# This gate checks that a case is *present*. Whether it is *adequate* is the reviewer's call, and no
+# workflow can take that over: presence is mechanical, adequacy is judgement. What the gate buys is
+# that the absence of a case can no longer pass unnoticed.
+#
+# Waiver: a maintainer applies the `no-e2e` label, and says why in the review. It is a reviewed
+# decision recorded on the pull request, the same shape as adding a path to .cjk-allowlist — not
+# something the gate infers on the author's word.
+#
+# Like the other gates here, this is meant to be a required status check on main (branch protection);
+# a workflow that merely runs is not a gate until merges depend on it.
+name: e2e admission
+
+on:
+  pull_request:
+    branches:
+      - main
+    # labeled/unlabeled beyond the defaults: applying the waiver has to re-evaluate the gate, or the
+    # only way to clear a red check would be an empty push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  e2e-admission:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history, so the merge base with the target branch resolves
+
+      - name: An end-to-end case accompanies the product change
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+
+          base="origin/${BASE_REF}"
+          git rev-parse --verify --quiet "$base" >/dev/null 2>&1 \
+            || git fetch --quiet --no-tags origin "${BASE_REF}"
+          merge_base="$(git merge-base "$base" HEAD)"
+
+          # Two lists: everything the pull request touches, which decides scope, and the subset that
+          # still exists, which is what may satisfy the rule. Deleting a specification is not bringing
+          # one, so removals count towards scope but never towards the case.
+          changed="$(git diff --name-only "$merge_base" HEAD)"
+          present="$(git diff --name-only --diff-filter=d "$merge_base" HEAD)"
+
+          product="$(printf '%s\n' "$changed" | grep -E '(^|/)src/main/' || true)"
+          if [ -z "$product" ]; then
+            echo "not in scope: this pull request changes no product source."
+            exit 0
+          fi
+
+          cases="$(printf '%s\n' "$present" \
+            | grep -E '^e2e/examples/[^/]+/spec\.e2e\.yml$|^e2e/src/test/java/.*IT\.java$' || true)"
+          if [ -n "$cases" ]; then
+            echo "end-to-end case(s) in this pull request:"
+            printf '%s\n' "$cases"
+            exit 0
+          fi
+
+          case ",${PR_LABELS}," in
+            *,no-e2e,*)
+              echo "::warning::admission waived by the no-e2e label. The reason belongs in the review."
+              exit 0
+              ;;
+          esac
+
+          echo "::error::product source changed, and this pull request brings no end-to-end case."
+          echo "In scope because these changed:"
+          printf '%s\n' "$product"
+          cat <<'EOF'
+
+          Bring one of:
+
+            e2e/examples/<what-the-run-proves>/spec.e2e.yml   plus the resources it applies.
+                Every word a specification may use is listed in e2e/spec/matchers.json. Prefer this
+                form: it runs on both fidelity tiers and needs no Java.
+
+            e2e/src/test/java/<Something>IT.java              when no word reaches the behavior.
+                Say in the pull request which word was missing — that is how the vocabulary grows.
+
+          One smoke-level case is the floor, not full coverage: a case that fails if the change is
+          reverted. Name it in the pull request description.
+
+          If the change genuinely cannot carry one, a maintainer applies the `no-e2e` label and says
+          why in the review.
+          EOF
+          exit 1

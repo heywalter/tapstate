@@ -20,7 +20,9 @@ name: Real connectors
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    # Off the hour on purpose: GitHub queues scheduled runs, and the top of an hour is when everyone
+    # else's are queued too, so an on-the-hour schedule is the one most likely to start late.
+    - cron: "30 19 * * *"
 
 concurrency:
   group: real-connectors-${{ github.ref }}
