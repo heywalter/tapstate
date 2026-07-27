@@ -58,4 +58,11 @@ public interface TierBinding {
      * no observation yet - the same unobserved window {@link #state} sits through, answered the same way.
      */
     Optional<Long> errorCount(String pipelineId);
+
+    /**
+     * Reads the canonical code of the failure a pipeline has published, from its status face, or empty when
+     * it has published none - the pipeline is healthy, or no convergence pass has observed it yet. Empty is
+     * a reading like the two above, not an error.
+     */
+    Optional<String> failureCode(String pipelineId);
 }

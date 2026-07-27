@@ -143,6 +143,38 @@ class E2eExecutorTest {
     }
 
     @Test
+    void awaitsTheFailureCodeOfThePipelineResolvedFromTheEnvelope() {
+        // A dead pipeline is already assertable as a state and a count; neither says what killed it, and a
+        // regression that swaps the reason for another would pass both. The code is the assertable identity.
+        binding.failureCodesUnobservedThen("engine.job-failed");
+
+        execute(minimal("steps:\n  - await: { failure_code: engine.job-failed }\n"));
+
+        assertThat(binding.failureCodedPipelineIds).containsOnly(PIPELINE_ID);
+    }
+
+    @Test
+    void reportsTheFailureCodeMismatchAgainstTheResolvedPipeline() {
+        binding.failureCodes("io.store-unauthorized");
+
+        assertThatThrownBy(() -> execute(minimal("steps:\n  - assert: { failure_code: engine.job-failed }\n")))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("mongo2mongo expected failure code engine.job-failed")
+                .hasMessageContaining("io.store-unauthorized");
+    }
+
+    @Test
+    void reportsAHealthyPipelineApartFromTheWrongFailureCode() {
+        // "the pipeline never failed" and "it failed for another reason" send an author looking in different
+        // places, so they must not read the same way.
+        binding.failureCodeNeverPublished();
+
+        assertThatThrownBy(() -> execute(minimal("steps:\n  - assert: { failure_code: engine.job-failed }\n")))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("no published failure");
+    }
+
+    @Test
     void reportsTheStateMismatchAgainstTheResolvedPipeline() {
         binding.states(PipelineState.PAUSED);
 
@@ -269,8 +301,11 @@ class E2eExecutorTest {
         private List<Optional<PipelineState>> stateSeries = List.of(Optional.of(PipelineState.RUNNING));
         private List<Optional<Long>> errorCountSeries = List.of(Optional.of(0L));
         private final List<String> errorCountedPipelineIds = new ArrayList<>();
+        private List<Optional<String>> failureCodeSeries = List.of(Optional.empty());
+        private final List<String> failureCodedPipelineIds = new ArrayList<>();
         private int stateReads;
         private int errorCountReads;
+        private int failureCodeReads;
         private int countReads;
 
         void countsOverTime(TableAlias table, Long... readings) {
@@ -298,6 +333,24 @@ class E2eExecutorTest {
         /** Publishes nothing, ever: a pipeline no convergence pass has reached. */
         void errorCountNeverObserved() {
             errorCountSeries = List.of(Optional.empty());
+        }
+
+        void failureCodes(String... readings) {
+            failureCodeSeries = Stream.of(readings).map(Optional::of).toList();
+        }
+
+        /** Publishes no failure on the first read, then these codes: the window before a job dies. */
+        void failureCodesUnobservedThen(String... readings) {
+            failureCodeSeries =
+                    Stream.concat(
+                                    Stream.of(Optional.<String>empty()),
+                                    Stream.of(readings).map(Optional::of))
+                            .toList();
+        }
+
+        /** Never publishes a failure: a pipeline that is running fine, or one never observed at all. */
+        void failureCodeNeverPublished() {
+            failureCodeSeries = List.of(Optional.empty());
         }
 
         /** Publishes nothing on the first read, then these states: the window a real start opens. */
@@ -366,6 +419,13 @@ class E2eExecutorTest {
             errorCountedPipelineIds.add(pipelineId);
             int index = errorCountReads++;
             return errorCountSeries.get(Math.min(index, errorCountSeries.size() - 1));
+        }
+
+        @Override
+        public Optional<String> failureCode(String pipelineId) {
+            failureCodedPipelineIds.add(pipelineId);
+            int index = failureCodeReads++;
+            return failureCodeSeries.get(Math.min(index, failureCodeSeries.size() - 1));
         }
     }
 }

@@ -28,6 +28,13 @@ enum MatcherWord {
      */
     ERROR_COUNT,
 
+    /**
+     * The canonical code of the failure the pipeline has published. Its source is the status read face,
+     * which carries the coded reason a run died alongside the state, so what killed a pipeline is assertable
+     * rather than only greppable in a log.
+     */
+    FAILURE_CODE,
+
     /** The pipeline's published lifecycle state. */
     STATE;
 

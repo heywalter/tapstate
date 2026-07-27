@@ -129,6 +129,11 @@ final class HttpTierBinding implements TierBinding {
         return control.errorCount(pipelineId);
     }
 
+    @Override
+    public Optional<String> failureCode(String pipelineId) {
+        return control.failureCode(pipelineId);
+    }
+
     /**
      * A source carries its own connection settings, so applying one teaches the harness where that
      * endpoint lives. Resources that are not endpoints teach it nothing, which is correct.

@@ -189,6 +189,7 @@ public final class EnvelopeParser {
         return switch (matcherWord(only.getKey())) {
             case COUNT -> count(only.getValue());
             case ERROR_COUNT -> new Matcher.ErrorCount(rowCount(only.getValue(), "error_count"));
+            case FAILURE_CODE -> new Matcher.FailureCode(failureCode(only.getValue()));
             case STATE -> new Matcher.State(pipelineState(only.getValue()));
         };
     }
@@ -201,6 +202,20 @@ public final class EnvelopeParser {
         Map<TableAlias, Long> expected = new LinkedHashMap<>();
         mapping.forEach((alias, rows) -> expected.put(alias(alias), rowCount(rows, "count." + alias)));
         return new Matcher.Count(expected);
+    }
+
+    /**
+     * A canonical code as written, checked only for shape ({@code <domain>.<symbol>}). The registry of codes
+     * lives in the product and the specifications run outside it, so a spelling is held to the shape here
+     * and to reality by the run: a code no failure carries simply never matches.
+     */
+    private static String failureCode(Object node) {
+        String code = string(node, "failure_code").trim();
+        if (!code.matches("[a-z0-9]+\\.[a-z0-9-]+")) {
+            throw new EnvelopeException(
+                    "a failure code reads '<domain>.<symbol>' in lower kebab-case, found: " + code);
+        }
+        return code;
     }
 
     private static PipelineState pipelineState(Object node) {

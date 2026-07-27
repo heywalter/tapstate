@@ -112,6 +112,7 @@ public final class E2eExecutor {
             case Matcher.Count count -> countMismatch(count.expected());
             case Matcher.State state -> stateMismatch(state.expected(), pipelineId);
             case Matcher.ErrorCount errorCount -> errorCountMismatch(errorCount.expected(), pipelineId);
+            case Matcher.FailureCode failureCode -> failureCodeMismatch(failureCode.expected(), pipelineId);
         };
     }
 
@@ -164,6 +165,24 @@ public final class E2eExecutor {
                         + expected
                         + ", found "
                         + actual.map(Object::toString).orElse("no published observation"));
+    }
+
+    /**
+     * Reads the same unobserved window as the two matchers above the same way. "no published failure" is
+     * named apart from the wrong code because they fail for different reasons: the pipeline is healthy or
+     * was never observed, versus it died of something else than the specification expects.
+     */
+    private Optional<String> failureCodeMismatch(String expected, String pipelineId) {
+        Optional<String> actual = binding.failureCode(pipelineId);
+        if (actual.filter(expected::equals).isPresent()) {
+            return Optional.empty();
+        }
+        return Optional.of(
+                pipelineId
+                        + " expected failure code "
+                        + expected
+                        + ", found "
+                        + actual.orElse("no published failure"));
     }
 
     private static void sleep(Duration interval) {

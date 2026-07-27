@@ -11,6 +11,10 @@
       "description": "The pipeline's published error count, read from the metrics face: one while it is FAILED, zero otherwise."
     },
     {
+      "word": "failure_code",
+      "description": "The canonical code of the failure the pipeline published, read from the status face: what killed the run, not just that it died."
+    },
+    {
       "word": "state",
       "description": "The pipeline's published lifecycle state, read from the observation face."
     }
