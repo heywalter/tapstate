@@ -157,7 +157,11 @@ that executes those resources as live pipelines.
 
 ### Requirements
 
-- **To run the CLI:** nothing — `tapstate` is a GraalVM native binary (starts in ~30 ms).
+- **To run the CLI:** no runtime to install — `tapstate` is a native binary (starts in
+  ~30 ms). macOS builds carry a minimum OS version that tracks the machine they were
+  built on and can rise between releases, so each release states its floor in its notes;
+  the installer refuses a machine below it rather than leaving behind a binary that
+  cannot load.
 - **To build from source:** **Oracle GraalVM for JDK 21** (includes `native-image`)
   and **Maven 3.6+**. A plain JDK 21 is enough to build and run the test suite;
   GraalVM is only needed for the native image.
