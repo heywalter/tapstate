@@ -85,11 +85,12 @@ and the manual `docker compose` steps behind it.
 > first preview release is cut, follow the walkthrough's build-from-source path. See
 > [Limitations](docs/quickstart-online.md#limitations).
 >
-> **Recommended platform.** Docker with Compose v2, and on macOS the version each
-> release names in its notes — the macOS binaries are built on hosted runners and
-> carry that version as their deployment target, so an older macOS may refuse to
-> launch them. Nothing stops you from installing on one; the installer says so and
-> continues, and how it goes from there is yours.
+> **Recommended platform.** Docker with Compose v2, plus the system versions each
+> release names in its notes: a macOS version, and a glibc version on Linux. Both are
+> measured from the binaries themselves and follow the machines that built them, so an
+> older system may refuse to launch them — `sw_vers -productVersion` and `ldd --version`
+> say what a machine has. Nothing stops you from installing anyway: the installer names
+> what the build expects and carries on, and how it goes from there is yours.
 
 A one-line installer will collapse the CLI download to a single command:
 
@@ -164,10 +165,11 @@ that executes those resources as live pipelines.
 ### Requirements
 
 - **To run the CLI:** no runtime to install — `tapstate` is a native binary (starts in
-  ~30 ms). macOS builds carry a recommended macOS version that tracks the machine they
-  were built on and can rise between releases, so each release names it in its notes.
-  Installing on an older macOS is allowed — the installer says which version the build
-  expects and carries on; whether it launches there is then up to you.
+  ~30 ms). Each build does carry a recommended system version — a macOS version, or a
+  glibc version on Linux — that tracks the machine it was built on and can move between
+  releases, so every release names its own in its notes. Installing on an older system is
+  allowed: the installer says what the build expects and carries on; whether it launches
+  there is then up to you.
 - **To build from source:** **Oracle GraalVM for JDK 21** (includes `native-image`)
   and **Maven 3.6+**. A plain JDK 21 is enough to build and run the test suite;
   GraalVM is only needed for the native image.
