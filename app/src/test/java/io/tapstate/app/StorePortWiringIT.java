@@ -2,11 +2,11 @@ package io.tapstate.app;
 
 import io.tapstate.spi.store.ConnectionConfig;
 import io.tapstate.spi.store.StorePort;
+import io.tapstate.testsupport.RequiresDocker;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.Map;
@@ -15,12 +15,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Witnesses the assembly root exposing a working store under {@code --role=all}: with the store
- * enabled and pointed at a real replica-set, the context starts, a single driver-free
- * {@code StorePort} bean is present, and it round-trips a registered connection. This is the store
- * adapter wired through the assembly root (rule R7), end to end. Skipped automatically where Docker is
- * absent, so a Docker-less build stays green.
+ * enabled and pointed at a real replica-set, the context starts, a single driver-free {@code
+ * StorePort} bean is present, and it round-trips a registered connection. This is the store adapter
+ * wired through the assembly root (rule R7), end to end. Where Docker is absent this aborts on a
+ * developer machine and fails in CI, where a skip would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class StorePortWiringIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

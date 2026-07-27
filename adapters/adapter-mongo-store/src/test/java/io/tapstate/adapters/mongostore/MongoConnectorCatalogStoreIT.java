@@ -5,11 +5,11 @@ import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.core.catalog.CatalogEntryReader;
 import io.tapstate.core.catalog.ConnectorCatalogEntry;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.Optional;
@@ -21,9 +21,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (with config, options, visibleWhen and provenance) reads back equal through the real bson encode /
  * decode, an unregistered connector reads back empty, every upserted row is listed, and a re-register
  * of the same connector replaces the stored row in place (last write wins) rather than accumulating
- * documents. Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * documents. Where Docker is absent this aborts on a developer machine and fails in CI, where a skip
+ * would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoConnectorCatalogStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

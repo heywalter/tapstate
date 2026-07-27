@@ -7,6 +7,7 @@ import io.tapstate.runtime.engine.Engine;
 import io.tapstate.runtime.scheduler.PipelineConverger;
 import io.tapstate.spi.store.SrsMetaStore;
 import io.tapstate.spi.store.StorePort;
+import io.tapstate.testsupport.RequiresDocker;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -15,7 +16,6 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.web.client.RestClient;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.ArrayList;
@@ -24,18 +24,19 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The whole platform assembled as one JVM process — the L1 {@code --role=all} shape — brought up over a real
- * store. Booting the real {@code @SpringBootApplication} with the store enabled activates every assembly
- * configuration at once, so all six architectural rings come up in a single application context: the store
- * bridge, the control-core plane over it, the PDK connector plane, the embedded Hazelcast member, the Jet
- * engine over that member, and the desired-to-actual convergence loop. This witnesses that the independently
- * developed rings collapse into one coherent process and that the liveness probe answers over the full
- * assembly — a scenario no other test co-boots: the control-plane assembly checks import only the store and
- * control configurations (no member/engine/convergence), and every full-application boot elsewhere runs with
- * the store disabled, which gates four of the six rings off. Skipped automatically where Docker is absent, so
- * a Docker-less build stays green.
+ * The whole platform assembled as one JVM process — the L1 {@code --role=all} shape — brought up over
+ * a real store. Booting the real {@code @SpringBootApplication} with the store enabled activates every
+ * assembly configuration at once, so all six architectural rings come up in a single application
+ * context: the store bridge, the control-core plane over it, the PDK connector plane, the embedded
+ * Hazelcast member, the Jet engine over that member, and the desired-to-actual convergence loop. This
+ * witnesses that the independently developed rings collapse into one coherent process and that the
+ * liveness probe answers over the full assembly — a scenario no other test co-boots: the control-plane
+ * assembly checks import only the store and control configurations (no member/engine/convergence), and
+ * every full-application boot elsewhere runs with the store disabled, which gates four of the six
+ * rings off. Where Docker is absent this aborts on a developer machine and fails in CI, where a skip
+ * would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class FullAssemblyStartupIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

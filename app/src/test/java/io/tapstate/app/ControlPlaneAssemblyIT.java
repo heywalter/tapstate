@@ -9,6 +9,7 @@ import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.StorePort;
+import io.tapstate.testsupport.RequiresDocker;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,7 +27,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.RestClient;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.io.ByteArrayOutputStream;
@@ -44,14 +44,15 @@ import java.util.jar.Manifest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The whole control plane assembled over a real store, end to end through HTTP: the assembly root brings up
- * the store, the authentication ports over it, the control-core services and the authenticated {@code /api}
- * face; a caller then bootstraps the first admin over loopback, signs in for a session token, applies an
- * artifact, and reads it back — each guarded step succeeding, and an unauthenticated request refused. This
- * witnesses {@link ControlPlaneConfiguration} wired against a genuine replica-set. Skipped automatically
- * where Docker is absent, so a Docker-less build stays green.
+ * The whole control plane assembled over a real store, end to end through HTTP: the assembly root
+ * brings up the store, the authentication ports over it, the control-core services and the
+ * authenticated {@code /api} face; a caller then bootstraps the first admin over loopback, signs in
+ * for a session token, applies an artifact, and reads it back — each guarded step succeeding, and an
+ * unauthenticated request refused. This witnesses {@link ControlPlaneConfiguration} wired against a
+ * genuine replica-set. Where Docker is absent this aborts on a developer machine and fails in CI,
+ * where a skip would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class ControlPlaneAssemblyIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

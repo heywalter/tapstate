@@ -4,11 +4,11 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.spi.store.TokenRecord;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Instant;
@@ -20,10 +20,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 /**
  * Witnesses the token store against a real Mongo replica-set: a saved token reads back with the same
  * fields (through the real bson encode), an absent id reads back empty, revocation sets the flag in
- * place, revoking an unknown id is a no-op, and list returns every token including revoked ones.
- * Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * place, revoking an unknown id is a no-op, and list returns every token including revoked ones. Where
+ * Docker is absent this aborts on a developer machine and fails in CI, where a skip would be a green
+ * build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoTokenStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");
