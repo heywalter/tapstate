@@ -23,10 +23,10 @@ public final class PipelineObservationQueryService {
         this.observations = Objects.requireNonNull(observations, "observations");
     }
 
-    /** The pipeline's lifecycle state. */
+    /** The pipeline's lifecycle state, with the coded reason its run died when there is one. */
     public PipelineStatus status(String pipelineId) {
         Observation observation = require(pipelineId);
-        return new PipelineStatus(observation.pipelineId(), observation.state());
+        return new PipelineStatus(observation.pipelineId(), observation.state(), observation.failure());
     }
 
     /** The pipeline's open map of run statistics plus its per-table source positions. */

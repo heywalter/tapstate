@@ -2204,6 +2204,37 @@ class ReplTest {
     }
 
     @Test
+    void statusOfAFailedPipelinePrintsWhyItDied() {
+        // A bare "failed" sends the user hunting through logs. The reason arrives coded with its arguments,
+        // so the CLI renders it from the bundled catalog the same way it renders every other coded message.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.statusOutcome = new StatusOutcome.Found("pl1", "FAILED", "engine.job-failed",
+                "Pipeline pl1 stopped because its job failed: the sink rejected the batch.");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("failed");
+        // Assert the code, not the prose: the code is the stable identity, and only this path can emit it.
+        assertThat(out).contains("engine.job-failed");
+        assertThat(out).contains("the sink rejected the batch");
+    }
+
+    @Test
+    void statusOfAHealthyPipelinePrintsNoFailureLine() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.statusOutcome = new StatusOutcome.Found("pl1", "RUNNING");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).doesNotContain("engine.");
+    }
+
+    @Test
     void metricsWhileAuthenticatedPrintsEachStat() {
         FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
         client.metricsOutcome = new MetricsOutcome.Found("pl1", Map.of("recordCount", 42L, "errorCount", 0L));

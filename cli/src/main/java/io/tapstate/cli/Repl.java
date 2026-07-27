@@ -1361,6 +1361,11 @@ final class Repl {
         switch (outcome) {
             case StatusOutcome.Found found -> {
                 out.println(found.pipelineId() + "  " + found.state().toLowerCase(Locale.ROOT));
+                if (found.failureCode() != null) {
+                    // A failed state that cannot say what failed sends the user hunting through logs. The
+                    // reason arrives with its code, and prints through the same renderer as a coded refusal.
+                    renderRejection(found.failureCode(), found.failureMessage());
+                }
                 out.flush();
             }
             case StatusOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());

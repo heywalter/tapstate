@@ -17,6 +17,7 @@ import io.tapstate.control.core.TokenService;
 import io.tapstate.control.core.TokenSigner;
 import io.tapstate.control.core.VerifiedToken;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.spi.store.ObservationStore;
@@ -77,6 +78,12 @@ class PipelineObservationApiTest {
             Map.of(),
             Map.of("orders", "w7"));
 
+    /** One pipeline whose job died, to exercise the coded reason the status face carries. */
+    private static final Observation PL_DEAD = new Observation("pl3", PipelineState.FAILED,
+            Map.of("errorCount", 1L), Map.of(), Map.of(),
+            new ObservationFailure("engine.job-failed",
+                    Map.of("pipeline", "pl3", "cause", "the sink rejected the batch")));
+
     private static ConfigurableApplicationContext context;
     private static int port;
 
@@ -99,6 +106,7 @@ class PipelineObservationApiTest {
         observations.clear();
         observations.save(PL1);
         observations.save(PL_POS);
+        observations.save(PL_DEAD);
     }
 
     private RestClient client() {
@@ -119,6 +127,33 @@ class PipelineObservationApiTest {
                 .retrieve().toEntity(PipelineStatus.class).getBody();
 
         assertThat(body).isEqualTo(new PipelineStatus("pl1", PipelineState.RUNNING));
+    }
+
+    @Test
+    void statusOfAFailedPipelineCarriesTheCodedReasonAndItsRenderedMessage() {
+        // The code is the stable machine identity and the params are the variable data; the message is
+        // rendered here, where the catalog lives, so every face prints one wording rather than each
+        // inventing its own.
+        Map<String, Object> body = client().get().uri("/api/pipelines/pl3/status")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
+
+        assertThat(body.get("state")).isEqualTo("FAILED");
+        Map<?, ?> failure = (Map<?, ?>) body.get("failure");
+        assertThat(failure.get("code")).isEqualTo("engine.job-failed");
+        assertThat((String) failure.get("message")).contains("the sink rejected the batch");
+        assertThat((Map<String, Object>) failure.get("params"))
+                .containsEntry("cause", "the sink rejected the batch");
+    }
+
+    @Test
+    void statusOfAHealthyPipelineOmitsTheFailure() {
+        Map<String, Object> body = client().get().uri("/api/pipelines/pl1/status")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
+
+        // Absent, not present-and-null: a client reading this must not have to tell those apart.
+        assertThat(body).doesNotContainKey("failure");
     }
 
     @Test

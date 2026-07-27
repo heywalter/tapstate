@@ -10,8 +10,19 @@ package io.tapstate.cli;
  */
 sealed interface StatusOutcome {
 
-    /** The read found the pipeline's lifecycle state (its wire name, e.g. {@code RUNNING}). */
-    record Found(String pipelineId, String state) implements StatusOutcome {
+    /**
+     * The read found the pipeline's lifecycle state (its wire name, e.g. {@code RUNNING}), and the coded
+     * reason its run died when the server published one ({@code failureCode} null while it is healthy).
+     * The reason arrives as a code plus the message the server rendered for it — the same pair a coded
+     * refusal carries, so both print through one renderer here.
+     */
+    record Found(String pipelineId, String state, String failureCode, String failureMessage)
+            implements StatusOutcome {
+
+        /** A status with nothing wrong to report. */
+        Found(String pipelineId, String state) {
+            this(pipelineId, state, null, null);
+        }
     }
 
     /** The server refused the read with a coded reason already rendered to a message. */

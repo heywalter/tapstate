@@ -887,6 +887,56 @@ class HttpControlPlaneClientTest {
     }
 
     @Test
+    void statusCarriesTheCodedFailureOfAPipelineWhoseJobDied() throws Exception {
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":{\"code\":\"engine.job-failed\","
+                        + "\"params\":{\"cause\":\"sink refused\"},"
+                        + "\"message\":\"Pipeline pl1 stopped because its job failed: sink refused.\"}}",
+                seen);
+        try {
+            StatusOutcome outcome = new HttpControlPlaneClient().status(baseOf(server), "tok-abc", "pl1");
+
+            assertThat(outcome).isEqualTo(new StatusOutcome.Found("pl1", "FAILED", "engine.job-failed",
+                    "Pipeline pl1 stopped because its job failed: sink refused."));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void statusOfAHealthyPipelineCarriesNoFailure() throws Exception {
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"RUNNING\"}", seen);
+        try {
+            StatusOutcome outcome = new HttpControlPlaneClient().status(baseOf(server), "tok-abc", "pl1");
+
+            assertThat(((StatusOutcome.Found) outcome).failureCode()).isNull();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void statusOfAFailedPipelineSurvivesAFailureBlockWithNoMessage() throws Exception {
+        // A reply that names the code but carries no rendered sentence must still report the code rather
+        // than dropping the whole status to unreachable: the code alone is the diagnosis worth keeping.
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":{\"code\":\"engine.job-failed\"}}", seen);
+        try {
+            StatusOutcome outcome = new HttpControlPlaneClient().status(baseOf(server), "tok-abc", "pl1");
+
+            StatusOutcome.Found found = (StatusOutcome.Found) outcome;
+            assertThat(found.failureCode()).isEqualTo("engine.job-failed");
+            assertThat(found.failureMessage()).isNotNull();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void statusReturnsRejectedWithTheServerCodeAndMessageOnACodedError() throws Exception {
         HttpServer server = apiServer("/api/pipelines/ghost/status", 404,
                 "{\"code\":\"monitor.no-observation\",\"params\":{\"pipeline\":\"ghost\"},"

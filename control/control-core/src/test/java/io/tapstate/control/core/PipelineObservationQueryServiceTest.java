@@ -2,6 +2,7 @@ package io.tapstate.control.core;
 
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.spi.store.ObservationStore;
@@ -60,6 +61,30 @@ class PipelineObservationQueryServiceTest {
 
         assertThat(status.pipelineId()).isEqualTo("orders_sync");
         assertThat(status.state()).isEqualTo(PipelineState.RUNNING);
+    }
+
+    @Test
+    void statusOfAFailedPipelineCarriesTheCodedReasonItDied() {
+        // FAILED on its own tells the user something broke but not what: the reason is published with the
+        // state, so the status face answers it from the store rather than sending the user to the logs.
+        Observation dead = new Observation("orders_sync", PipelineState.FAILED, Map.of("errorCount", 1L),
+                Map.of(), Map.of(), new ObservationFailure("engine.job-failed",
+                        Map.of("pipeline", "orders_sync", "cause", "sink refused the batch")));
+        var service = new PipelineObservationQueryService(storeWith(dead));
+
+        PipelineStatus status = service.status("orders_sync");
+
+        assertThat(status.state()).isEqualTo(PipelineState.FAILED);
+        assertThat(status.failure()).isNotNull();
+        assertThat(status.failure().code()).isEqualTo("engine.job-failed");
+        assertThat(status.failure().params()).containsEntry("cause", "sink refused the batch");
+    }
+
+    @Test
+    void statusOfAHealthyPipelineCarriesNoFailure() {
+        var service = new PipelineObservationQueryService(storeWith(running()));
+
+        assertThat(service.status("orders_sync").failure()).isNull();
     }
 
     @Test

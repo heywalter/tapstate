@@ -598,6 +598,12 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         if (JsonReader.parse(body) instanceof Map<?, ?> m
                 && m.get("pipelineId") instanceof String id
                 && m.get("state") instanceof String state) {
+            if (m.get("failure") instanceof Map<?, ?> failure && failure.get("code") instanceof String code) {
+                // The message is the server's rendering of that code; when it is absent the code still names
+                // the diagnosis, so it stands in rather than the whole read degrading to unreachable.
+                String message = failure.get("message") instanceof String rendered ? rendered : code;
+                return new StatusOutcome.Found(id, state, code, message);
+            }
             return new StatusOutcome.Found(id, state);
         }
         return null;
