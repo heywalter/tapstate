@@ -5,6 +5,12 @@
 > run a real end-to-end sync, but it is **not** production-hardened — see
 > [Limitations](#limitations) before you rely on it. The offline authoring CLI is
 > covered in the [main README](../README.md); this page is the runtime.
+>
+> **Recommended platform.** Docker with the Compose v2 plugin, and — on macOS — the
+> version the release you install names in its notes. The macOS binaries are built on
+> hosted runners and carry that version as their deployment target, so an older macOS
+> may refuse to launch them. You are not blocked from trying: the installer names the
+> version it expects and continues, and whether it runs from there is yours to own.
 
 What you'll do: bring up a Docker Compose stack — databases, the server, and the
 first-admin bootstrap all seeded and started together — then drive a source →
@@ -40,6 +46,8 @@ online verbs the script drives, or to point the pipeline at your own databases.
 - **Docker** with the **Compose v2** plugin (`docker compose version`). The stack is
   a single-node local demo: databases, server, and first-admin bootstrap come up
   together, on the loopback interface only.
+- **macOS: the version named in the release notes**, if you are on a Mac. It is a
+  recommendation, not a gate — see the note at the top of this page.
 - **JDK 21** — a GraalVM or plain JDK 21 (`java -version`). Preview-only: used to
   build the CLI, and — until the server image is published — to build the server jar
   the stack's image is assembled from. A published image and a CLI installer remove

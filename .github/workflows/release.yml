@@ -220,9 +220,9 @@ jobs:
           cat staging/platform-minimums.txt
           distinct="$(awk '$2 == "macos" { print $3 }' staging/platform-minimums.txt | sort -u)"
           if [ "$(echo "$distinct" | wc -l)" -eq 1 ]; then
-            sentence="Requires macOS $distinct or newer."
+            sentence="Recommended macOS: $distinct or newer."
           else
-            sentence="Requires $(awk '$2 == "macos" { printf "%smacOS %s or newer on %s", sep, $3, $1; sep="; " } END { print "." }' staging/platform-minimums.txt)"
+            sentence="Recommended macOS: $(awk '$2 == "macos" { printf "%s%s or newer on %s", sep, $3, $1; sep="; " } END { print "." }' staging/platform-minimums.txt)"
           fi
           echo "MACOS_REQ=$sentence" >> "$GITHUB_ENV"
           echo "$sentence"
@@ -242,9 +242,10 @@ jobs:
             Native CLI binaries for macOS (arm64 / x64) and Linux (x64 / arm64). Verify a download against
             its `.sha256` or `checksums.txt` before use. No `:latest` / floating pointer is published.
 
-            ${{ env.MACOS_REQ }} The floor is the deployment target the build machine stamped into the
-            binary, enforced when it loads, so it can rise between releases; `platform-minimums.txt` carries
-            the same numbers in machine-readable form and the installer refuses a machine below them.
+            ${{ env.MACOS_REQ }} That is the deployment target the build machine stamped into the binary,
+            so it can rise between releases; an older macOS may refuse to launch these. It is a
+            recommendation, not a gate — the installer names it and carries on rather than blocking you.
+            `platform-minimums.txt` carries the same numbers in machine-readable form.
           files: |
             staging/tapstate-*.tar.gz
             staging/tapstate-*.tar.gz.sha256

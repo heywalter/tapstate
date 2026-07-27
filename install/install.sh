@@ -118,15 +118,20 @@ version_ge() {
     return 0
 }
 
-# Refuse a macOS too old to load this release's binary, before the binary is fetched. A native binary
+# Say so when this macOS is older than the release was built for, then install anyway. A native binary
 # carries the deployment target of the machine that built it, and the hosted build machines move between
-# releases, so the floor belongs to the release rather than to this script: it is read from the release's
-# own platform-minimums.txt (lines of "<platform> <requirement> <version>"). Enforcement is dyld's, at
-# load time, with nothing the user can do about it -- which makes an older macOS an unsupported platform
-# like any other, and puts the refusal here with the rest of them. Anything that cannot be checked -- a
-# release that publishes no such file, an unreadable version -- is left to install as before, because a
-# check that did not happen must not masquerade as one that passed.
-check_minimum_os() {
+# releases, so the recommended version belongs to the release rather than to this script: it is read from
+# the release's own platform-minimums.txt (lines of "<platform> <requirement> <version>").
+#
+# This is a notice, not a refusal, and the difference is deliberate. The platforms refused above have no
+# binary at all -- there is nothing to install and no choice to make. Here there is one, and whether to
+# try it belongs to whoever is installing it. What they should not have to do is work out on their own
+# why it did not launch, because that failure arrives from dyld at launch, far from the install that
+# caused it. It goes to stderr: the demo bootstrap drops this script's stdout, and a notice nobody sees
+# is not a notice. Anything that cannot be checked -- a release that publishes no such file, an
+# unreadable version -- says nothing at all, because a check that did not happen must not masquerade as
+# one that passed.
+note_recommended_os() {
     [ "$os_label" = darwin ] || return 0
     command -v sw_vers >/dev/null 2>&1 || return 0
     fetch "${base_url}/download/v${version}/platform-minimums.txt" "$tmp/minimums" || return 0
@@ -139,7 +144,8 @@ check_minimum_os() {
     if version_ge "$have" "$need"; then
         return 0
     fi
-    die "tapstate $version requires macOS $need or newer; this machine runs $have, where the binary cannot load. Upgrade macOS, or build from source."
+    printf 'install: this release is built for macOS %s or newer; this machine runs %s, where it may not launch. Installing anyway.\n' \
+        "$need" "$have" >&2
 }
 
 # Refuse to install unless the download's sha256 matches its published checksum. No tool = refuse, never skip.
@@ -193,7 +199,7 @@ main() {
     staged=""
     trap 'rm -rf "$tmp" ${staged:+"$staged"}' EXIT INT TERM
 
-    check_minimum_os
+    note_recommended_os
     fetch "$url" "$tmp/$asset"
     fetch "${url}.sha256" "$tmp/${asset}.sha256"
     verify_sha256 "$tmp/$asset" "$tmp/${asset}.sha256"

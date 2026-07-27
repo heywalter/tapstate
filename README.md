@@ -84,6 +84,12 @@ and the manual `docker compose` steps behind it.
 > production. `quickstart.sh` downloads a released CLI and server image; until the
 > first preview release is cut, follow the walkthrough's build-from-source path. See
 > [Limitations](docs/quickstart-online.md#limitations).
+>
+> **Recommended platform.** Docker with Compose v2, and on macOS the version each
+> release names in its notes — the macOS binaries are built on hosted runners and
+> carry that version as their deployment target, so an older macOS may refuse to
+> launch them. Nothing stops you from installing on one; the installer says so and
+> continues, and how it goes from there is yours.
 
 A one-line installer will collapse the CLI download to a single command:
 
@@ -158,10 +164,10 @@ that executes those resources as live pipelines.
 ### Requirements
 
 - **To run the CLI:** no runtime to install — `tapstate` is a native binary (starts in
-  ~30 ms). macOS builds carry a minimum OS version that tracks the machine they were
-  built on and can rise between releases, so each release states its floor in its notes;
-  the installer refuses a machine below it rather than leaving behind a binary that
-  cannot load.
+  ~30 ms). macOS builds carry a recommended macOS version that tracks the machine they
+  were built on and can rise between releases, so each release names it in its notes.
+  Installing on an older macOS is allowed — the installer says which version the build
+  expects and carries on; whether it launches there is then up to you.
 - **To build from source:** **Oracle GraalVM for JDK 21** (includes `native-image`)
   and **Maven 3.6+**. A plain JDK 21 is enough to build and run the test suite;
   GraalVM is only needed for the native image.

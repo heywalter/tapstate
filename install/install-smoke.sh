@@ -208,82 +208,88 @@ else
   printf '  SKIP  latest-302 resolution (python3 not available)\n'
 fi
 
-# --- macOS minimum-version gate: the floor is read from the release, never hardcoded here ------------
-# A native binary carries the deployment target of the machine that built it, so a macOS older than that
-# cannot load it at all: dyld refuses before any of the program runs, and the user has no way around it.
-# That makes an old macOS an unsupported platform like any other, and it must be refused before anything
-# is downloaded. The floor belongs to the release (build machines move between releases), so it is
-# published alongside the assets and read from there.
+# --- the recommended macOS version: said out loud, never enforced -----------------------------------
+# A native binary carries the deployment target of the machine that built it, so an older macOS may not
+# load it -- and when that happens it happens at launch, from dyld, far from the install that caused it.
+# So the installer says so. It does not refuse: unlike the platforms above, a binary for this one exists,
+# and whether to try it is the user's call. Every case below therefore asserts the install *succeeded*;
+# what varies is only whether the notice was printed. The recommendation belongs to the release (build
+# machines move between releases), so it is published alongside the assets and read from there.
 MINIMUMS="$STUB/download/v$VERSION/platform-minimums.txt"
 FLOOR=
 set_floor() { FLOOR="$1"; printf 'darwin-arm64 macos %s\ndarwin-x64 macos %s\n' "$1" "$1" > "$MINIMUMS"; }
 
-gate() {   # MACOS_VERSION EXPECT(refuse|install) LABEL
-  local idir; idir="$(mktemp -d)/bin"
+# Detect the notice by a phrase only it carries. Matching on the version alone would be fooled by a
+# temp path that happens to contain the same digits.
+noticed() { printf '%s' "$OUT" | grep -q 'may not launch'; }
+
+say() {   # MACOS_VERSION EXPECT(notice|quiet) LABEL
+  local idir said; idir="$(mktemp -d)/bin"
   run_install Darwin arm64 glibc "$idir" "$1"
-  if [ "$2" = refuse ]; then
-    # the refusal must name both versions -- "unsupported" alone leaves the user guessing which macOS to get
-    if [ "$RC" -ne 0 ] && [ ! -e "$idir/tapstate" ] \
-       && printf '%s' "$OUT" | grep -qF "$FLOOR" && printf '%s' "$OUT" | grep -qF "$1"; then
-      ok "$3"
-    else
-      bad "$3 (rc=$RC, binary present=$( [ -e "$idir/tapstate" ] && echo yes || echo no )): $OUT"
-    fi
-  else
-    if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then ok "$3"; else bad "$3 (rc=$RC): $OUT"; fi
+  if [ "$RC" -ne 0 ] || [ ! -x "$idir/tapstate" ]; then
+    bad "$3 -- the install must never be refused (rc=$RC): $OUT"; return
   fi
+  if noticed; then said=notice; else said=quiet; fi
+  if [ "$said" != "$2" ]; then
+    bad "$3 (wanted $2, got $said): $OUT"; return
+  fi
+  # a notice that does not name both versions leaves the reader to guess which macOS this needs
+  if [ "$2" = notice ] && ! { printf '%s' "$OUT" | grep -qF "$FLOOR" && printf '%s' "$OUT" | grep -qF "$1"; }; then
+    bad "$3 -- notice names neither the recommendation nor the running version: $OUT"; return
+  fi
+  ok "$3"
 }
 
 set_floor 15.0
-gate 14.7 refuse  "refuses a macOS below the release's floor, before downloading, naming both versions"
-gate 15.0 install "installs on exactly the floor version"
-gate 15.5 install "installs on a newer macOS in the same major"
-gate 26.1 install "installs on a higher major -- the floor the next runner generation will publish"
+say 14.7 notice "says so below the recommended version, and installs anyway, naming both versions"
+say 15.0 quiet  "stays quiet on exactly the recommended version"
+say 15.5 quiet  "stays quiet on a newer macOS in the same major"
+say 26.1 quiet  "stays quiet on a higher major -- the version the next runner generation will publish"
 
 # Version fields are numbers, not text, and both directions of getting that wrong are covered. Compared
-# as text, 15.9 sorts above 15.10 -- which would admit a machine that must be refused, the dangerous
-# direction -- and a bare "15" sorts below "15.0", which would refuse a machine sitting exactly on the
-# floor. Neither is hypothetical: macOS reports both shapes, and minor versions do reach double digits.
+# as text, 15.9 sorts above 15.10 -- so the machine that most needs telling would hear nothing -- and a
+# bare "15" sorts below "15.0", which would nag a machine sitting exactly on the recommendation. Neither
+# is hypothetical: macOS reports both shapes, and minor versions do reach double digits.
 set_floor 15.10
-gate 15.9 refuse "refuses 15.9 against a 15.10 floor (fields compared as numbers, not as text)"
+say 15.9 notice "says so for 15.9 against a 15.10 recommendation (fields compared as numbers, not as text)"
 set_floor 15.0
-gate 15 install "accepts a bare major equal to the floor (an absent field counts as zero)"
+say 15 quiet "stays quiet on a bare major equal to the recommendation (an absent field counts as zero)"
 
-# Each platform carries its own floor, and the two darwin legs are built on separate machines that need
-# not move in step. The line is selected by the platform tuple, not by being first in the file.
+# Each platform carries its own recommendation, and the two darwin legs are built on separate machines
+# that need not move in step. The line is selected by the platform tuple, not by being first in the file.
 printf 'darwin-arm64 macos 15.0\ndarwin-x64 macos 26.0\n' > "$MINIMUMS"
 idir="$(mktemp -d)/bin"
 run_install Darwin x86_64 glibc "$idir" 15.5
-if [ "$RC" -ne 0 ] && [ ! -e "$idir/tapstate" ] && printf '%s' "$OUT" | grep -qF 26.0; then
-  ok "reads the floor of the platform being installed, not whichever line comes first"
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && noticed && printf '%s' "$OUT" | grep -qF 26.0; then
+  ok "reads the recommendation of the platform being installed, not whichever line comes first"
 else
-  bad "platform-keyed floor lookup (rc=$RC): $OUT"
+  bad "platform-keyed lookup (rc=$RC, noticed=$(noticed && echo yes || echo no)): $OUT"
 fi
 idir="$(mktemp -d)/bin"
 run_install Darwin arm64 glibc "$idir" 15.5
-if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then
-  ok "the same file admits arm64 at 15.5, whose own floor is lower"
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
+  ok "the same file leaves arm64 at 15.5 alone, whose own recommendation is lower"
 else
-  bad "arm64 blocked by the x64 floor (rc=$RC): $OUT"
+  bad "arm64 nagged by the x64 recommendation (rc=$RC): $OUT"
 fi
 
-# a macOS floor says nothing about Linux, which has no sw_vers and no entry in the file
+# a macOS recommendation says nothing about Linux, which has no sw_vers and no entry in the file
 idir="$(mktemp -d)/bin"
 run_install Linux x86_64 glibc "$idir"
-if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then
-  ok "a macOS floor does not affect a Linux install"
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
+  ok "a macOS recommendation does not reach a Linux install"
 else
-  bad "linux install blocked by the macOS gate (rc=$RC): $OUT"
+  bad "linux install saw the macOS notice (rc=$RC): $OUT"
 fi
 
-# a release that publishes no minimums cannot be checked: install proceeds exactly as it did before
+# a release that publishes no minimums has nothing to compare against, and must not invent one
 rm -f "$MINIMUMS"
 idir="$(mktemp -d)/bin"
 run_install Darwin arm64 glibc "$idir" 14.7
-if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then
-  ok "a release without published minimums is installed as before (no floor to check against)"
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
+  ok "a release without published minimums installs silently (nothing to compare against)"
 else
-  bad "missing minimums must not block the install (rc=$RC): $OUT"
+  bad "missing minimums must produce no notice (rc=$RC): $OUT"
 fi
 
 # --- summary ----------------------------------------------------------------------------------------
