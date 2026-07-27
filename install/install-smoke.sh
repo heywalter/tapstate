@@ -35,9 +35,12 @@ make_asset() {   # $1 = platform label; the fake binary echoes its platform so a
 }
 for p in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do make_asset "$p"; done
 
-# run install.sh seeing a fake platform. args: OS ARCH MUSL(glibc|musl) INSTALL_DIR ; sets RC + OUT
+# run install.sh seeing a fake platform. args: OS ARCH MUSL(glibc|musl) INSTALL_DIR [MACOS_VERSION]
+# A fifth argument installs a fake `sw_vers` reporting that macOS product version, which drives the
+# minimum-version gate. Leaving it empty means the run sees whatever sw_vers this machine has (on Linux,
+# none at all) -- the same as every test written before the gate existed.
 run_install() {
-  local fos="$1" farch="$2" fmusl="$3" idir="$4" shim
+  local fos="$1" farch="$2" fmusl="$3" idir="$4" fmacos="${5:-}" shim
   shim="$(mktemp -d)"
   cat > "$shim/uname" <<EOF
 #!/bin/sh
@@ -51,6 +54,10 @@ EOF
   if [ "$fmusl" = musl ]; then
     printf '#!/bin/sh\necho "musl libc (x86_64)\\nVersion 1.2.4"\n' > "$shim/ldd"
     chmod +x "$shim/ldd"
+  fi
+  if [ -n "$fmacos" ]; then
+    printf '#!/bin/sh\necho "%s"\n' "$fmacos" > "$shim/sw_vers"
+    chmod +x "$shim/sw_vers"
   fi
   OUT="$(PATH="$shim:$PATH" \
          TAPSTATE_VERSION="$VERSION" \
@@ -199,6 +206,84 @@ PY
   fi
 else
   printf '  SKIP  latest-302 resolution (python3 not available)\n'
+fi
+
+# --- macOS minimum-version gate: the floor is read from the release, never hardcoded here ------------
+# A native binary carries the deployment target of the machine that built it, so a macOS older than that
+# cannot load it at all: dyld refuses before any of the program runs, and the user has no way around it.
+# That makes an old macOS an unsupported platform like any other, and it must be refused before anything
+# is downloaded. The floor belongs to the release (build machines move between releases), so it is
+# published alongside the assets and read from there.
+MINIMUMS="$STUB/download/v$VERSION/platform-minimums.txt"
+FLOOR=
+set_floor() { FLOOR="$1"; printf 'darwin-arm64 macos %s\ndarwin-x64 macos %s\n' "$1" "$1" > "$MINIMUMS"; }
+
+gate() {   # MACOS_VERSION EXPECT(refuse|install) LABEL
+  local idir; idir="$(mktemp -d)/bin"
+  run_install Darwin arm64 glibc "$idir" "$1"
+  if [ "$2" = refuse ]; then
+    # the refusal must name both versions -- "unsupported" alone leaves the user guessing which macOS to get
+    if [ "$RC" -ne 0 ] && [ ! -e "$idir/tapstate" ] \
+       && printf '%s' "$OUT" | grep -qF "$FLOOR" && printf '%s' "$OUT" | grep -qF "$1"; then
+      ok "$3"
+    else
+      bad "$3 (rc=$RC, binary present=$( [ -e "$idir/tapstate" ] && echo yes || echo no )): $OUT"
+    fi
+  else
+    if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then ok "$3"; else bad "$3 (rc=$RC): $OUT"; fi
+  fi
+}
+
+set_floor 15.0
+gate 14.7 refuse  "refuses a macOS below the release's floor, before downloading, naming both versions"
+gate 15.0 install "installs on exactly the floor version"
+gate 15.5 install "installs on a newer macOS in the same major"
+gate 26.1 install "installs on a higher major -- the floor the next runner generation will publish"
+
+# Version fields are numbers, not text, and both directions of getting that wrong are covered. Compared
+# as text, 15.9 sorts above 15.10 -- which would admit a machine that must be refused, the dangerous
+# direction -- and a bare "15" sorts below "15.0", which would refuse a machine sitting exactly on the
+# floor. Neither is hypothetical: macOS reports both shapes, and minor versions do reach double digits.
+set_floor 15.10
+gate 15.9 refuse "refuses 15.9 against a 15.10 floor (fields compared as numbers, not as text)"
+set_floor 15.0
+gate 15 install "accepts a bare major equal to the floor (an absent field counts as zero)"
+
+# Each platform carries its own floor, and the two darwin legs are built on separate machines that need
+# not move in step. The line is selected by the platform tuple, not by being first in the file.
+printf 'darwin-arm64 macos 15.0\ndarwin-x64 macos 26.0\n' > "$MINIMUMS"
+idir="$(mktemp -d)/bin"
+run_install Darwin x86_64 glibc "$idir" 15.5
+if [ "$RC" -ne 0 ] && [ ! -e "$idir/tapstate" ] && printf '%s' "$OUT" | grep -qF 26.0; then
+  ok "reads the floor of the platform being installed, not whichever line comes first"
+else
+  bad "platform-keyed floor lookup (rc=$RC): $OUT"
+fi
+idir="$(mktemp -d)/bin"
+run_install Darwin arm64 glibc "$idir" 15.5
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then
+  ok "the same file admits arm64 at 15.5, whose own floor is lower"
+else
+  bad "arm64 blocked by the x64 floor (rc=$RC): $OUT"
+fi
+
+# a macOS floor says nothing about Linux, which has no sw_vers and no entry in the file
+idir="$(mktemp -d)/bin"
+run_install Linux x86_64 glibc "$idir"
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then
+  ok "a macOS floor does not affect a Linux install"
+else
+  bad "linux install blocked by the macOS gate (rc=$RC): $OUT"
+fi
+
+# a release that publishes no minimums cannot be checked: install proceeds exactly as it did before
+rm -f "$MINIMUMS"
+idir="$(mktemp -d)/bin"
+run_install Darwin arm64 glibc "$idir" 14.7
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ]; then
+  ok "a release without published minimums is installed as before (no floor to check against)"
+else
+  bad "missing minimums must not block the install (rc=$RC): $OUT"
 fi
 
 # --- summary ----------------------------------------------------------------------------------------

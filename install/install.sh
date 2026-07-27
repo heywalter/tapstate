@@ -88,6 +88,60 @@ resolve_version() {
     [ -n "$version" ] || die "could not determine the latest version from ${base_url}/latest; set TAPSTATE_VERSION to pin one."
 }
 
+# True when $1 is a dotted decimal version and nothing else, so the comparison below never feeds a word
+# to an integer test. Anything else is treated as unparseable and leaves the check skipped.
+is_dotted_number() {
+    case "$1" in
+        '' | *[!0-9.]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# True when dotted version $1 is at least $2, compared field by field as integers. A string comparison
+# would put 26.1 below 15.0 and refuse exactly the machines a newer build generation targets. Absent
+# fields count as zero, so 15 and 15.0.0 compare equal.
+version_ge() {
+    h="$1"
+    n="$2"
+    while [ -n "$h" ] || [ -n "$n" ]; do
+        case "$h" in *.*) hf="${h%%.*}"; h="${h#*.}" ;; *) hf="$h"; h="" ;; esac
+        case "$n" in *.*) nf="${n%%.*}"; n="${n#*.}" ;; *) nf="$n"; n="" ;; esac
+        [ -n "$hf" ] || hf=0
+        [ -n "$nf" ] || nf=0
+        if [ "$hf" -gt "$nf" ]; then
+            return 0
+        fi
+        if [ "$hf" -lt "$nf" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Refuse a macOS too old to load this release's binary, before the binary is fetched. A native binary
+# carries the deployment target of the machine that built it, and the hosted build machines move between
+# releases, so the floor belongs to the release rather than to this script: it is read from the release's
+# own platform-minimums.txt (lines of "<platform> <requirement> <version>"). Enforcement is dyld's, at
+# load time, with nothing the user can do about it -- which makes an older macOS an unsupported platform
+# like any other, and puts the refusal here with the rest of them. Anything that cannot be checked -- a
+# release that publishes no such file, an unreadable version -- is left to install as before, because a
+# check that did not happen must not masquerade as one that passed.
+check_minimum_os() {
+    [ "$os_label" = darwin ] || return 0
+    command -v sw_vers >/dev/null 2>&1 || return 0
+    fetch "${base_url}/download/v${version}/platform-minimums.txt" "$tmp/minimums" || return 0
+    [ -s "$tmp/minimums" ] || return 0
+    need="$(awk -v p="$platform" '$1 == p && $2 == "macos" { print $3 }' "$tmp/minimums")"
+    [ -n "$need" ] || return 0
+    have="$(sw_vers -productVersion)"
+    is_dotted_number "$need" || return 0
+    is_dotted_number "$have" || return 0
+    if version_ge "$have" "$need"; then
+        return 0
+    fi
+    die "tapstate $version requires macOS $need or newer; this machine runs $have, where the binary cannot load. Upgrade macOS, or build from source."
+}
+
 # Refuse to install unless the download's sha256 matches its published checksum. No tool = refuse, never skip.
 verify_sha256() {
     file="$1"
@@ -139,6 +193,7 @@ main() {
     staged=""
     trap 'rm -rf "$tmp" ${staged:+"$staged"}' EXIT INT TERM
 
+    check_minimum_os
     fetch "$url" "$tmp/$asset"
     fetch "${url}.sha256" "$tmp/${asset}.sha256"
     verify_sha256 "$tmp/$asset" "$tmp/${asset}.sha256"
