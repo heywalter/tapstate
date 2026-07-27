@@ -173,8 +173,12 @@ class PipelineObservationApiTest {
                 .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
 
         assertThat(body.get("pipelineId")).isEqualTo("pl2");
-        Map<?, ?> metrics = (Map<?, ?>) body.get("metrics");
-        assertThat(metrics.get("perTableOffset")).isEqualTo(Map.of("orders", "w7"));
+        // A source position is a string, and the metrics map is numeric run statistics. Carrying the
+        // positions as a sibling rather than nested inside that map keeps every metrics cell a number,
+        // so a reader never has to type-test a cell before using it.
+        assertThat(body.get("perTableOffset")).isEqualTo(Map.of("orders", "w7"));
+        Map<String, Object> metrics = (Map<String, Object>) body.get("metrics");
+        assertThat(metrics).doesNotContainKey("perTableOffset");
         assertThat(metrics.get("recordCount")).isNotNull();
     }
 
@@ -184,8 +188,9 @@ class PipelineObservationApiTest {
                 .header("Authorization", "Bearer " + machineToken(Scope.READ))
                 .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
 
-        Map<?, ?> metrics = (Map<?, ?>) body.get("metrics");
-        assertThat(metrics.get("perTableOffset")).isNull();
+        // Absent, not an empty object: no position has been acked, which is the same never-faked rule the
+        // numeric metrics follow.
+        assertThat(body).doesNotContainKey("perTableOffset");
     }
 
     @Test

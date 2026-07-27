@@ -980,10 +980,10 @@ class HttpControlPlaneClientTest {
 
     @Test
     void metricsCapturesPerTableOffsetFromTheOpenMap() throws Exception {
-        // perTableOffset rides inside the open map as a nested table -> srcpos object; it is captured
-        // separately from the numeric stats, and the nested object never leaks into the numeric map.
+        // perTableOffset is a sibling of the metrics map, not a cell inside it: a source position is a
+        // string and every metrics cell is a number, so the two never share a container.
         HttpServer server = apiServer("/api/pipelines/pl1/metrics", 200,
-                "{\"pipelineId\":\"pl1\",\"metrics\":{\"recordCount\":6,\"perTableOffset\":{\"orders\":\"w7\"}}}",
+                "{\"pipelineId\":\"pl1\",\"metrics\":{\"recordCount\":6},\"perTableOffset\":{\"orders\":\"w7\"}}",
                 new AtomicReference<>());
         try {
             MetricsOutcome outcome = new HttpControlPlaneClient().metrics(baseOf(server), "tok", "pl1");
