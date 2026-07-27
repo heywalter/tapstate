@@ -61,6 +61,22 @@ echo x > e2e/src/test/java/io/tapstate/e2e/SomethingIT.java
 git add -A && git commit -qm test
 expect "a test-only change is out of scope" 0 "not in scope"
 
+# test-support has main sources like any module, but they are scaffolding: nothing there ships, so
+# holding it to the rule would only teach people to reach for the waiver.
+fresh_repo
+mkdir -p test-support/src/main/java
+echo changed > test-support/src/main/java/DockerGate.java
+git add -A && git commit -qm scaffolding
+expect "a change to shared test scaffolding is out of scope" 0 "not in scope"
+
+# ... but only that module: the exemption is one named path, not "anything that looks like a helper".
+fresh_repo
+echo changed >> app/src/main/java/App.java
+mkdir -p test-support/src/main/java
+echo changed > test-support/src/main/java/DockerGate.java
+git add -A && git commit -qm both
+expect "scaffolding does not exempt a product change beside it" 1 "brings no end-to-end case"
+
 fresh_repo
 echo changed >> app/src/main/java/App.java
 git add -A && git commit -qm product

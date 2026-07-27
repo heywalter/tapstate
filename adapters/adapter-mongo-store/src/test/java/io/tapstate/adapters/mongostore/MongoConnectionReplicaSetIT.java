@@ -9,12 +9,12 @@ import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.EpochCas;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Duration;
@@ -26,17 +26,15 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
 /**
  * Witnesses the store contract against a real Mongo — the pure {@link EpochCas} contract must equal
  * what a real replica-set does, so the two cannot drift (the production store lands later and must
- * hold to this). Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * hold to this). Where Docker is absent this aborts on a developer machine and fails in CI, where a
+ * skip would be a green build that ran nothing.
  *
- * <ul>
- *   <li>a real replica-set passes {@code verify()};</li>
- *   <li>a standalone server is reported {@code store.not-replica-set};</li>
- *   <li>a real conditional {@code findOneAndUpdate} on the epoch matches {@link EpochCas}: the
- *       matching write applies and bumps the epoch, a stale write is fenced and does not overwrite,
- *       and the epoch advances monotonically.</li>
- * </ul>
+ * <ul> <li>a real replica-set passes {@code verify()};</li> <li>a standalone server is reported {@code
+ * store.not-replica-set};</li> <li>a real conditional {@code findOneAndUpdate} on the epoch matches
+ * {@link EpochCas}: the matching write applies and bumps the epoch, a stale write is fenced and does
+ * not overwrite, and the epoch advances monotonically.</li> </ul>
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoConnectionReplicaSetIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

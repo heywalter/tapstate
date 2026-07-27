@@ -1,6 +1,7 @@
 package io.tapstate.e2e;
 
 import io.tapstate.core.lifecycle.LifecycleVerb;
+import io.tapstate.testsupport.DockerGate;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.params.ParameterizedTest;

@@ -19,6 +19,15 @@
   <description>MongoDB storage adapter: the connection substrate (reach + replica-set check + coded diagnostics), the artifact truth-layer store (canonical save / get / list), the CAS state store (epoch-fencing compare-and-swap on the pipeline checkpoint), and the connection catalog store (structured connection configs), with driver failures translated into io-domain coded diagnostics</description>
 
   <dependencies>
+    <!-- Shared test scaffolding: the Docker gate these suites are held to. Test scope - nothing
+         from it reaches the shipped artifact. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>test-support</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
     <!-- The error-code contract: this module raises coded diagnostics (store.* domain) when the
          store is unreachable or is not a replica set, translated from driver exceptions here so no
          driver type escapes the module (rule R3). -->

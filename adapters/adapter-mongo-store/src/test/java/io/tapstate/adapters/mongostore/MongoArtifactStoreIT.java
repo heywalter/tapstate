@@ -10,11 +10,11 @@ import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactMutation;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.List;
@@ -25,15 +25,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * Witnesses the artifact truth layer against a real Mongo replica-set: a written artifact reads
- * back to the same canonical form, an absent id reads back empty, list returns every stored
- * artifact, a re-save of the same id replaces in place (last write wins) rather than accumulating
- * documents, a batch write commits atomically and rolls the whole batch back on a mid-batch write
- * failure, and a stored document that cannot be reconstructed is surfaced (not silently skipped)
- * without leaking the scan cursor. Skipped automatically where Docker is absent, so a Docker-less
- * build stays green.
+ * Witnesses the artifact truth layer against a real Mongo replica-set: a written artifact reads back
+ * to the same canonical form, an absent id reads back empty, list returns every stored artifact, a
+ * re-save of the same id replaces in place (last write wins) rather than accumulating documents, a
+ * batch write commits atomically and rolls the whole batch back on a mid-batch write failure, and a
+ * stored document that cannot be reconstructed is surfaced (not silently skipped) without leaking the
+ * scan cursor. Where Docker is absent this aborts on a developer machine and fails in CI, where a skip
+ * would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoArtifactStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

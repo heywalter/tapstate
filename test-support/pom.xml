@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Test scaffolding shared by more than one module. Nothing here ships: modules depend on it in test
+  scope only, and it is the one place allowed to hold a decision that several test suites must make
+  the same way.
+  It exists because the alternative did not work. The Docker gate started inside e2e, but the suites
+  that most needed it - the store adapter's and the assembly root's - sit *below* e2e in the reactor,
+  so reaching it would have been a backwards dependency. Copying the decision into each module would
+  have let the copies drift, which for a gate means one of them quietly stops gating.
+  Its own classes are main sources rather than a test-jar, so that consumers depend on it the ordinary
+  way. The ring rules R1-R10 do not reach it: they are written per ring package, and io.tapstate.testsupport
+  is in none of them - the same standing e2e and arch-tests have.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.tapstate</groupId>
+    <artifactId>tapstate</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>test-support</artifactId>
+  <name>Tapstate :: Test Support</name>
+  <description>Test scaffolding shared across modules; consumed in test scope, never shipped</description>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.tapstate</groupId>
+        <artifactId>bom</artifactId>
+        <version>${revision}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- Compile scope here, test scope at every consumer: these are the extension API the gate is
+         written against, not something the product links. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

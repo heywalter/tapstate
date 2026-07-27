@@ -35,6 +35,15 @@
   </dependencyManagement>
 
   <dependencies>
+    <!-- Shared test scaffolding: the Docker gate these suites are held to. Test scope - nothing
+         from it reaches the shipped artifact. -->
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>test-support</artifactId>
+      <version>${revision}</version>
+      <scope>test</scope>
+    </dependency>
+
     <!-- The envelope's pipeline: key references a product .tap.yml, parsed by the product's own
          parser. A second, drifting copy of the DSL in test scope is the failure this avoids. -->
     <dependency>

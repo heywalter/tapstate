@@ -5,11 +5,11 @@ import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.core.lifecycle.DesiredState;
 import io.tapstate.core.lifecycle.PipelineState;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.Optional;
@@ -20,9 +20,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Witnesses the pipeline desired-state store against a real Mongo replica-set: a saved desired intent
  * reads back equal through the real bson encode / decode, an absent pipeline reads back empty, and a
  * re-save of the same pipeline replaces in place (last write wins) rather than accumulating documents.
- * Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * Where Docker is absent this aborts on a developer machine and fails in CI, where a skip would be a
+ * green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoDesiredStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

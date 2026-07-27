@@ -44,7 +44,8 @@ word was missing. That is how the vocabulary grows; a case you could not express
 is a gap in the executor, not a reason to skip the case.
 
 Out of scope, and passing without a case: documentation, build and CI
-configuration, scripts, and test-only changes. If a product change genuinely
+configuration, scripts, test-only changes, and the shared test scaffolding in
+`test-support/` — none of it ships. If a product change genuinely
 cannot carry a case, a maintainer applies the `no-e2e` label and records why in
 the review — it is a reviewed exception, not something you assert about your own
 change. The check verifies a case is *present*; whether it is *adequate* is the

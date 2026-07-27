@@ -23,6 +23,9 @@
 
   <modules>
     <module>bom</module>
+    <!-- test-support is test scaffolding shared by suites in several modules; declared before all of
+         them because they consume it, and outside the six rings like e2e and arch-tests -->
+    <module>test-support</module>
     <module>core</module>
     <!-- shared presentation: the error-code message catalog + renderer, depended on by the CLI
          and the app assembly root; sits above core, below any presentation face -->

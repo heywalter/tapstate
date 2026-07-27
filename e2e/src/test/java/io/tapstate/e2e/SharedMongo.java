@@ -1,5 +1,6 @@
 package io.tapstate.e2e;
 
+import io.tapstate.testsupport.DockerGate;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.utility.DockerImageName;
 

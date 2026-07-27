@@ -24,7 +24,10 @@ merge_base="$(git merge-base "$base" HEAD)"
 changed="$(git diff --name-only "$merge_base" HEAD)"
 present="$(git diff --name-only --diff-filter=d "$merge_base" HEAD)"
 
-product="$(printf '%s\n' "$changed" | grep -E '(^|/)src/main/' || true)"
+# "Product source" means source that ships. test-support is the one module whose main sources are
+# test scaffolding: nothing there reaches a released artifact, and asking it for an end-to-end case
+# would mean waiving every change to it - which is how a waiver stops meaning anything.
+product="$(printf '%s\n' "$changed" | grep -E '(^|/)src/main/' | grep -v '^test-support/' || true)"
 if [ -z "$product" ]; then
   echo "not in scope: this pull request changes no product source."
   exit 0
