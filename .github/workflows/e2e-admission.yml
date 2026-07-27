@@ -1,0 +1,52 @@
+# End-to-end admission gate.
+#
+# A change to product source is admitted only with an end-to-end case alongside it. What counts:
+#   - a declarative specification, e2e/examples/<name>/spec.e2e.yml — the preferred form
+#   - a bespoke end-to-end test, e2e/src/test/java/**/*IT.java — for behavior the specification
+#     vocabulary cannot yet say
+# In scope: a pull request touching any */src/main/ file. Documentation, build and CI configuration,
+# scripts, and test-only changes are out of scope and pass without a case.
+#
+# This gate checks that a case is *present*. Whether it is *adequate* is the reviewer's call, and no
+# workflow can take that over: presence is mechanical, adequacy is judgement. What the gate buys is
+# that the absence of a case can no longer pass unnoticed.
+#
+# Waiver: a maintainer applies the `no-e2e` label, and says why in the review. It is a reviewed
+# decision recorded on the pull request, the same shape as adding a path to .cjk-allowlist — not
+# something the gate infers on the author's word.
+#
+# The decision lives in a script rather than inline here, so that it can be linted, run by hand, and
+# above all held to its own cases — which run first, on every pull request. A gate is exactly as
+# trustworthy as the last time something proved it still refuses; nobody notices a gate that has
+# quietly started admitting everything.
+#
+# Like the other gates here, this is meant to be a required status check on main (branch protection);
+# a workflow that merely runs is not a gate until merges depend on it.
+name: e2e admission
+
+on:
+  pull_request:
+    branches:
+      - main
+    # labeled/unlabeled beyond the defaults: applying the waiver has to re-evaluate the gate, or the
+    # only way to clear a red check would be an empty push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  e2e-admission:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history, so the merge base with the target branch resolves
+
+      - name: The gate still decides the way it is supposed to
+        run: |
+          shellcheck .github/scripts/e2e-admission.sh .github/scripts/e2e-admission-smoke.sh
+          bash .github/scripts/e2e-admission-smoke.sh
+
+      - name: An end-to-end case accompanies the product change
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: bash .github/scripts/e2e-admission.sh

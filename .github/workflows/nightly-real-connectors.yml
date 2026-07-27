@@ -1,27 +1,28 @@
-# Real-connector witness lane (manual for now).
+# Real-connector witness lane.
 #
 # Runs the real-connector end-to-end witnesses - RealMysqlToMongoSnapshotIT and RealMysqlToMongoCdcIT -
 # across both fidelity tiers: the product embedded in the test JVM, and the shipped boot jar in its own
 # process. They drive two real Tapdata connectors (MySQL, MongoDB), so they need a Docker daemon for
-# the databases and a directory of the real connector jars. The default CI build skips them (no jars);
-# this lane is where they are meant to run.
+# the databases and the connectors' runtime jars. The default CI build skips them (no jars); this lane
+# is where they are meant to run.
 #
-# Not scheduled yet, on purpose. The connector jars are not published where a hosted runner can fetch
-# them, so this stays workflow_dispatch until a runner that stages them exists (the connectors_dir
-# input names their location on that runner). When one does, uncomment the schedule below. The gate
-# fails rather than skips when the named directory does not resolve both jars, so a triggered run that
-# cannot get them reports red - never a green build that verified nothing.
+# The jars are built here from the connectors' own source. They used to be named as a directory somebody
+# had staged on the runner by hand, which is what kept this lane unscheduled: a nightly cannot depend on
+# a person having put files somewhere first. Building them makes a run self-sufficient, so the schedule
+# below is live.
+#
+# Every way this can go wrong is red rather than skipped. A clone or build failure stops the job; the
+# connector gate fails rather than skips when the staged directory does not resolve both jars; and the
+# Docker gate fails rather than skips in CI. A lane whose whole purpose is running the real thing must
+# never report green having run nothing.
 name: Real connectors
 
 on:
   workflow_dispatch:
-    inputs:
-      connectors_dir:
-        description: "Directory on the runner holding the mysql + mongodb connector jars"
-        required: true
-        type: string
-  # schedule:
-  #   - cron: "0 3 * * *"   # enable once a runner stages the connector jars
+  schedule:
+    # Off the hour on purpose: GitHub queues scheduled runs, and the top of an hour is when everyone
+    # else's are queued too, so an on-the-hour schedule is the one most likely to start late.
+    - cron: "30 19 * * *"
 
 concurrency:
   group: real-connectors-${{ github.ref }}
@@ -30,25 +31,26 @@ concurrency:
 jobs:
   real-connectors:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
-      - name: Require a connectors directory
-        # required:true does not reject an emptied field, and an empty value would make the gate skip -
-        # a hollow green, the outcome this lane exists to prevent. Fail fast instead.
-        run: test -n "${{ inputs.connectors_dir }}" || { echo "connectors_dir must be a non-empty path on the runner" >&2; exit 1; }
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
+      - name: Build the connector jars from source
+        # Shares the Maven cache the product build restores above. On a cold cache this step is minutes
+        # of downloads rather than of compiling - the connectors pull a large dependency graph, and the
+        # MySQL one builds a vendored Debezium.
+        run: e2e/build-real-connectors.sh "${{ runner.temp }}/connectors"
       - name: Real-connector witnesses on both tiers
         # Docker 29 rejects the API version testcontainers negotiates by default, so pin it. The surefire
-        # selector matches nothing, so only the two failsafe witnesses run; the connector gate fails
-        # rather than skips if connectors_dir does not resolve both jars.
+        # selector matches nothing, so only the two failsafe witnesses run.
         run: >
           mvn -B -pl e2e -am verify
           -Dapi.version=1.44
-          -Dtapstate.e2e.connectors-dir="${{ inputs.connectors_dir }}"
+          -Dtapstate.e2e.connectors-dir="${{ runner.temp }}/connectors"
           -Dtest=ZzzNoSuchSurefireSelector -Dsurefire.failIfNoSpecifiedTests=false
           -Dit.test=RealMysqlToMongoSnapshotIT,RealMysqlToMongoCdcIT
           -Dfailsafe.failIfNoSpecifiedTests=false
