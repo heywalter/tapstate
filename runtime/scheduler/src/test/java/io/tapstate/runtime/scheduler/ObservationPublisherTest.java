@@ -3,6 +3,7 @@ package io.tapstate.runtime.scheduler;
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.StateJson;
 import io.tapstate.spi.store.ObservationStore;
@@ -113,6 +114,46 @@ class ObservationPublisherTest {
         publisher.publish("orders");
 
         assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
+    }
+
+    @Test
+    void publishCarriesTheCodedFailureOfAJobThatDied() {
+        state.seed("orders", PipelineState.FAILED);
+
+        publisher.publish("orders", new ObservationFailure(
+                "engine.job-failed", Map.of("pipeline", "orders", "cause", "the sink rejected the batch")));
+
+        Observation published = observations.read("orders").orElseThrow();
+        // A dead job is observable as a state and a count, but neither says why. The failure carries the
+        // canonical code and its named arguments, so the read face can answer that from the store alone.
+        assertThat(published.failure()).isNotNull();
+        assertThat(published.failure().code()).isEqualTo("engine.job-failed");
+        assertThat(published.failure().params())
+                .containsOnly(entry("pipeline", "orders"), entry("cause", "the sink rejected the batch"));
+    }
+
+    @Test
+    void publishWithoutAFailureLeavesTheFailureUnset() {
+        state.seed("orders", PipelineState.RUNNING);
+
+        publisher.publish("orders");
+
+        // A healthy pipeline has no failure to carry: absence, not an empty-string code.
+        assertThat(observations.read("orders").orElseThrow().failure()).isNull();
+    }
+
+    @Test
+    void republishClearsTheFailureWhenThePipelineRecovers() {
+        state.seed("orders", PipelineState.FAILED);
+        publisher.publish("orders", new ObservationFailure("engine.job-failed", Map.of("pipeline", "orders")));
+        assertThat(observations.read("orders").orElseThrow().failure()).isNotNull();
+
+        state.seed("orders", PipelineState.RUNNING);
+        publisher.publish("orders");
+
+        // The observation is current-state, not a history: a recovered pipeline must not keep answering with
+        // the failure that killed its previous run.
+        assertThat(observations.read("orders").orElseThrow().failure()).isNull();
     }
 
     @Test

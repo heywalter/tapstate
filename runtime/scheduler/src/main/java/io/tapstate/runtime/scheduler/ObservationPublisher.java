@@ -1,6 +1,7 @@
 package io.tapstate.runtime.scheduler;
 
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.StateJson;
 import io.tapstate.spi.store.ObservationStore;
@@ -64,11 +65,21 @@ public final class ObservationPublisher {
 
     /** Publishes the pipeline's latest observation from its actual state; a no-op if it has no checkpoint. */
     public void publish(String pipelineId) {
+        publish(pipelineId, null);
+    }
+
+    /**
+     * Publishes the pipeline's latest observation from its actual state, carrying {@code failure} as the
+     * coded reason its run died ({@code null} while it is healthy); a no-op if it has no checkpoint. The
+     * failure is republished from the caller each pass rather than accumulated here, so it tracks the
+     * current state like every other field: a recovered pipeline publishes without one.
+     */
+    public void publish(String pipelineId, ObservationFailure failure) {
         Objects.requireNonNull(pipelineId, "pipelineId");
         state.read(pipelineId).ifPresent(checkpoint -> {
             PipelineState actual = StateJson.parse(checkpoint.stateJson());
-            observations.save(new Observation(
-                    pipelineId, actual, metrics(pipelineId, actual), Map.of(), positions.apply(pipelineId)));
+            observations.save(new Observation(pipelineId, actual, metrics(pipelineId, actual), Map.of(),
+                    positions.apply(pipelineId), failure));
         });
     }
 
