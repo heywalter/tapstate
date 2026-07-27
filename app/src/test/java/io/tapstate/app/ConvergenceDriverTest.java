@@ -3,6 +3,7 @@ package io.tapstate.app;
 import ch.qos.logback.classic.Logger;
 import io.tapstate.core.lifecycle.DesiredState;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.StateJson;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.RingBufferLogSink;
@@ -202,6 +203,50 @@ class ConvergenceDriverTest {
 
         assertThat(sink.tail("orders")).extracting(LogLine::level).contains("WARN");
         assertThat(state.read("orders").orElseThrow().stateJson()).isEqualTo(StateJson.of(FAILED));
+    }
+
+    @Test
+    void aPipelineWhoseJobDiedPublishesTheCodedReasonAlongsideTheFailedState() {
+        // The state says the run died and the error count says it was counted; neither says why. The driver
+        // holds the only copy of the cause, so it must carry it into the published observation -- otherwise
+        // the reason exists solely as a log line and no read face can answer for it.
+        FailingActuator actuator = new FailingActuator();
+        PipelineConverger converger =
+                new PipelineConverger(desired, state, actuator, Clock.fixed(T0, ZoneOffset.UTC));
+        ConvergenceDriver driver =
+                new ConvergenceDriver(converger, desired, new ObservationPublisher(state, observations));
+        desired.save(new DesiredState("orders", RUNNING, "rev-1"));
+        driver.reconcile();
+        actuator.failWith(new IllegalStateException("sink write failed"));
+
+        driver.reconcile();
+
+        ObservationFailure failure = observations.read("orders").orElseThrow().failure();
+        assertThat(failure).isNotNull();
+        assertThat(failure.code()).isEqualTo("engine.job-failed");
+        assertThat(failure.params()).containsEntry("cause", "sink write failed");
+    }
+
+    @Test
+    void aPipelineThatRecoversStopsReportingTheFailureThatKilledItsPreviousRun() {
+        FailingActuator actuator = new FailingActuator();
+        PipelineConverger converger =
+                new PipelineConverger(desired, state, actuator, Clock.fixed(T0, ZoneOffset.UTC));
+        ConvergenceDriver driver =
+                new ConvergenceDriver(converger, desired, new ObservationPublisher(state, observations));
+        desired.save(new DesiredState("orders", RUNNING, "rev-1"));
+        driver.reconcile();
+        actuator.failWith(new IllegalStateException("sink write failed"));
+        driver.reconcile();
+        assertThat(observations.read("orders").orElseThrow().failure()).isNotNull();
+
+        // The operator restarts the pipeline and the job stays up: the observation is current-state, so the
+        // stale reason must not keep being served next to a healthy pipeline.
+        actuator.failWith(null);
+        desired.save(new DesiredState("orders", RUNNING, "rev-2"));
+        driver.reconcile();
+
+        assertThat(observations.read("orders").orElseThrow().failure()).isNull();
     }
 
     /** A no-op actuator whose failure() a test can arm, to drive a pipeline to FAILED without a real job. */

@@ -20,7 +20,15 @@ public enum EngineError implements TapstateErrorCode {
      * A suspend / resume named a pipeline that has no running job to act on: {@code pipeline} is the
      * id the caller gave.
      */
-    NO_SUCH_JOB("engine.no-such-job", Set.of("pipeline"));
+    NO_SUCH_JOB("engine.no-such-job", Set.of("pipeline")),
+
+    /**
+     * A pipeline's data-plane job died on its own, for a reason the product had not already coded at its
+     * throw site: {@code pipeline} is the pipeline whose run died and {@code cause} is what it died of.
+     * A fault that does carry its own code keeps that code instead — this is the last resort, so that a
+     * dead job always names a reason rather than reporting a bare state change.
+     */
+    JOB_FAILED("engine.job-failed", Set.of("pipeline", "cause"));
 
     private final String code;
     private final Set<String> placeholders;
