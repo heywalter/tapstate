@@ -35,12 +35,13 @@ make_asset() {   # $1 = platform label; the fake binary echoes its platform so a
 }
 for p in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do make_asset "$p"; done
 
-# run install.sh seeing a fake platform. args: OS ARCH MUSL(glibc|musl) INSTALL_DIR [MACOS_VERSION]
-# A fifth argument installs a fake `sw_vers` reporting that macOS product version, which drives the
-# minimum-version gate. Leaving it empty means the run sees whatever sw_vers this machine has (on Linux,
-# none at all) -- the same as every test written before the gate existed.
+# run install.sh seeing a fake platform. args: OS ARCH MUSL(glibc|musl) INSTALL_DIR [VERSION]
+# The fifth argument is the version this platform reports about itself -- a macOS product version on
+# Darwin, a glibc version on Linux -- installed as a fake `sw_vers` or `ldd` accordingly, which is what
+# drives the recommended-version notice. Leaving it empty means the run sees whatever this machine has
+# (on Linux, no sw_vers at all), the same as every test written before the notice existed.
 run_install() {
-  local fos="$1" farch="$2" fmusl="$3" idir="$4" fmacos="${5:-}" shim
+  local fos="$1" farch="$2" fmusl="$3" idir="$4" fver="${5:-}" shim
   shim="$(mktemp -d)"
   cat > "$shim/uname" <<EOF
 #!/bin/sh
@@ -51,13 +52,18 @@ case "\$1" in
 esac
 EOF
   chmod +x "$shim/uname"
+  if [ -n "$fver" ]; then
+    case "$fos" in
+      Darwin) printf '#!/bin/sh\necho "%s"\n' "$fver" > "$shim/sw_vers"; chmod +x "$shim/sw_vers" ;;
+      # the real banner's shape, package suffix and all, so the parse is tested against what ldd prints
+      Linux)  printf '#!/bin/sh\necho "ldd (Ubuntu GLIBC %s-0ubuntu8.7) %s"\n' "$fver" "$fver" > "$shim/ldd"
+              chmod +x "$shim/ldd" ;;
+    esac
+  fi
+  # written last so the musl case wins: is_musl reads this same ldd, and refusing musl comes first
   if [ "$fmusl" = musl ]; then
     printf '#!/bin/sh\necho "musl libc (x86_64)\\nVersion 1.2.4"\n' > "$shim/ldd"
     chmod +x "$shim/ldd"
-  fi
-  if [ -n "$fmacos" ]; then
-    printf '#!/bin/sh\necho "%s"\n' "$fmacos" > "$shim/sw_vers"
-    chmod +x "$shim/sw_vers"
   fi
   OUT="$(PATH="$shim:$PATH" \
          TAPSTATE_VERSION="$VERSION" \
@@ -280,6 +286,43 @@ if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
   ok "a macOS recommendation does not reach a Linux install"
 else
   bad "linux install saw the macOS notice (rc=$RC): $OUT"
+fi
+
+# --- the other platform's requirement travels the same path, told apart by the requirement field ------
+# A Linux binary is tied to the newest glibc symbols it references rather than to an OS version, so its
+# line names `glibc` and the running version comes from ldd. One code path serves both, which is what
+# lets a release add a requirement this installer has never heard of: it is passed by, not guessed at.
+printf 'linux-x64 glibc 2.34\nlinux-arm64 glibc 2.34\n' > "$MINIMUMS"
+
+lsay() {   # GLIBC_VERSION EXPECT(notice|quiet) LABEL
+  local idir said; idir="$(mktemp -d)/bin"
+  run_install Linux x86_64 glibc "$idir" "$1"
+  if [ "$RC" -ne 0 ] || [ ! -x "$idir/tapstate" ]; then
+    bad "$3 -- the install must never be refused (rc=$RC): $OUT"; return
+  fi
+  if noticed; then said=notice; else said=quiet; fi
+  if [ "$said" != "$2" ]; then
+    bad "$3 (wanted $2, got $said): $OUT"; return
+  fi
+  if [ "$2" = notice ] && ! { printf '%s' "$OUT" | grep -qF 2.34 && printf '%s' "$OUT" | grep -qF "$1"; }; then
+    bad "$3 -- notice names neither the recommendation nor the running version: $OUT"; return
+  fi
+  ok "$3"
+}
+
+lsay 2.31 notice "says so below the recommended glibc, and installs anyway, naming both versions"
+lsay 2.34 quiet  "stays quiet on exactly the recommended glibc"
+lsay 2.39 quiet  "stays quiet on a newer glibc"
+
+# a requirement this installer does not implement is passed by in silence -- the seam that lets a later
+# release publish something older installers were never taught to check
+printf 'linux-x64 gizmo 9.9\n' > "$MINIMUMS"
+idir="$(mktemp -d)/bin"
+run_install Linux x86_64 glibc "$idir" 2.31
+if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && ! noticed; then
+  ok "a requirement this installer does not know is passed by, not guessed at"
+else
+  bad "unknown requirement kind must produce no notice (rc=$RC): $OUT"
 fi
 
 # a release that publishes no minimums has nothing to compare against, and must not invent one
