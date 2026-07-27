@@ -4,9 +4,8 @@
 #   - a declarative specification, e2e/examples/<name>/spec.e2e.yml — the preferred form
 #   - a bespoke end-to-end test, e2e/src/test/java/**/*IT.java — for behavior the specification
 #     vocabulary cannot yet say
-# In scope: a pull request touching any */src/main/ file, except the shared test scaffolding in
-# test-support/, which ships nowhere. Documentation, build and CI configuration, scripts, and
-# test-only changes are out of scope and pass without a case.
+# In scope: a pull request touching any */src/main/ file. Documentation, build and CI configuration,
+# scripts, and test-only changes are out of scope and pass without a case.
 #
 # This gate checks that a case is *present*. Whether it is *adequate* is the reviewer's call, and no
 # workflow can take that over: presence is mechanical, adequacy is judgement. What the gate buys is

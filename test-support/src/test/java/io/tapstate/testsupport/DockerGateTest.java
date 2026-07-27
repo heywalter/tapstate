@@ -1,8 +1,10 @@
 package io.tapstate.testsupport;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ConditionEvaluationResult;
 import org.junit.jupiter.api.extension.ExecutionCondition;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.opentest4j.TestAbortedException;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.lang.annotation.Annotation;
@@ -10,6 +12,9 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.InstanceOfAssertFactories.STRING;
 
 /**
  * The gate decides what a missing Docker daemon means, and the answer differs by where the build
@@ -33,6 +38,50 @@ class DockerGateTest {
     @Test
     void failsRatherThanSkipsInCiWithoutDocker() {
         assertThat(DockerGate.decide(false, true)).isEqualTo(DockerGate.Decision.FAIL);
+    }
+
+    @Test
+    void aRunningTestIsLetThrough_aborted_orFailed() {
+        assertThatCode(() -> DockerGate.applyDecision(DockerGate.Decision.RUN))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(() -> DockerGate.applyDecision(DockerGate.Decision.SKIP))
+                .isInstanceOf(TestAbortedException.class)
+                .hasMessageContaining("-Dapi.version=1.44");
+        assertThatThrownBy(() -> DockerGate.applyDecision(DockerGate.Decision.FAIL))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("verified nothing");
+    }
+
+    @Test
+    void theSameDecisionAsACondition() {
+        assertThat(DockerGate.resultFor(DockerGate.Decision.RUN).isDisabled()).isFalse();
+
+        ConditionEvaluationResult skipped = DockerGate.resultFor(DockerGate.Decision.SKIP);
+        assertThat(skipped.isDisabled()).isTrue();
+        assertThat(skipped.getReason()).get(STRING).contains("-Dapi.version=1.44");
+
+        // Disabling in CI would be the bug this whole class exists to prevent, so the condition
+        // refuses rather than returning a result at all.
+        assertThatThrownBy(() -> DockerGate.resultFor(DockerGate.Decision.FAIL))
+                .isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void onlyTheExactEnvironmentValueCounts() {
+        assertThat(DockerGate.isCi("true")).isTrue();
+        assertThat(DockerGate.isCi("false")).isFalse();
+        assertThat(DockerGate.isCi("TRUE")).isFalse();
+        assertThat(DockerGate.isCi(null)).isFalse();
+    }
+
+    /**
+     * Whatever this machine has, asking is allowed to answer but never to throw: an exception escaping
+     * the probe would become a third outcome the gate never decided on, and it would surface as a
+     * broken test rather than as an absent daemon.
+     */
+    @Test
+    void probingForADaemonAnswersRatherThanThrowing() {
+        assertThatCode(DockerGate::dockerAvailable).doesNotThrowAnyException();
     }
 
     /**

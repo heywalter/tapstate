@@ -45,12 +45,13 @@
   </dependencyManagement>
 
   <dependencies>
-    <!-- Shared test scaffolding: the Docker gate these suites are held to. Test scope - nothing
-         from it reaches the shipped artifact. -->
+    <!-- Shared test scaffolding: the Docker gate these suites are held to. A test-jar in test
+         scope - nothing from it reaches the shipped artifact. -->
     <dependency>
       <groupId>io.tapstate</groupId>
       <artifactId>test-support</artifactId>
       <version>${revision}</version>
+      <type>test-jar</type>
       <scope>test</scope>
     </dependency>
 

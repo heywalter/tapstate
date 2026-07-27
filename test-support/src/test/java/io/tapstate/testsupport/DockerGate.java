@@ -62,7 +62,17 @@ public class DockerGate implements ExecutionCondition {
 
     /** Applies the decision to the calling test: returns, aborts, or fails. */
     public static void require() {
-        switch (decide(dockerAvailable(), ci())) {
+        applyDecision(decide(dockerAvailable(), ci()));
+    }
+
+    @Override
+    public ConditionEvaluationResult evaluateExecutionCondition(ExtensionContext context) {
+        return resultFor(decide(dockerAvailable(), ci()));
+    }
+
+    /** The decision as a test that has already started sees it: proceed, abort, or fail. */
+    static void applyDecision(Decision decision) {
+        switch (decision) {
             case RUN -> {
             }
             case SKIP -> Assumptions.abort(SKIP_REASON);
@@ -70,16 +80,21 @@ public class DockerGate implements ExecutionCondition {
         }
     }
 
-    @Override
-    public ConditionEvaluationResult evaluateExecutionCondition(ExtensionContext context) {
-        return switch (decide(dockerAvailable(), ci())) {
+    /** The same decision as a condition, evaluated before the test starts at all. */
+    static ConditionEvaluationResult resultFor(Decision decision) {
+        return switch (decision) {
             case RUN -> ConditionEvaluationResult.enabled("a Docker daemon answered");
             case SKIP -> ConditionEvaluationResult.disabled(SKIP_REASON);
             case FAIL -> throw new AssertionError(FAIL_REASON);
         };
     }
 
-    private static boolean dockerAvailable() {
+    /**
+     * Whether a daemon answers. Testcontainers throws several unrelated runtime exceptions when it
+     * cannot reach one, and every single one of them means the same thing here, so none may escape:
+     * the gate's job is to answer the question, not to become a third outcome of its own.
+     */
+    static boolean dockerAvailable() {
         try {
             return DockerClientFactory.instance().isDockerAvailable();
         } catch (RuntimeException e) {
@@ -87,7 +102,11 @@ public class DockerGate implements ExecutionCondition {
         }
     }
 
+    static boolean isCi(String environmentValue) {
+        return "true".equals(environmentValue);
+    }
+
     private static boolean ci() {
-        return "true".equals(System.getenv(CI_ENV));
+        return isCi(System.getenv(CI_ENV));
     }
 }
