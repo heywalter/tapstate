@@ -13,7 +13,10 @@ import io.tapstate.runtime.srs.StartFrom;
 import io.tapstate.spi.capture.SourcePosition;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.StorePort;
+import io.tapstate.core.lifecycle.TableSnapshot;
+
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -49,6 +52,9 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
     private final SnapshotBuffer snapshotBuffer;
     private final Map<String, List<CaptureRun>> runsByPipeline = new ConcurrentHashMap<>();
 
+    /** What each running pipeline's tables loaded, keyed by pipeline then table; dropped when it stops. */
+    private final Map<String, Map<String, TableSnapshot>> snapshotsByPipeline = new ConcurrentHashMap<>();
+
     StoreBackedPipelineCaptureCoordinator(
             StorePort storePort, CaptureStarter captureStarter, SrsCoordinator srsCoordinator,
             SnapshotBuffer snapshotBuffer) {
@@ -67,17 +73,44 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         }
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
         List<CaptureRun> runs = new ArrayList<>();
+        Map<String, TableSnapshot> loaded = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
             SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
             SourceCaptureResolution resolution = SourceCaptureResolution.of(source);
             CaptureRunSpec spec = deriveSpec(pipelineId, pipeline.settings(), source, resolution);
-            runs.add(captureStarter.start(spec, snapshotPassthrough(resolution.ringName())));
+            CaptureRun run = captureStarter.start(spec, snapshotPassthrough(resolution.ringName()));
+            runs.add(run);
+            recordSnapshot(loaded, spec, run);
         }
         runsByPipeline.put(pipelineId, runs);
+        snapshotsByPipeline.put(pipelineId, Map.copyOf(loaded));
+    }
+
+    /**
+     * Records what one run's snapshot loaded, keyed by the table it read. Only a run reading exactly one
+     * named stream is attributed: a config naming none means "every stream the connector exposes", and one
+     * naming several would have a single row count with no table to hang it on. An unattributable count is
+     * left out rather than reported against a guessed table.
+     */
+    private static void recordSnapshot(Map<String, TableSnapshot> loaded, CaptureRunSpec spec, CaptureRun run) {
+        List<String> streams = spec.config().streams();
+        if (streams.size() == 1) {
+            // The total is reported by no source today, so it stays null and the percentage with it -- progress
+            // with no total is honest partial data, never a faked complete load.
+            loaded.put(streams.get(0), new TableSnapshot(run.snapshotCount(), null, null));
+        }
+    }
+
+    @Override
+    public Map<String, TableSnapshot> snapshotProgress(String pipelineId) {
+        return snapshotsByPipeline.getOrDefault(pipelineId, Map.of());
     }
 
     @Override
     public void stopCapture(String pipelineId) {
+        // The load belongs to the run being torn down: a stopped pipeline reports no snapshot rather than the
+        // rows its previous run happened to load.
+        snapshotsByPipeline.remove(pipelineId);
         List<CaptureRun> runs = runsByPipeline.remove(pipelineId);
         if (runs == null) {
             return;

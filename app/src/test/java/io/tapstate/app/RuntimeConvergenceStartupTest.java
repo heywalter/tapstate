@@ -22,6 +22,10 @@ class RuntimeConvergenceStartupTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withBean(StorePort.class, InMemoryStorePort::new)
             .withBean(LifecycleActuator.class, NoOpActuator::new)
+            // The publisher reads its snapshot source through this port. Production brings the coordinator up
+            // under the same store switch as this configuration, so it is always there; stubbed here because
+            // this context is the convergence loop alone, not the data plane behind it.
+            .withBean(PipelineCaptureCoordinator.class, NoOpCaptureCoordinator::new)
             .withBean(Engine.class, () -> new Engine(mock(HazelcastInstance.class)))
             .withBean(Clock.class, Clock::systemUTC)
             .withUserConfiguration(RuntimeConvergenceConfiguration.class);

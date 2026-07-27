@@ -55,7 +55,8 @@ class AssemblyObservationPublisherTest {
         when(member.getJet()).thenReturn(jet);
         when(jet.getJob(anyString())).thenReturn(null);
         ObservationPublisher publisher =
-                new RuntimeConvergenceConfiguration().observationPublisher(store, new Engine(member));
+                new RuntimeConvergenceConfiguration()
+                        .observationPublisher(store, new Engine(member), new NoOpCaptureCoordinator());
 
         publisher.publish(PIPELINE);
 

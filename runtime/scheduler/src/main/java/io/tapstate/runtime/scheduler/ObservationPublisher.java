@@ -3,6 +3,7 @@ package io.tapstate.runtime.scheduler;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
+import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.core.lifecycle.StateJson;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.StateStore;
@@ -25,11 +26,12 @@ import java.util.function.Function;
  * a log line. When a reconcile pass instead keeps throwing (its store is unreachable, so it never converges),
  * {@link #publishReconcileFailure} carries the consecutive-failure count as errorCount so the pipeline is
  * observable as broken rather than silently absent from the read face. Either way errorCount &gt; 0 means the
- * pipeline is unhealthy. recordCount and the per-table sink-acked positions come from injected sources: the
- * record count rides the numeric metrics map when a live job reports one and is absent otherwise, and the
- * positions ride their own String-valued map. A missing metric or position means its source is not wired,
- * expressed by absence rather than a sentinel; the snapshot dataset is likewise unavailable and published
- * empty (never faked). Republishing overwrites the latest projection in place — the observation is
+ * pipeline is unhealthy. recordCount, the per-table sink-acked positions and the per-table initial load all
+ * come from injected sources: the record count rides the numeric metrics map when a live job reports one and
+ * is absent otherwise, the positions ride their own String-valued map, and the snapshot dataset carries what
+ * the capture side reports for each table it has loaded. A missing metric, position or table means its source
+ * is not wired or has nothing to report, expressed by absence rather than a faked zero. Republishing
+ * overwrites the latest projection in place — the observation is
  * current-state, not a time series, so the derived errorCount tracks the state and does not accumulate across
  * ticks (a recovered pipeline drops back to 0).
  */
@@ -39,28 +41,39 @@ public final class ObservationPublisher {
     private final ObservationStore observations;
     private final Function<String, OptionalLong> recordCounts;
     private final Function<String, Map<String, String>> positions;
+    private final Function<String, Map<String, TableSnapshot>> snapshots;
 
     /**
-     * A publisher with no metric or position source: recordCount stays absent and positions stay empty,
-     * so it carries the state-derived errorCount alone. This is the shape callers used before those
-     * sources were wired; the assembly point injects the real sources through the full constructor.
+     * A publisher with no metric, position or snapshot source: recordCount stays absent and positions and
+     * snapshot stay empty, so it carries the state-derived errorCount alone. This is the shape callers used
+     * before those sources were wired; the assembly point injects the real sources through the full
+     * constructor.
      */
     public ObservationPublisher(StateStore state, ObservationStore observations) {
-        this(state, observations, id -> OptionalLong.empty(), id -> Map.of());
+        this(state, observations, id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of());
+    }
+
+    /** A publisher wired to its metric and position sources but with no snapshot source. */
+    public ObservationPublisher(StateStore state, ObservationStore observations,
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions) {
+        this(state, observations, recordCounts, positions, id -> Map.of());
     }
 
     /**
      * A publisher wired to its live run-statistic sources: {@code recordCounts} yields the records a
-     * pipeline's live job has driven to its sinks (empty when it has no live job), and {@code positions}
-     * yields the durable per-table sink-acked source positions (empty when none). Both are ports so the
-     * scheduler stays clear of the engine and the store that back them.
+     * pipeline's live job has driven to its sinks (empty when it has no live job), {@code positions}
+     * yields the durable per-table sink-acked source positions (empty when none), and {@code snapshots}
+     * yields the per-table initial-load progress (empty when no table has been loaded). All three are
+     * ports so the scheduler stays clear of the engine, the store and the capture side that back them.
      */
     public ObservationPublisher(StateStore state, ObservationStore observations,
-            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions) {
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
+            Function<String, Map<String, TableSnapshot>> snapshots) {
         this.state = Objects.requireNonNull(state, "state");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.recordCounts = Objects.requireNonNull(recordCounts, "recordCounts");
         this.positions = Objects.requireNonNull(positions, "positions");
+        this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
     }
 
     /** Publishes the pipeline's latest observation from its actual state; a no-op if it has no checkpoint. */
@@ -78,8 +91,8 @@ public final class ObservationPublisher {
         Objects.requireNonNull(pipelineId, "pipelineId");
         state.read(pipelineId).ifPresent(checkpoint -> {
             PipelineState actual = StateJson.parse(checkpoint.stateJson());
-            observations.save(new Observation(pipelineId, actual, metrics(pipelineId, actual), Map.of(),
-                    positions.apply(pipelineId), failure));
+            observations.save(new Observation(pipelineId, actual, metrics(pipelineId, actual),
+                    snapshots.apply(pipelineId), positions.apply(pipelineId), failure));
         });
     }
 

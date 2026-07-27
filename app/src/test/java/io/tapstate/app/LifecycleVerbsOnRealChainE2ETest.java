@@ -219,7 +219,8 @@ class LifecycleVerbsOnRealChainE2ETest {
         PipelineConverger converger = new PipelineConverger(store.desired(), store.state(), actuator, clock);
         // Build the publisher through the production assembly factory, so the metric ports it binds
         // (recordCount from the live job, per-table positions from the store) are the ones under test.
-        ObservationPublisher publisher = new RuntimeConvergenceConfiguration().observationPublisher(store, engine);
+        ObservationPublisher publisher = new RuntimeConvergenceConfiguration()
+                .observationPublisher(store, engine, new NoOpCaptureCoordinator());
         driver = new ConvergenceDriver(converger, store.desired(), publisher);
         readFaces = new PipelineObservationQueryService(store.observations());
     }

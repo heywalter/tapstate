@@ -1,6 +1,7 @@
 package io.tapstate.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.ReadMode;
@@ -13,6 +14,7 @@ import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TableRef;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.runtime.srs.CaptureHealth;
+import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.runtime.srs.CaptureRun;
 import io.tapstate.runtime.srs.CaptureRunSpec;
 import io.tapstate.runtime.srs.MiningChainId;
@@ -171,6 +173,41 @@ class StoreBackedPipelineCaptureCoordinatorTest {
         // vertex drains member-side, which is what routes the snapshot through the transform chain ahead of cdc.
         String ringName = SourceCaptureResolution.of(source).ringName();
         assertThat(buffer.drain(ringName)).extracting(e -> e.after().get("id")).containsExactly(1L, 2L);
+    }
+
+    @Test
+    void snapshotProgressReportsTheRowsEachTableLoaded() {
+        InMemoryArtifactStore artifacts = new InMemoryArtifactStore();
+        artifacts.save(cdcSource("orders_src", "orders", null));
+        artifacts.save(pipeline("p", "orders_src"));
+        CaptureStarter starter = (spec, passthrough) -> new CaptureRun(
+                Optional.empty(), false, 500L, Optional.empty(), Optional.empty(), new CaptureHealth());
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(artifacts), starter, new SrsCoordinator(new InMemorySrsMetaStore()),
+                new SnapshotBuffer());
+
+        coordinator.startCapture("p");
+
+        // The rows a table loaded are known only once its bounded read has drained, so this is the finished
+        // load rather than a live position in it. The total is not reported by any source, so it stays null
+        // and the percentage with it -- progress with no total is honest partial data, never a faked 100%.
+        assertThat(coordinator.snapshotProgress("p"))
+                .containsOnly(entry("orders", new TableSnapshot(500L, null, null)));
+    }
+
+    @Test
+    void snapshotProgressIsEmptyForAPipelineWhoseCaptureIsNotRunning() {
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(new InMemoryArtifactStore()),
+                (spec, passthrough) -> {
+                    throw new AssertionError("no capture should be started");
+                },
+                new SrsCoordinator(new InMemorySrsMetaStore()),
+                new SnapshotBuffer());
+
+        // Empty is a reading: nothing has been loaded because nothing is running, which the read face
+        // publishes as an unavailable snapshot rather than a table that loaded zero rows.
+        assertThat(coordinator.snapshotProgress("never-started")).isEmpty();
     }
 
     @Test

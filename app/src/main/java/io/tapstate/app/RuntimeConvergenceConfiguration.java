@@ -33,12 +33,15 @@ class RuntimeConvergenceConfiguration {
     }
 
     @Bean
-    ObservationPublisher observationPublisher(StorePort storePort, Engine engine) {
-        // The publisher's two run-statistic sources: recordCount rides from the engine's live Jet job, and the
-        // per-table sink-acked positions from the store. Both are ports, so the scheduler stays clear of the
-        // engine and the store that back them; a stopped pipeline or an unacked table reports absence, not zero.
+    ObservationPublisher observationPublisher(
+            StorePort storePort, Engine engine, PipelineCaptureCoordinator captureCoordinator) {
+        // The publisher's three sources: recordCount rides from the engine's live Jet job, the per-table
+        // sink-acked positions from the store, and the per-table initial load from the capture coordinator.
+        // All are ports, so the scheduler stays clear of the engine, the store and the capture side that back
+        // them; a stopped pipeline, an unacked table or an unloaded one reports absence, not zero.
         return new ObservationPublisher(storePort.state(), storePort.observations(),
-                engine::recordCount, new StoreBackedSinkPositions(storePort));
+                engine::recordCount, new StoreBackedSinkPositions(storePort),
+                captureCoordinator::snapshotProgress);
     }
 
     @Bean

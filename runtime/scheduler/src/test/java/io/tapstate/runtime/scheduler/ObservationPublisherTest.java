@@ -5,6 +5,7 @@ import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
+import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.core.lifecycle.StateJson;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.StateStore;
@@ -114,6 +115,31 @@ class ObservationPublisherTest {
         publisher.publish("orders");
 
         assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
+    }
+
+    @Test
+    void publishWiresThePerTableSnapshotProgressFromItsSource() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(),
+                id -> Map.of("orders", new TableSnapshot(500L, null, null)));
+
+        wired.publish("orders");
+
+        // The snapshot dataset was published empty from the start -- the read face, its verb and its endpoint
+        // were all reachable and always answered nothing. It now carries what its source reports.
+        assertThat(observations.read("orders").orElseThrow().snapshot())
+                .containsOnly(entry("orders", new TableSnapshot(500L, null, null)));
+    }
+
+    @Test
+    void snapshotIsEmptyWhenItsSourceReportsNoTable() {
+        state.seed("orders", PipelineState.RUNNING);
+
+        publisher.publish("orders");
+
+        // A publisher with no snapshot source publishes empty (unavailable), never a faked zero-row table.
+        assertThat(observations.read("orders").orElseThrow().snapshot()).isEmpty();
     }
 
     @Test
