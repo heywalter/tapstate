@@ -1,5 +1,6 @@
 package io.tapstate.control.restapi;
 
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.GeneratedSecret;
 import io.tapstate.control.core.PipelineLogQueryService;
@@ -15,6 +16,9 @@ import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.LogSink;
 import io.tapstate.spi.store.ObservationStore;
+import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.Resource;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.TokenRecord;
 import io.tapstate.spi.store.TokenStore;
 import org.junit.jupiter.api.AfterAll;
@@ -200,7 +204,7 @@ class PipelineStreamApiTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore store) {
-            return new PipelineObservationQueryService(store);
+            return new PipelineObservationQueryService(new ArtifactQueryService(appliedPipelines()), store);
         }
 
         @Bean
@@ -330,4 +334,28 @@ class PipelineStreamApiTest {
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
         }
     }
+
+    /**
+     * An artifact store that answers for every id: this context is not about telling an applied pipeline
+     * from an unapplied one, so every read of an unobserved pipeline stays the transient window it was
+     * before the two were told apart.
+     */
+    private static ArtifactStore appliedPipelines() {
+        return new ArtifactStore() {
+            @Override
+            public void saveAll(List<Resource> artifacts) {
+            }
+
+            @Override
+            public Optional<Resource> get(String id) {
+                return Optional.of(new PipelineResource(id, null, List.of("src_x"), null, null, null, null, null));
+            }
+
+            @Override
+            public List<Resource> list() {
+                return List.of();
+            }
+        };
+    }
+
 }

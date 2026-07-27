@@ -3,6 +3,7 @@ package io.tapstate.cli;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.GeneratedSecret;
 import io.tapstate.control.core.PipelineLogQueryService;
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.Scope;
 import io.tapstate.control.core.TokenSecrets;
@@ -14,6 +15,9 @@ import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.LogSink;
+import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.Resource;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.TokenRecord;
 import io.tapstate.spi.store.TokenStore;
@@ -160,7 +164,24 @@ class PipelineStreamRoundTripTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore store) {
-            return new PipelineObservationQueryService(store);
+            // Every id reads as applied: this round trip is about the stream frames, not about telling an
+            // applied pipeline from one that was never applied.
+            return new PipelineObservationQueryService(new ArtifactQueryService(new ArtifactStore() {
+                @Override
+                public void saveAll(java.util.List<Resource> artifacts) {
+                }
+
+                @Override
+                public java.util.Optional<Resource> get(String id) {
+                    return java.util.Optional.of(
+                            new PipelineResource(id, null, java.util.List.of("src_x"), null, null, null, null, null));
+                }
+
+                @Override
+                public java.util.List<Resource> list() {
+                    return java.util.List.of();
+                }
+            }), store);
         }
 
         @Bean

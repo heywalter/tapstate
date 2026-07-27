@@ -15,6 +15,7 @@ import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.Job;
 import com.hazelcast.jet.core.JobStatus;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.PipelineStatus;
 import io.tapstate.core.event.Envelope;
@@ -222,7 +223,7 @@ class LifecycleVerbsOnRealChainE2ETest {
         ObservationPublisher publisher = new RuntimeConvergenceConfiguration()
                 .observationPublisher(store, engine, new NoOpCaptureCoordinator());
         driver = new ConvergenceDriver(converger, store.desired(), publisher);
-        readFaces = new PipelineObservationQueryService(store.observations());
+        readFaces = new PipelineObservationQueryService(new ArtifactQueryService(store.artifacts()), store.observations());
     }
 
     private InMemoryStorePort seedPipelineAndSchema() {

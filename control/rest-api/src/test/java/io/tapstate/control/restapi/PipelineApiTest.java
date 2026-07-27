@@ -48,6 +48,7 @@ import io.tapstate.core.logging.LogSink;
 import io.tapstate.core.logging.RingBufferLogSink;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.SchemaStore;
+import io.tapstate.core.model.PipelineResource;
 import io.tapstate.spi.store.TokenRecord;
 import io.tapstate.spi.store.TokenStore;
 import io.tapstate.spi.store.User;
@@ -556,7 +557,7 @@ class PipelineApiTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore observations) {
-            return new PipelineObservationQueryService(observations);
+            return new PipelineObservationQueryService(new ArtifactQueryService(appliedPipelines()), observations);
         }
 
         @Bean
@@ -754,4 +755,28 @@ class PipelineApiTest {
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
         }
     }
+
+    /**
+     * An artifact store that answers for every id: this context is not about telling an applied pipeline
+     * from an unapplied one, so every read of an unobserved pipeline stays the transient window it was
+     * before the two were told apart.
+     */
+    private static ArtifactStore appliedPipelines() {
+        return new ArtifactStore() {
+            @Override
+            public void saveAll(List<Resource> artifacts) {
+            }
+
+            @Override
+            public Optional<Resource> get(String id) {
+                return Optional.of(new PipelineResource(id, null, List.of("src_x"), null, null, null, null, null));
+            }
+
+            @Override
+            public List<Resource> list() {
+                return List.of();
+            }
+        };
+    }
+
 }

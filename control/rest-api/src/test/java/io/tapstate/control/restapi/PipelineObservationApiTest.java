@@ -1,5 +1,6 @@
 package io.tapstate.control.restapi;
 
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.ControlOperations;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.Frontend;
@@ -21,6 +22,9 @@ import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.spi.store.ObservationStore;
+import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.Resource;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.TokenRecord;
 import io.tapstate.spi.store.TokenStore;
 import org.junit.jupiter.api.AfterAll;
@@ -206,7 +210,7 @@ class PipelineObservationApiTest {
     // ---- a read of a pipeline with no published observation is a 404 coded body, never a bare 500 ----
 
     @Test
-    void aReadWithNoObservationIsNotFoundWithACodedBody() {
+    void aReadOfAPipelineThatWasNeverAppliedIsNotFoundAndSaysSo() {
         ApiError body = client().get().uri("/api/pipelines/ghost/status")
                 .header("Authorization", "Bearer " + machineToken(Scope.READ))
                 .exchange((request, response) -> {
@@ -214,8 +218,25 @@ class PipelineObservationApiTest {
                     return response.bodyTo(ApiError.class);
                 });
 
-        assertThat(body.code()).isEqualTo("monitor.no-observation");
+        // Never applied is permanent: a caller that read this as the transient unconverged window would
+        // wait out its whole bound on what is almost always a mistyped id.
+        assertThat(body.code()).isEqualTo("lifecycle.unknown-pipeline");
         assertThat(body.params()).containsEntry("pipeline", "ghost");
+    }
+
+    @Test
+    void aReadOfAnAppliedPipelineThatHasNotConvergedYetIsNotFoundAsTheTransientWindow() {
+        context.getBean(FakeObservationStore.class).clear();
+
+        ApiError body = client().get().uri("/api/pipelines/pl1/status")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("monitor.no-observation");
+        assertThat(body.params()).containsEntry("pipeline", "pl1");
     }
 
     // ---- the interceptor guards a read like any other verb ----
@@ -281,7 +302,7 @@ class PipelineObservationApiTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore observations) {
-            return new PipelineObservationQueryService(observations);
+            return new PipelineObservationQueryService(new ArtifactQueryService(appliedPipelines()), observations);
         }
 
         @Bean
@@ -402,4 +423,38 @@ class PipelineObservationApiTest {
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
         }
     }
+
+    /**
+     * The applied pipelines this context knows about. A read of one of these that has published no
+     * observation is the transient unconverged window; a read of any other id is a pipeline that was never
+     * applied, and the two answer different codes.
+     */
+    private static ArtifactStore appliedPipelines() {
+        return storeHolding("pl1", "pl2", "pl3");
+    }
+
+    /** An artifact store answering with a minimal pipeline resource for each of the given ids. */
+    private static ArtifactStore storeHolding(String... ids) {
+        Map<String, Resource> byId = new LinkedHashMap<>();
+        for (String id : ids) {
+            byId.put(id, new PipelineResource(id, null, List.of("src_x"), null, null, null, null, null));
+        }
+        return new ArtifactStore() {
+            @Override
+            public void saveAll(List<Resource> artifacts) {
+                artifacts.forEach(r -> byId.put(r.id(), r));
+            }
+
+            @Override
+            public Optional<Resource> get(String id) {
+                return Optional.ofNullable(byId.get(id));
+            }
+
+            @Override
+            public List<Resource> list() {
+                return List.copyOf(byId.values());
+            }
+        };
+    }
+
 }

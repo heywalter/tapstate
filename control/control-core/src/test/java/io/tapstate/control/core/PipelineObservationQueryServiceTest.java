@@ -1,14 +1,19 @@
 package io.tapstate.control.core;
 
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.dsl.DslParser;
+import io.tapstate.core.lifecycle.LifecycleError;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
+import io.tapstate.core.model.Resource;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.ObservationStore;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -42,6 +47,42 @@ class PipelineObservationQueryServiceTest {
         };
     }
 
+    /** An artifact query over an in-memory store holding a pipeline resource for each given id. */
+    private static ArtifactQueryService artifactsWith(String... pipelineIds) {
+        Map<String, Resource> byId = new HashMap<>();
+        for (String id : pipelineIds) {
+            byId.put(id, new DslParser().parse("""
+                    version: tapstate/v1
+                    kind: pipeline
+                    id: %s
+                    source: src_x
+                    serve:
+                      from: /.*/
+                      sync:
+                        - id: sink1
+                          source: tgt_x
+                          write_mode: upsert
+                          ddl: apply
+                    """.formatted(id)));
+        }
+        return new ArtifactQueryService(new ArtifactStore() {
+            @Override
+            public void saveAll(List<Resource> artifacts) {
+                artifacts.forEach(r -> byId.put(r.id(), r));
+            }
+
+            @Override
+            public Optional<Resource> get(String id) {
+                return Optional.ofNullable(byId.get(id));
+            }
+
+            @Override
+            public List<Resource> list() {
+                return List.copyOf(byId.values());
+            }
+        });
+    }
+
     private static Observation running() {
         return new Observation("orders_sync", PipelineState.RUNNING,
                 Map.of("recordCount", 5L), Map.of("orders", new TableSnapshot(10L, 20L, 50)));
@@ -55,7 +96,7 @@ class PipelineObservationQueryServiceTest {
 
     @Test
     void statusProjectsThePublishedState() {
-        var service = new PipelineObservationQueryService(storeWith(running()));
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith(running()));
 
         PipelineStatus status = service.status("orders_sync");
 
@@ -70,7 +111,7 @@ class PipelineObservationQueryServiceTest {
         Observation dead = new Observation("orders_sync", PipelineState.FAILED, Map.of("errorCount", 1L),
                 Map.of(), Map.of(), new ObservationFailure("engine.job-failed",
                         Map.of("pipeline", "orders_sync", "cause", "sink refused the batch")));
-        var service = new PipelineObservationQueryService(storeWith(dead));
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith(dead));
 
         PipelineStatus status = service.status("orders_sync");
 
@@ -82,64 +123,91 @@ class PipelineObservationQueryServiceTest {
 
     @Test
     void statusOfAHealthyPipelineCarriesNoFailure() {
-        var service = new PipelineObservationQueryService(storeWith(running()));
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith(running()));
 
         assertThat(service.status("orders_sync").failure()).isNull();
     }
 
     @Test
     void metricsProjectsThePublishedMetricMap() {
-        var service = new PipelineObservationQueryService(storeWith(running()));
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith(running()));
 
         assertThat(service.metrics("orders_sync").metrics()).containsEntry("recordCount", 5L);
     }
 
     @Test
     void metricsProjectsThePublishedPositions() {
-        var service = new PipelineObservationQueryService(storeWith(runningWithPositions()));
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith(runningWithPositions()));
 
         assertThat(service.metrics("orders_sync").positions()).containsEntry("orders", "w7");
     }
 
     @Test
     void metricsPositionsAreEmptyWhenTheObservationHasNone() {
-        var service = new PipelineObservationQueryService(storeWith(running()));
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith(running()));
 
         assertThat(service.metrics("orders_sync").positions()).isEmpty();
     }
 
     @Test
     void snapshotProjectsThePublishedSnapshotMap() {
-        var service = new PipelineObservationQueryService(storeWith(running()));
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith(running()));
 
         assertThat(service.snapshot("orders_sync").snapshot().get("orders").rowsDone()).isEqualTo(10L);
     }
 
     @Test
-    void statusOfAPipelineWithNoObservationIsNoObservationCoded() {
-        var service = new PipelineObservationQueryService(storeWith());
+    void statusOfAnAppliedPipelineThatHasNotConvergedYetIsNoObservationCoded() {
+        // Applied but unobserved: the window between recording an intent and the first convergence pass.
+        // This is transient and a caller is entitled to wait it out, so it keeps the no-observation code.
+        var service = new PipelineObservationQueryService(artifactsWith("pl1"), storeWith());
 
         TapstateException thrown = catchThrowableOfType(
-                () -> service.status("missing"), TapstateException.class);
+                () -> service.status("pl1"), TapstateException.class);
 
         assertThat(thrown.code()).isEqualTo(MonitorError.NO_OBSERVATION);
-        assertThat(thrown.args()).containsEntry("pipeline", "missing");
+        assertThat(thrown.args()).containsEntry("pipeline", "pl1");
     }
 
     @Test
-    void metricsOfAPipelineWithNoObservationIsNoObservationCoded() {
-        var service = new PipelineObservationQueryService(storeWith());
+    void statusOfAPipelineThatWasNeverAppliedIsUnknownPipelineCoded() {
+        // Never applied: permanent, and it must not read as the transient window above. Answering the same
+        // code for both left a caller waiting out its whole bound on a mistyped id, then blaming the data.
+        var service = new PipelineObservationQueryService(artifactsWith(), storeWith());
 
-        assertThatThrownBy(() -> service.metrics("missing"))
+        TapstateException thrown = catchThrowableOfType(
+                () -> service.status("ghost"), TapstateException.class);
+
+        assertThat(thrown.code()).isEqualTo(LifecycleError.UNKNOWN_PIPELINE);
+        assertThat(thrown.args()).containsEntry("pipeline", "ghost");
+    }
+
+    @Test
+    void metricsAndSnapshotTellTheSameTwoApartAsStatusDoes() {
+        var service = new PipelineObservationQueryService(artifactsWith("pl1"), storeWith());
+
+        assertThatThrownBy(() -> service.metrics("ghost"))
+                .isInstanceOfSatisfying(TapstateException.class,
+                        e -> assertThat(e.code()).isEqualTo(LifecycleError.UNKNOWN_PIPELINE));
+        assertThatThrownBy(() -> service.snapshot("pl1"))
                 .isInstanceOfSatisfying(TapstateException.class,
                         e -> assertThat(e.code()).isEqualTo(MonitorError.NO_OBSERVATION));
     }
 
     @Test
-    void snapshotOfAPipelineWithNoObservationIsNoObservationCoded() {
-        var service = new PipelineObservationQueryService(storeWith());
+    void metricsOfAnAppliedPipelineWithNoObservationIsNoObservationCoded() {
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith());
 
-        assertThatThrownBy(() -> service.snapshot("missing"))
+        assertThatThrownBy(() -> service.metrics("orders_sync"))
+                .isInstanceOfSatisfying(TapstateException.class,
+                        e -> assertThat(e.code()).isEqualTo(MonitorError.NO_OBSERVATION));
+    }
+
+    @Test
+    void snapshotOfAnAppliedPipelineWithNoObservationIsNoObservationCoded() {
+        var service = new PipelineObservationQueryService(artifactsWith("orders_sync"), storeWith());
+
+        assertThatThrownBy(() -> service.snapshot("orders_sync"))
                 .isInstanceOfSatisfying(TapstateException.class,
                         e -> assertThat(e.code()).isEqualTo(MonitorError.NO_OBSERVATION));
     }
