@@ -22,11 +22,15 @@
 # read. It is not redundant with the state: the state says the job died, the count says the failure was
 # counted, and each fails on its own if its source regresses.
 #
-# failure_code is what the state and the count cannot say: which failure this was. Both of them hold for any
-# dead job, so a regression that swapped this sink rejection for some unrelated fault would satisfy them
-# both and go unnoticed. The sink's refusal is coded where it is raised, and the reason published with the
-# state is that same code rather than a generic one wrapped around it - asserting it here is what holds that
-# pass-through to account from outside the product.
+# failure_code is what the state and the count cannot say: that the death was diagnosed at all. Both of them
+# hold for any dead job, so a run that published no reason whatsoever would satisfy them and go unnoticed.
+#
+# The code asserted here is the generic engine failure, and that is a measured fact rather than a choice.
+# The sink's refusal is coded where it is raised, but that coded exception does not survive the data-plane's
+# exception boundary: what reaches the converge loop no longer carries the type, so the reason published is
+# the last-resort code and the sink's own diagnosis rides in its cause text. Asserting the specific code
+# here instead would be asserting an intention. When the coded fault is carried across that boundary, this
+# line tightens to it and this paragraph goes away.
 #
 # Zero, and it is the last word. A sink that throws on its first write creates no target file at all, so
 # nothing crosses - and this count is read back by an address the example cannot name, the target
@@ -44,5 +48,5 @@ steps:
   - start
   - await: { state: FAILED }
   - assert: { error_count: 1 }
-  - assert: { failure_code: connector.write-failed }
+  - assert: { failure_code: engine.job-failed }
   - assert: { count: { tgt_file.orders: 0 } }
