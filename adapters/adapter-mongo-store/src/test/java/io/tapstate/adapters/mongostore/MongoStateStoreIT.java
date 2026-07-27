@@ -6,11 +6,11 @@ import com.mongodb.client.MongoCollection;
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.EpochCas;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Instant;
@@ -26,14 +26,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Witnesses the state store's epoch-fencing compare-and-swap against a real Mongo replica-set: a
- * seed lands at epoch 0, a matching-epoch swap applies and bumps the epoch, a stale-epoch swap is
- * fenced and does not overwrite, the epoch advances monotonically, a re-seed is refused (insert-only,
- * so the fencing epoch is never reset), a swap on an unseeded pipeline is an ordering error, and two
- * writers racing the same transition yield exactly one winner and one fenced. Skipped automatically
- * where Docker is absent, so a Docker-less build stays green.
+ * Witnesses the state store's epoch-fencing compare-and-swap against a real Mongo replica-set: a seed
+ * lands at epoch 0, a matching-epoch swap applies and bumps the epoch, a stale-epoch swap is fenced
+ * and does not overwrite, the epoch advances monotonically, a re-seed is refused (insert-only, so the
+ * fencing epoch is never reset), a swap on an unseeded pipeline is an ordering error, and two writers
+ * racing the same transition yield exactly one winner and one fenced. Where Docker is absent this
+ * aborts on a developer machine and fails in CI, where a skip would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoStateStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

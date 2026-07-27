@@ -1,5 +1,6 @@
 package io.tapstate.e2e;
 
+import io.tapstate.testsupport.DockerGate;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;

@@ -4,11 +4,11 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.spi.store.AuditRecord;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Instant;
@@ -18,10 +18,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Witnesses the audit log against a real Mongo replica-set: a recorded entry lands as a document
  * carrying its fields (through the real bson encode), and the log is append-only — recording the same
- * subject / operation / target twice leaves two distinct documents rather than overwriting one.
- * Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * subject / operation / target twice leaves two distinct documents rather than overwriting one. Where
+ * Docker is absent this aborts on a developer machine and fails in CI, where a skip would be a green
+ * build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoAuditStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

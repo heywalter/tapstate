@@ -4,11 +4,11 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.spi.store.ConnectionConfig;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.LinkedHashMap;
@@ -23,9 +23,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * equal (settings included, through the real bson encode / decode), an absent id reads back empty,
  * list returns every stored connection, a re-save of the same id replaces in place (last write wins)
  * rather than accumulating documents, and nested settings decode back to plain Java maps and lists.
- * Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * Where Docker is absent this aborts on a developer machine and fails in CI, where a skip would be a
+ * green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoCatalogStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

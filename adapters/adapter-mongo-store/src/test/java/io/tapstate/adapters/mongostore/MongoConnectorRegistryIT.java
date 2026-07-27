@@ -8,10 +8,10 @@ import com.mongodb.client.gridfs.GridFSBuckets;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
+import io.tapstate.testsupport.RequiresDocker;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.nio.charset.StandardCharsets;
@@ -20,11 +20,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Witnesses the connector registry against a real Mongo replica-set through the real GridFS store: a
- * registered artifact reads back with its identity and its exact bytes, re-registering the same bytes is
- * a content-hash no-op that stores no second copy, list returns every registration, and an unknown hash
- * has no bytes. Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * registered artifact reads back with its identity and its exact bytes, re-registering the same bytes
+ * is a content-hash no-op that stores no second copy, list returns every registration, and an unknown
+ * hash has no bytes. Where Docker is absent this aborts on a developer machine and fails in CI, where
+ * a skip would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoConnectorRegistryIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");
