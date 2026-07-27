@@ -22,13 +22,17 @@
 # The multi-arch server image shares this same tag lane: one dispatch builds linux/amd64 + linux/arm64
 # and pushes ghcr.io/<owner>/tapstate:<version> and :preview, never :latest (the lever that keeps a
 # preview build from looking production-ready). Mind one asymmetry with the CLI assets: an image has no
-# draft state, so it publishes the instant the workflow is dispatched, whereas the CLI release is staged
-# as a draft for a human to publish afterwards. Dispatching this workflow is therefore itself the
-# decision to publish the images.
+# draft state. Pushing it is the only step here that cannot be taken back -- a draft release is private
+# until a human publishes it, and a tag is moved by hand -- so the image job runs last, gated on the
+# whole CLI half having already succeeded. The order is: build and smoke four binaries, package and
+# checksum them into a private draft, then push the images.
 #
-# Hence the dry_run input. The image job and the CLI matrix are parallel siblings, so the images go out
-# whether or not the four native builds succeed -- and a first real dispatch would otherwise be the first
-# time that matrix has ever run. A rehearsal builds and smokes everything and publishes nothing: both
+# That gate is deliberate and was earned twice. The image job used to be a parallel sibling of the CLI
+# matrix, so the images went out whether or not the CLI half worked: one rehearsal built no CLI assets
+# at all (a retired runner label), and the next built all four and then failed packaging them. Either
+# would have left public preview images with no CLI to drive them.
+#
+# Hence also the dry_run input: a rehearsal builds and smokes everything and publishes nothing -- both
 # image architectures are built but not pushed, all four CLI assets are built, smoked, packaged and
 # checksummed but no draft is created. Rehearse first, then dispatch for real.
 name: release
@@ -60,9 +64,12 @@ jobs:
     # architectures share the one jar and differ only in the JRE base image and its apt layer -- which
     # is what makes building arm64 under QEMU emulation cheap here. The jar is built first and copied in
     # by the Dockerfile (the image is a runtime image, it does not build the jar itself), so the tiny
-    # build context the .dockerignore admits stays tiny. Pushes on dispatch; there is no draft for an
-    # image.
-    needs: prepare
+    # build context the .dockerignore admits stays tiny. There is no draft state for an image, so this
+    # push is the one step that cannot be taken back -- which is why it waits for `release`: by the time
+    # it runs, all four CLI binaries exist, are smoked, packaged, checksummed and staged. Depending on
+    # `release` rather than on `cli-native` is the point: the CLI matrix going green does not mean the
+    # assets made it into the draft, and a rehearsal proved exactly that failure.
+    needs: [prepare, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,10 +111,14 @@ jobs:
       fail-fast: false
       # Platform differences come from the runner + toolchain, never a Maven profile (ADR-0022 D6-3);
       # os/arch are fixed labels here so the published asset names are a stable contract, not uname output.
+      # Only the newest two macOS versions are hosted, so a runner label ages out of existence rather
+      # than failing loudly: a job asking for a removed one queues forever with no runner assigned and
+      # never reports an error. macos-13 had already been removed and macos-14 is deprecated. The Intel
+      # image now carries an explicit -intel label; the plain label is Apple Silicon.
       matrix:
         include:
-          - { runner: macos-14,         os: darwin, arch: arm64 }
-          - { runner: macos-13,         os: darwin, arch: x64 }
+          - { runner: macos-15,         os: darwin, arch: arm64 }
+          - { runner: macos-15-intel,   os: darwin, arch: x64 }
           - { runner: ubuntu-latest,    os: linux,  arch: x64 }
           - { runner: ubuntu-24.04-arm, os: linux,  arch: arm64 }
     runs-on: ${{ matrix.runner }}
@@ -157,8 +168,13 @@ jobs:
     permissions:
       contents: write   # create the draft release (and, only on a human publish, its tag)
     steps:
+      # Take only the CLI assets. The image job's action uploads a build record artifact of its own, and
+      # an unfiltered download pulls that too -- so this job's success came to depend on an artifact it
+      # never uses, and one that failed to download sank the whole release step. Narrow it to the four
+      # tarballs: whatever else the other jobs upload, now or later, is none of this job's business.
       - uses: actions/download-artifact@v4
         with:
+          pattern: tapstate-*.tar.gz
           path: staging
           merge-multiple: true
       - name: checksums (per-asset .sha256 + aggregate checksums.txt)
