@@ -1,0 +1,11 @@
+# Code owners for this repository.
+#
+# Entries are matched last-to-first: the last matching pattern wins.
+# Owning every path means a review request goes to the owner on every pull
+# request, and — once branch protection enables "Require review from Code
+# Owners" — no pull request merges without that review.
+#
+# An owner must have write access to this repository, or the entry is ignored.
+
+# Repository-wide owner.
+*   @ply0011
