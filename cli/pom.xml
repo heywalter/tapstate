@@ -215,8 +215,9 @@ control / runtime modules. Amend the recorded allowlist decision before adding a
 
   <profiles>
     <!--
-      The production shape: a GraalVM native-image binary `tapstate`. Off by default (the JVM jar
-      builds without GraalVM); activate with `-Pnative` on a machine with GraalVM for JDK 21.
+      The production shape: a native-image binary `tapstate`. Off by default (the JVM jar builds
+      without native-image); activate with `-Pnative` on a machine with a JDK-21 native-image
+      toolchain: Liberica NIK (GPLv2+CPE) for release builds, Oracle GraalVM for local dev.
 
       The bundled resources read at runtime via getResourceAsStream are not reachable in a native
       image unless declared: the connector catalog (/catalog/*.json), the grammar JSON Schema

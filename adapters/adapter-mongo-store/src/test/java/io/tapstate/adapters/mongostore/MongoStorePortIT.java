@@ -15,10 +15,10 @@ import io.tapstate.spi.store.DiscoveredSourceModel;
 import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
+import io.tapstate.testsupport.RequiresDocker;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.nio.charset.StandardCharsets;
@@ -35,10 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * so the artifact truth layer, the pipeline state store, the pipeline desired-state store, the
  * per-pipeline observation store, the connection catalog, the discovered source-schema store, the
  * connector distribution registry, the latest connection-test result per connection and the SRS meta
- * store never share storage. Skipped automatically where Docker is absent, so a Docker-less build
- * stays green.
+ * store never share storage. Where Docker is absent this aborts on a developer machine and fails in
+ * CI, where a skip would be a green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoStorePortIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

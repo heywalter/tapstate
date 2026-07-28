@@ -1,0 +1,25 @@
+# Development override for the quickstart stack: build the server image from this checkout instead of
+# pulling the published one. It exists only inside the repository, which is exactly the difference it
+# encodes -- docker-compose.yml is what a user downloads into an empty demo directory, where there is no
+# source tree and nothing to build, so it must name a published image and only a published image.
+#
+# Use it from deploy/quickstart, either by naming both files:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# or once per shell, after which every plain `docker compose ...` here picks up both:
+#
+#   export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+#
+# The build reads app/target/app-<version>-boot.jar, so package that first:
+#
+#   ( cd ../.. && mvn -pl app -am -DskipTests package )
+#
+# Overriding image: as well as adding build: keeps the locally built server under its own tag, so it can
+# never be confused with -- or silently overwrite the cache of -- the published one.
+services:
+  server:
+    image: tapstate:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile

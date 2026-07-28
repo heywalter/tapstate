@@ -4,11 +4,11 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.spi.store.User;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.Optional;
@@ -18,10 +18,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Witnesses the user store against a real Mongo replica-set: a saved user reads back with the same
  * fields (through the real bson encode), an absent username reads back empty, and a re-save of the
- * same username replaces in place (keyed by _id) rather than accumulating a second document. Skipped
- * automatically where Docker is absent, so a Docker-less build stays green.
+ * same username replaces in place (keyed by _id) rather than accumulating a second document. Where
+ * Docker is absent this aborts on a developer machine and fails in CI, where a skip would be a green
+ * build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoUserStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

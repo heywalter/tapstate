@@ -5,11 +5,11 @@ import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.spi.store.ConnectionTestItem;
 import io.tapstate.spi.store.ConnectionTestResult;
+import io.tapstate.testsupport.RequiresDocker;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.List;
@@ -17,13 +17,14 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Witnesses the connection-test-result store against a real Mongo replica-set: a saved result reads back
- * equal through the real bson encode / decode (overall outcome, plus a passed item and a failed item
- * carrying every diagnostic), an untested connection reads back empty, and a re-test of the same
+ * Witnesses the connection-test-result store against a real Mongo replica-set: a saved result reads
+ * back equal through the real bson encode / decode (overall outcome, plus a passed item and a failed
+ * item carrying every diagnostic), an untested connection reads back empty, and a re-test of the same
  * connection replaces the stored result in place (last write wins) rather than accumulating documents.
- * Skipped automatically where Docker is absent, so a Docker-less build stays green.
+ * Where Docker is absent this aborts on a developer machine and fails in CI, where a skip would be a
+ * green build that ran nothing.
  */
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
 class MongoConnectionTestResultStoreIT {
 
     private static final DockerImageName MONGO_IMAGE = DockerImageName.parse("mongo:7.0");

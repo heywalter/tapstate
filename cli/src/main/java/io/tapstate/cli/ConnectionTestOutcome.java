@@ -17,7 +17,11 @@ sealed interface ConnectionTestOutcome {
     record Rejected(String code, String message) implements ConnectionTestOutcome {
     }
 
-    /** The server could not be reached (connection refused, timeout, or a malformed target). */
+    /** The server could not be reached (connection refused, connect timeout, or a malformed target). */
     record Unreachable() implements ConnectionTestOutcome {
+    }
+
+    /** The server was reached but did not answer within the request's timeout window — busy, not gone. */
+    record TimedOut() implements ConnectionTestOutcome {
     }
 }

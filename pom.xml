@@ -23,6 +23,9 @@
 
   <modules>
     <module>bom</module>
+    <!-- test-support is test scaffolding shared by suites in several modules; declared before all of
+         them because they consume it, and outside the six rings like e2e and arch-tests -->
+    <module>test-support</module>
     <module>core</module>
     <!-- shared presentation: the error-code message catalog + renderer, depended on by the CLI
          and the app assembly root; sits above core, below any presentation face -->
@@ -47,7 +50,7 @@
   </modules>
 
   <properties>
-    <revision>0.1.0-SNAPSHOT</revision>
+    <revision>0.1.0</revision>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
     <!-- Reproducible build: the same commit must produce bit-identical artifacts -->

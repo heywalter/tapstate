@@ -66,6 +66,34 @@ Tapstate serves continuously fresh operational state through standard query inte
 
 ## Example
 
+Run the live runtime locally as a Docker Compose stack — databases, server, and
+first-admin bootstrap brought up together — driving a real MySQL → MongoDB sync
+(snapshot, then live CDC). A one-command `quickstart.sh` wraps the whole flow:
+
+```sh
+mkdir tapstate-demo && cd tapstate-demo
+curl -fLO https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh
+sh quickstart.sh
+```
+
+See [docs/quickstart-online.md](docs/quickstart-online.md) for the full walkthrough
+and the manual `docker compose` steps behind it.
+
+> **Preview.** The runtime is an early slice: single-node, in-memory, and a restart
+> replays from the source rather than resuming a persisted offset — not for
+> production. `quickstart.sh` downloads a released CLI and server image; until the
+> first preview release is cut, follow the walkthrough's build-from-source path. See
+> [Limitations](docs/quickstart-online.md#limitations).
+>
+> **Recommended platform.** Docker with Compose v2, plus the system versions each
+> release names in its notes: a macOS version, and a glibc version on Linux. Both are
+> measured from the binaries themselves and follow the machines that built them, so an
+> older system may refuse to launch them — `sw_vers -productVersion` and `ldd --version`
+> say what a machine has. Nothing stops you from installing anyway: the installer names
+> what the build expects and carries on, and how it goes from there is yours.
+
+A one-line installer will collapse the CLI download to a single command:
+
 ```bash
 # Installer coming soon.
 curl -sSL https://install.tapstate.dev | sh
@@ -136,7 +164,12 @@ that executes those resources as live pipelines.
 
 ### Requirements
 
-- **To run the CLI:** nothing — `tapstate` is a GraalVM native binary (starts in ~30 ms).
+- **To run the CLI:** no runtime to install — `tapstate` is a native binary (starts in
+  ~30 ms). Each build does carry a recommended system version — a macOS version, or a
+  glibc version on Linux — that tracks the machine it was built on and can move between
+  releases, so every release names its own in its notes. Installing on an older system is
+  allowed: the installer says what the build expects and carries on; whether it launches
+  there is then up to you.
 - **To build from source:** **Oracle GraalVM for JDK 21** (includes `native-image`)
   and **Maven 3.6+**. A plain JDK 21 is enough to build and run the test suite;
   GraalVM is only needed for the native image.

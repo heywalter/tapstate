@@ -32,3 +32,6 @@ logs/
 /connectors/
 /plugins/
 /work/
+
+# A generated quickstart .env holds a demo password; never commit it (the .env.example is the template).
+deploy/quickstart/.env
