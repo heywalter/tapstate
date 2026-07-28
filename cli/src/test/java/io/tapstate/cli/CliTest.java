@@ -459,6 +459,44 @@ class CliTest {
     }
 
     @Test
+    void helpListsEveryReplBuiltin() {
+        // tab completion already offered these -- the completer is built from the same list -- so the
+        // shell would complete `connect` while `help` denied it existed. The not-connected diagnostic
+        // tells the user to run `connect`, which made help the only place that word could not be found.
+        Run r = run("help");
+        assertThat(r.out()).contains(Repl.BUILTINS);
+    }
+
+    @Test
+    void helpStaysWithinItsOwnUsageWidth() {
+        // the session-command list is rendered by hand, so it is the one section picocli does not wrap
+        // for us -- a summary edited to a few words longer would push a ragged line past every other
+        // section without anything else noticing
+        int width = Cli.newCommandLine().getCommandSpec().usageMessage().width();
+        assertThat(run("help").out().lines().toList())
+                .allSatisfy(line -> assertThat(line.length()).isLessThanOrEqualTo(width));
+    }
+
+    @Test
+    void everyReplBuiltinIsDescribedInHelp() {
+        // pins the help entries to the builtins the REPL actually dispatches, so a builtin cannot be
+        // added to one and left out of the other
+        assertThat(new TreeSet<>(Cli.BUILTIN_HELP.keySet()))
+                .isEqualTo(new TreeSet<>(Repl.BUILTINS));
+    }
+
+    @Test
+    void aReplBuiltinTypedAsAOneShotSaysWhereItLives() {
+        // `connect` is session-scoped and deliberately not a one-shot verb, but answering it with a
+        // spelling guess -- "Did you mean: tapstate connectors?" -- treated a correctly spelt word the
+        // user was told to type as a typo, and named an unrelated verb as the fix
+        Run r = run("connect", "http://127.0.0.1:8080");
+        assertThat(r.code()).isEqualTo(3);
+        assertThat(r.err()).contains("cli.repl-builtin-only").contains("connect");
+        assertThat(r.err()).doesNotContain("Did you mean");
+    }
+
+    @Test
     void helpIsAWordTheCliAnswersTo() {
         // the REPL's own banner says "Type 'help' for commands", and that is the word a user carries to
         // the shell. It used to be an unmatched argument there, answered with a spelling guess -- "Did

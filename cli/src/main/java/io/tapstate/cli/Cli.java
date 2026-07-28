@@ -3,9 +3,11 @@ package io.tapstate.cli;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Model.UsageMessageSpec;
 import picocli.CommandLine.Spec;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -175,6 +177,39 @@ public final class Cli implements Runnable {
      */
     static final List<String> META_VERBS = List.of("help");
 
+    /**
+     * Help for the words the REPL handles itself. They are deliberately not subcommands — a connection
+     * is session state, so {@code connect} as a one-shot would establish one and immediately drop it —
+     * but not being on the table is why {@code help} never listed them, while tab completion (built from
+     * the same list the REPL dispatches) offered them all along. The not-connected diagnostic tells the
+     * user to run {@code connect}, so help was the one place that word could not be found.
+     *
+     * <p>Rendered as their own help section rather than folded in with the verbs, because the difference
+     * is real: these are typed at the prompt, and the verbs above can also be passed as arguments.
+     */
+    static final Map<String, VerbHelp> BUILTIN_HELP = Map.ofEntries(
+            Map.entry("connect", new VerbHelp("<host:port>[,<host:port>...]",
+                    "Reach a server; seeds tried in order.")),
+            Map.entry("disconnect", new VerbHelp("",
+                    "Drop the connection, keep the workspace.")),
+            Map.entry("login", new VerbHelp("<username>",
+                    "Sign in; prompts for the password.")),
+            Map.entry("logout", new VerbHelp("",
+                    "Drop the credential, stay connected.")),
+            Map.entry("cd", new VerbHelp("<dir>",
+                    "Change the session workspace.")),
+            Map.entry("pwd", new VerbHelp("",
+                    "Print the session workspace.")),
+            Map.entry("help", new VerbHelp("[<verb>]",
+                    "List these, or describe one verb.")),
+            Map.entry("exit", new VerbHelp("",
+                    "End the session (same as quit).")),
+            Map.entry("quit", new VerbHelp("",
+                    "End the session (same as exit).")));
+
+    /** The help section key for the REPL-builtin list, inserted just after the command list. */
+    private static final String SECTION_REPL_BUILTINS = "replBuiltins";
+
     /** Builds the shared command table used by both one-shot mode and the REPL. */
     public static CommandLine newCommandLine() {
         CommandLine commandLine = new CommandLine(new Cli());
@@ -205,9 +240,62 @@ public final class Cli implements Runnable {
                     .customSynopsis(commandLine.getCommandName() + " " + verb + " " + help.operands() + " [-hV]")
                     .description(help.summary(), verbSpec.usageMessage().description()[0]);
         });
+        addReplBuiltinHelpSection(commandLine);
+        reportReplBuiltinsInsteadOfGuessingASpelling(commandLine);
         // accept -o json / -o JSON alike; the lower-case forms are the documented spelling
         commandLine.setCaseInsensitiveEnumValuesAllowed(true);
         return commandLine;
+    }
+
+    /**
+     * Adds the REPL-builtin list to the usage text, right after the command list. A section rather than
+     * more subcommands: registering them would put them on the table, and the table is what one-shot mode
+     * runs — a {@code connect} that opened a connection and exited would be worse than one that is
+     * absent. They still have to be *listed*, because a user cannot run what nothing tells them exists.
+     */
+    private static void addReplBuiltinHelpSection(CommandLine commandLine) {
+        // one column, wide enough for the longest call, so the summaries line up with each other
+        int column = BUILTIN_HELP.entrySet().stream().mapToInt(e -> call(e).length()).max().orElse(0);
+        commandLine.getHelpSectionMap().put(SECTION_REPL_BUILTINS, help -> {
+            StringBuilder text = new StringBuilder(String.format(
+                    "%nSession commands (type these at the prompt, after starting `tapstate`):%n"));
+            // sorted by name so the rendering is stable across runs
+            BUILTIN_HELP.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> text.append(String.format(
+                            "  %-" + column + "s  %s%n", call(entry), entry.getValue().summary())));
+            return text.toString();
+        });
+        List<String> sections = new ArrayList<>(commandLine.getHelpSectionKeys());
+        sections.add(sections.indexOf(UsageMessageSpec.SECTION_KEY_COMMAND_LIST) + 1, SECTION_REPL_BUILTINS);
+        commandLine.setHelpSectionKeys(sections);
+    }
+
+    /** How one session command is typed: its name, plus the operands it takes. */
+    private static String call(Map.Entry<String, VerbHelp> builtin) {
+        String operands = builtin.getValue().operands();
+        return operands.isEmpty() ? builtin.getKey() : builtin.getKey() + " " + operands;
+    }
+
+    /**
+     * Answers a REPL builtin typed as a one-shot with a coded diagnostic naming where it does live.
+     * Unregistered words fall to picocli's "Did you mean" suggestion, which for these treats a correctly
+     * spelt word the user was told to type as a typo, and offers an unrelated verb as the correction —
+     * {@code connect} was answered with {@code connectors}. Anything genuinely unknown still gets the
+     * suggestion, which is what it is good for.
+     */
+    private static void reportReplBuiltinsInsteadOfGuessingASpelling(CommandLine commandLine) {
+        CommandLine.IParameterExceptionHandler fallback = commandLine.getParameterExceptionHandler();
+        commandLine.setParameterExceptionHandler((ex, args) -> {
+            String first = args.length > 0 ? args[0] : "";
+            if (Repl.BUILTINS.contains(first)) {
+                CommandLine offending = ex.getCommandLine();
+                Diagnostics.printText(offending.getErr(), CliError.REPL_BUILTIN_ONLY, Map.of("verb", first));
+                offending.getErr().flush();
+                return EXIT_VERB_UNAVAILABLE;
+            }
+            return fallback.handleParseException(ex, args);
+        });
     }
 
     /** Invoked when {@code tapstate} runs with no subcommand under {@code execute}; prints usage. */
