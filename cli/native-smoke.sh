@@ -246,7 +246,7 @@ pty_session "$repl_in"
 # `invalid:` (a rejected validate must not pass as a success), and require a clean child exit.
 REPL_CLEAN=$(printf '%s' "$PTY_OUT" | strip_ansi)
 if (( PTY_RC == 0 )) \
-   && printf '%s' "$REPL_CLEAN" | grep -q "Tapstate offline CLI" \
+   && printf '%s' "$REPL_CLEAN" | grep -q "Tapstate CLI" \
    && printf '%s' "$REPL_CLEAN" | grep -qE '(^|[^[:alpha:]])valid:' \
    && printf '%s' "$REPL_CLEAN" | grep -q "bye"; then
   ok "REPL banner + successful validate + clean exit (rc 0) observed over a pty"
@@ -369,6 +369,32 @@ if (( PTY_RC == 0 )) \
   ok "connect + login + register ran end to end through the native binary (no AOT fault)"
 else
   bad "online register pty session failed (rc=$PTY_RC, port=${STUB_PORT:-none}); output:"; echo "$PTY_OUT"
+fi
+
+bold "[10] one-line launch — -c / -u / -p reach the server without a session"
+# The scripting form: connect, sign in and run one command from the arguments alone. Checked on the
+# native binary because this path parses its own options before the command table is built, so an AOT
+# fault here would not show up in any of the interactive cases above.
+ONELINE_OUT=$("$BINARY" -c "127.0.0.1:$STUB_PORT" -u admin -p smoke-pw \
+                register "$STUB_DIR/smoke.jar" 2>"$STUB_DIR/oneline.err") && ONELINE_RC=0 || ONELINE_RC=$?
+ONELINE_CLEAN=$(printf '%s' "$ONELINE_OUT" | strip_ansi)
+if (( ONELINE_RC == 0 )) \
+   && printf '%s' "$ONELINE_CLEAN" | grep -qE 'registered[[:space:]]+smoke' \
+   && ! printf '%s' "$ONELINE_CLEAN" | grep -q "connected to" \
+   && ! printf '%s' "$ONELINE_CLEAN" | grep -q "logged in as" \
+   && ! printf '%s' "$ONELINE_CLEAN" | grep -qE '\.java:[0-9]+\)'; then
+  ok "one-line launch registered end to end, exit 0, and kept its stdout to the command's own output"
+else
+  bad "one-line launch failed (rc=$ONELINE_RC); stdout:"; echo "$ONELINE_OUT"
+  echo "stderr:"; cat "$STUB_DIR/oneline.err" 2>/dev/null || true
+fi
+
+# a command that fails must fail the process: the whole point of running one from a script
+"$BINARY" -c "127.0.0.1:$STUB_PORT" -u admin -p smoke-pw start >/dev/null 2>&1 && BADRC=0 || BADRC=$?
+if (( BADRC != 0 )); then
+  ok "a one-line command that failed exited non-zero (rc=$BADRC)"
+else
+  bad "a one-line command that failed still exited 0"
 fi
 
 # --- summary ------------------------------------------------------------------------------------
