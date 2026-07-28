@@ -2469,4 +2469,69 @@ class ReplTest {
         assertThat(out).doesNotContain("request failed");   // and it is not double-reported
         assertThat(h.repl().session().isConnected()).isFalse();
     }
+
+    // --- exit codes: a dispatched line yields the code a one-shot invocation would exit with -------
+
+    @Test
+    void aSuccessfulOnlineVerbYieldsSuccess() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = new GetOutcome.Found(
+                new RemoteArtifact("src_kfk", "source", "kind: source\nid: src_kfk\n"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        h.repl().dispatch("get src_kfk");
+        assertThat(h.repl().lastExitCode()).isZero();
+    }
+
+    @Test
+    void aRefusedOnlineVerbYieldsTheDiagnosticCode() {
+        // a coded refusal from the server is the same class of outcome as a coded local diagnostic, so it
+        // exits the same way -- a script that reads only the exit status must not read a refusal as success
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.lifecycleOutcome = new LifecycleOutcome.Rejected(
+                "pipeline.illegal-transition", "The pipeline cannot start from this state.");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        h.repl().dispatch("start sync_orders");
+        assertThat(h.repl().lastExitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void anOnlineVerbMissingItsOperandYieldsTheUsageCode() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        h.repl().dispatch("start");
+        assertThat(h.repl().lastExitCode()).isEqualTo(2);
+    }
+
+    @Test
+    void anUnauthenticatedOnlineVerbYieldsTheUnavailableCode() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = harness(Path.of("tap-work"), client, new ScriptedPrompter());
+        h.repl().dispatch("connect node1:7900");   // connected, never logged in
+        h.repl().dispatch("get x");
+        assertThat(h.repl().lastExitCode()).isEqualTo(Cli.EXIT_VERB_UNAVAILABLE);
+    }
+
+    @Test
+    void anOfflineVerbKeepsTheCodeItsCommandReturned() {
+        // the offline path already had an exit code -- picocli returns one from execute -- and the REPL
+        // discarded it. It has to survive too, or a one-shot `validate` would report success on a
+        // workspace it had just called invalid
+        Harness h = harness();
+        h.repl().dispatch("validate does-not-exist");
+        assertThat(h.repl().lastExitCode()).isNotZero();
+    }
+
+    @Test
+    void aBuiltinThatSucceedsYieldsSuccess() {
+        Harness h = harness();
+        h.repl().dispatch("pwd");
+        assertThat(h.repl().lastExitCode()).isZero();
+    }
+
+    @Test
+    void aBuiltinGivenNoOperandYieldsTheUsageCode() {
+        Harness h = harness();
+        h.repl().dispatch("cd");
+        assertThat(h.repl().lastExitCode()).isEqualTo(2);
+    }
 }

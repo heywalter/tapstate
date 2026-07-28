@@ -61,6 +61,15 @@ public final class Cli implements Runnable {
      */
     static final String VERSION = "tapstate 0.1.0";
 
+    /** Exit code for a verb that ran and did what was asked. */
+    static final int EXIT_OK = 0;
+
+    /** Exit code for a reported coded diagnostic: an invalid workspace, or an operation refused. */
+    static final int EXIT_DIAGNOSTIC = 1;
+
+    /** Exit code for a usage mistake: bad arguments, or a path that is not a usable workspace. */
+    static final int EXIT_USAGE = 2;
+
     /** Exit code for a verb that cannot run as invoked: no connection yet, or no implementation yet. */
     static final int EXIT_VERB_UNAVAILABLE = 3;
 
