@@ -19,7 +19,7 @@ import java.util.Map;
  * service through the REPL, where a connection is established and held — the CLI talks to a running
  * Tapstate over HTTP only (rule R6).
  */
-@Command(name = "tapstate", mixinStandardHelpOptions = true, version = "tapstate 0.1.0",
+@Command(name = "tapstate", mixinStandardHelpOptions = true, version = Cli.VERSION,
         subcommands = {ValidateCmd.class, NewCmd.class, ExplainCmd.class, LsCmd.class, DescCmd.class},
         exitCodeListHeading = "%nExit codes:%n",
         exitCodeList = {
@@ -29,6 +29,14 @@ import java.util.Map;
                 "3:the verb is unavailable here (it needs a connection, or is not implemented yet)"
         })
 public final class Cli implements Runnable {
+
+    /**
+     * What {@code -V} prints, on the root and on every verb alike. A compile-time constant rather than a
+     * manifest or bundled-resource lookup: neither survives into the native image without extra
+     * declaration, and the version is wanted on a path that must not depend on either. The build pins it
+     * to the project version, so the string here cannot quietly drift from what was released.
+     */
+    static final String VERSION = "tapstate 0.1.0";
 
     /** Exit code for a verb that cannot run as invoked: no connection yet, or no implementation yet. */
     static final int EXIT_VERB_UNAVAILABLE = 3;
@@ -101,6 +109,14 @@ public final class Cli implements Runnable {
         }
         for (String verb : UNIMPLEMENTED_COMPOSITE_VERBS) {
             commandLine.addSubcommand(verb, new UnimplementedVerb());
+        }
+        // The version belongs to the binary, not to any one verb, so every verb reports the same one.
+        // Set centrally rather than annotated per class: the standard help mixin registers -V wherever
+        // it is applied, and a spec with no version answers that advertised option with an empty line
+        // and a success code. Two of these commands are also a single class registered under many
+        // names, which an annotation could not give distinct versions to anyway.
+        for (CommandLine subcommand : commandLine.getSubcommands().values()) {
+            subcommand.getCommandSpec().version(VERSION);
         }
         // accept -o json / -o JSON alike; the lower-case forms are the documented spelling
         commandLine.setCaseInsensitiveEnumValuesAllowed(true);

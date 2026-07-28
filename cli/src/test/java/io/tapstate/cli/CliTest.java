@@ -100,6 +100,45 @@ class CliTest {
         assertThat(r.err()).isEmpty();
     }
 
+    @ParameterizedTest
+    @MethodSource("offlineVerbs")
+    void everyVerbThatAdvertisesVersionPrintsOne(String verb) {
+        // mixinStandardHelpOptions registers -V alongside -h, so every verb carrying it *promises* a
+        // version in its own usage text. A verb spec with no version prints an empty line and exits 0 —
+        // an option the help advertises and that then does nothing, which is worse than the plain
+        // "Unknown option: '-V'" it replaced.
+        Run r = run(verb, "--help");
+        Assumptions.assumeTrue(r.out().contains("-V, --version"), "verb does not advertise -V");
+
+        Run version = run(verb, "-V");
+        assertThat(version.code()).isZero();
+        assertThat(version.out()).contains(Cli.VERSION);
+        assertThat(version.err()).isEmpty();
+    }
+
+    @Test
+    void theReportedVersionTracksTheProjectVersion() {
+        // Cli.VERSION is a compile-time constant so that -V costs neither a manifest nor a bundled
+        // resource in the native image. The price of a constant is that it can be left behind by a
+        // release, shipping a binary that misreports itself; the build hands the real project version
+        // in so that drift fails here instead.
+        String projectVersion = System.getProperty("tapstate.project.version");
+        assertThat(projectVersion)
+                .as("the build must pass -Dtapstate.project.version so this guard can run at all")
+                .isNotBlank();
+        assertThat(Cli.VERSION).isEqualTo("tapstate " + projectVersion);
+    }
+
+    @Test
+    void everyRegisteredSubcommandCarriesTheRootVersion() {
+        // the version belongs to the binary, not to one verb: whatever the table answers to must report
+        // the same string the root does, so `tapstate -V` and `tapstate <verb> -V` can never disagree
+        assertThat(Cli.newCommandLine().getSubcommands().values())
+                .allSatisfy(sub -> assertThat(sub.getCommandSpec().version())
+                        .as("subcommand '%s' has no version to print", sub.getCommandName())
+                        .containsExactly(Cli.VERSION));
+    }
+
     @Test
     void validateAcceptsAValidWorkspace() {
         Run r = run("validate", resource("ws-valid").toString());
