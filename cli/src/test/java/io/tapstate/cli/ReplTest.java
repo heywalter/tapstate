@@ -2247,6 +2247,36 @@ class ReplTest {
     }
 
     @Test
+    void metricsSaysItsNamesAreUnstableSoNobodyBuildsAlertsOnThemUnwarned() {
+        // The metric names are not a compatibility promise in this preview. That has to be visible where
+        // the names are, not only in a document nobody reads before wiring up a dashboard.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.metricsOutcome = new MetricsOutcome.Found("pl1", Map.of("recordCount", 42L));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("metrics pl1")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).contains("unstable");
+    }
+
+    @Test
+    void theUnstableNoticeIsAbsentWhenThereAreNoMetricsToMislabel() {
+        // Nothing was named, so there is no naming promise to disclaim; the benign "no metrics" line
+        // should not be dressed up as a warning.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.metricsOutcome = new MetricsOutcome.Found("pl1", Map.of());
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("metrics pl1")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("no metrics");
+        assertThat(out).doesNotContain("unstable");
+    }
+
+    @Test
     void metricsPrintsPerTableOffsetLinesAlongsideTheStats() {
         FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
         client.metricsOutcome = new MetricsOutcome.Found(

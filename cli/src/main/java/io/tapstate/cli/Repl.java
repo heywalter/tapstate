@@ -47,6 +47,14 @@ import java.util.stream.Collectors;
  */
 final class Repl {
 
+    /**
+     * Printed under a non-empty metrics read. The metric names are not a compatibility promise in this
+     * preview: they may be renamed as the metric model settles, and the read face is where a user decides
+     * whether to build on them, so the disclaimer belongs there rather than only in the documentation.
+     */
+    private static final String METRIC_NAMES_UNSTABLE =
+            "(metric names are unstable in this preview and may change)";
+
     /** REPL-only words handled here rather than by the command table; completed alongside the verbs. */
     static final List<String> BUILTINS =
             List.of("help", "exit", "quit", "cd", "pwd", "connect", "disconnect", "login", "logout");
@@ -1397,6 +1405,11 @@ final class Repl {
                     out.println("no metrics");
                 } else {
                     lines.forEach((name, value) -> out.println(name + "  " + value));
+                    // The names above are not a compatibility promise yet. Saying so here, next to them, is
+                    // the difference between a user who knowingly accepts the churn and one who wires a
+                    // dashboard to them and is surprised later; a note buried in a document reaches neither.
+                    // Absent when nothing was named -- there is no naming promise to disclaim.
+                    out.println(METRIC_NAMES_UNSTABLE);
                 }
                 out.flush();
             }

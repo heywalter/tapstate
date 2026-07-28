@@ -281,6 +281,10 @@ tapstate(admin@127.0.0.1:8080)> logs sync_orders              # node-local opera
   the first `status`/`metrics` may report no observation yet, and a `status` right
   after `stop` can still say `running`. Use `--watch`, or retry after a second.
 - `metrics` is the signal for progress: `recordCount` climbing, `errorCount` at 0.
+- **Metric names are unstable in this preview.** They may be renamed as the metric model
+  settles, so treat them as something to read, not something to build on: a dashboard or
+  an alert wired to these names will need revisiting. The `metrics` output says so too.
+  The lifecycle state in `status` is not affected — that one is a stable contract.
 
 Verify the rows landed, straight from the target — `mongosh` runs inside the Mongo
 container, so no client is needed on the host:
