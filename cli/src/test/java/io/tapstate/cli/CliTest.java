@@ -454,6 +454,30 @@ class CliTest {
         assertThat(r.err()).contains("cli.verb-not-implemented").contains(verb);
     }
 
+    @ParameterizedTest
+    @MethodSource("connectedVerbs")
+    void everyConnectedVerbSupportsHelp(String verb) {
+        // these verbs swallow their operands so that the connection diagnostic always wins over a usage
+        // error, but that swallowed --help along with them: the one question whose answer does not
+        // depend on being connected was the one question they could not answer. Asking what a verb is
+        // must work in the state the user is in when they ask -- offline, before connecting.
+        Run r = run(verb, "--help");
+        assertThat(r.code()).isZero();
+        assertThat(r.out()).contains("Usage: tapstate " + verb);
+        assertThat(r.err()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @MethodSource("unimplementedCompositeVerbs")
+    void everyUnimplementedCompositeVerbSupportsHelp(String verb) {
+        // a reserved verb has all the more reason to explain itself: "not implemented yet" is the whole
+        // answer only once the user knows what it was going to be
+        Run r = run(verb, "--help");
+        assertThat(r.code()).isZero();
+        assertThat(r.out()).contains("Usage: tapstate " + verb);
+        assertThat(r.err()).isEmpty();
+    }
+
     @Test
     void unknownVerbIsAUsageErrorDistinctFromConnectedVerbs() {
         Run r = run("florp");
