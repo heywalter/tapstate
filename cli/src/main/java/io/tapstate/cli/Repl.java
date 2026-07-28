@@ -86,6 +86,9 @@ final class Repl {
     /** The status of the last dispatched line; see {@link #lastExitCode()}. */
     private int lastExitCode;
 
+    /** Whether to drop the connect / sign-in confirmations; see {@link #confirm}. */
+    private boolean quiet;
+
     /**
      * The environment {@code ${...}} references are substituted from — the author's own, since this side
      * loads the files. A scripted stand-in is injected in tests; the real one is the process environment.
@@ -170,12 +173,64 @@ final class Repl {
     }
 
     /**
+     * Establishes the session a one-line launch asked for: reach the server, then sign in if a user was
+     * named. Returns the status of the first step that failed, or success. Nothing is persisted — the
+     * credential lives in this session's memory and goes when the process does — so every invocation
+     * that wants a connected session establishes its own.
+     *
+     * <p>Signing in is optional: being connected is a usable state on its own (the prompt reflects it
+     * and {@code login} can follow), so a launch that names no user simply lands connected. The password
+     * arrives as a supplier so that one that has to be asked for is only asked for once the connection
+     * has been made — there is no point prompting for a password to a server that is not there.
+     */
+    int signIn(String seeds, String username, Supplier<String> password, boolean quiet) {
+        this.quiet = quiet;
+        try {
+            int connected = connect(List.of("connect", seeds));
+            if (connected != Cli.EXIT_OK || username == null || username.isBlank()) {
+                return connected;
+            }
+            return login(username, password.get());
+        } finally {
+            this.quiet = false;
+        }
+    }
+
+    /**
+     * Where a confirmation of having connected or signed in goes. In a session it is the answer to what
+     * was just typed, so it goes to stdout with everything else. Running one command from a script it is
+     * not: the command's own output is, and two lines about the connection ahead of it would land in
+     * whatever is reading the result. Quiet drops them; the failures are unaffected, since those go to
+     * stderr and are the reason the run stopped.
+     */
+    private void confirm(String line) {
+        if (quiet) {
+            return;
+        }
+        PrintWriter out = commandLine.getOut();
+        out.println(line);
+        out.flush();
+    }
+
+    /**
      * Handles one input line. Returns {@code false} when the loop should stop (exit / quit); the status
      * the line produced is left in {@link #lastExitCode()}, which is what a one-shot invocation exits
      * with. Inside the read loop nothing consumes it — a failed line does not end a session.
      */
     boolean dispatch(String line) {
-        String trimmed = line == null ? "" : line.trim();
+        return dispatchLine(line == null ? "" : line.trim());
+    }
+
+    /**
+     * Runs one already-split command, as a one-shot launch hands it over. Re-joining the words into a
+     * line only to split them again would put the quoting rules between the shell and the verb twice,
+     * and the shell has already done that job.
+     */
+    boolean dispatch(List<String> words) {
+        return dispatchWords(words);
+    }
+
+    private boolean dispatchLine(String trimmed) {
         if (trimmed.isEmpty()) {
             lastExitCode = Cli.EXIT_OK;
             return true;
@@ -196,8 +251,23 @@ final class Repl {
             lastExitCode = Cli.EXIT_OK;
             return true;
         }
-        List<String> words = tokenize(trimmed);
+        return dispatchWords(tokenize(trimmed));
+    }
+
+    /** The shared tail of both entry points: everything decided by the words rather than the raw line. */
+    private boolean dispatchWords(List<String> words) {
         if (words.isEmpty()) {
+            lastExitCode = Cli.EXIT_OK;
+            return true;
+        }
+        // the line-shaped builtins are matched here too, so a one-shot `exit` behaves the same way
+        if (words.size() == 1 && (words.get(0).equals("exit") || words.get(0).equals("quit"))) {
+            lastExitCode = Cli.EXIT_OK;
+            return false;
+        }
+        if (words.size() == 1 && words.get(0).equals("pwd")) {
+            commandLine.getOut().println(workdir.toString());
+            commandLine.getOut().flush();
             lastExitCode = Cli.EXIT_OK;
             return true;
         }
@@ -1759,9 +1829,7 @@ final class Repl {
         for (URI seed : seeds) {
             if (controlPlane.isHealthy(seed)) {
                 session.connect(seeds, seed);
-                PrintWriter out = commandLine.getOut();
-                out.println("connected to " + hostPort(seed));
-                out.flush();
+                confirm("connected to " + hostPort(seed));
                 return Cli.EXIT_OK;
             }
         }
@@ -1804,14 +1872,22 @@ final class Repl {
             err.flush();
             return Cli.EXIT_USAGE;
         }
-        String username = words.get(1);
-        String password = prompter.secret("Password");
+        return login(words.get(1), prompter.secret("Password"));
+    }
+
+    /**
+     * Signs in with a password already in hand. Split from the typed {@code login} so the password can
+     * come from somewhere other than the prompt — a one-line launch supplies its own — without either
+     * path having to know where the other got it.
+     */
+    private int login(String username, String password) {
+        PrintWriter out = commandLine.getOut();
+        PrintWriter err = commandLine.getErr();
         URI node = session.landingNode();
         return switch (controlPlane.login(node, username, password)) {
             case LoginOutcome.Success success -> {
                 session.authenticate(success.token(), username, null, session.seeds());
-                out.println("logged in as " + username);
-                out.flush();
+                confirm("logged in as " + username);
                 yield Cli.EXIT_OK;
             }
             case LoginOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
@@ -1996,7 +2072,8 @@ final class Repl {
     /** Runs the interactive read loop until {@code exit} / {@code quit} or end-of-input. */
     void run() {
         PrintWriter out = commandLine.getOut();
-        out.println("Tapstate offline CLI. Type 'help' for commands, 'exit' to quit.");
+        // not "offline": a session can now start connected, and the prompt is what reports which it is
+        out.println("Tapstate CLI. Type 'help' for commands, 'exit' to quit.");
         out.flush();
         // system(true) for a real terminal; dumb(true) degrades silently to a dumb terminal when
         // there is no TTY (piped / redirected input) instead of printing a JLine warning.

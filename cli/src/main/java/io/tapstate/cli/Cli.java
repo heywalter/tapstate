@@ -6,10 +6,13 @@ import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Model.UsageMessageSpec;
 import picocli.CommandLine.Spec;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * The Tapstate CLI: the surface-ring product front-end. Dual-mode — bare {@code tapstate} opens the
@@ -25,8 +28,8 @@ import java.util.Map;
         subcommands = {ValidateCmd.class, NewCmd.class, ExplainCmd.class, LsCmd.class, DescCmd.class},
         // the second line is indented by hand under the "Usage: " heading picocli prints before the first
         customSynopsis = {
-                "tapstate [-w DIR]              open a session (interactive)",
-                "       tapstate [COMMAND] [ARGS...]   run one command and exit"},
+                "tapstate [LAUNCH]                   open a session (interactive)",
+                "       tapstate [LAUNCH] COMMAND [ARGS...]  run one command and exit"},
         description = {
                 "",
                 "With no command, opens a session: a prompt that holds a workspace and, once you",
@@ -36,14 +39,26 @@ import java.util.Map;
                 "its own options, so the workspace is `tapstate validate -w DIR`, not",
                 "`tapstate -w DIR validate`.",
                 "",
-                "The workspace defaults to tap-work, or $TAPSTATE_WORKDIR when that is set.",
+                "LAUNCH options come before the command and shape how the CLI starts:",
+                "  -w, --workdir DIR   workspace to start in (default: tap-work, or",
+                "                        $TAPSTATE_WORKDIR)",
+                "  -c, --connect URL   reach a server before doing anything else; takes the",
+                "                        same seed list as `connect`",
+                "  -u, --user NAME     sign in as this user once connected (needs -c)",
+                "  -p, --password PW   the password; else $TAPSTATE_PASSWORD, else asked for.",
+                "                        A password here is readable in the process list and",
+                "                        stays in shell history -- prefer the other two.",
                 ""},
         footerHeading = "%nExamples:%n",
         footer = {
                 "  tapstate                      open a session in the default workspace",
                 "  tapstate -w ./work            open a session in ./work",
                 "  tapstate validate ./work      validate a workspace and exit",
-                "  tapstate help apply           describe one command"},
+                "  tapstate help apply           describe one command",
+                "  tapstate -c localhost:8080 -u admin -p pw",
+                "                                open a session already signed in",
+                "  tapstate -c localhost:8080 -u admin ls",
+                "                                run one command against a server and exit"},
         exitCodeListHeading = "%nExit codes:%n",
         exitCodeList = {
                 "0:success",
@@ -334,41 +349,59 @@ public final class Cli implements Runnable {
         spec.commandLine().usage(CliIo.out(spec));
     }
 
-    /**
-     * Whether these top-level args open the REPL rather than running a one-shot verb. A bare invocation,
-     * or one carrying only the workspace option ({@code -w DIR} / {@code --workdir DIR} / {@code =} form),
-     * seeds and opens the REPL. The first token that is a verb, a help/version request, or anything else
-     * is a one-shot the command table parses and (if malformed) rejects with a loud usage error — the
-     * top-level table declares no {@code -w}, so {@code tapstate -w foo validate} is never silently ignored.
-     */
-    static boolean isReplLaunch(String[] args) {
-        for (int i = 0; i < args.length; i++) {
-            String a = args[i];
-            if (a.equals("-w") || a.equals("--workdir")) {
-                i++;   // skip the option's value
-                continue;
-            }
-            if (a.startsWith("-w=") || a.startsWith("--workdir=")) {
-                continue;
-            }
-            return false;
+    public static void main(String[] args) {
+        LaunchOptions launch;
+        try {
+            launch = LaunchOptions.parse(args);
+        } catch (RuntimeException e) {
+            // malformed launch flags (a -c or -w with no value): let the command table render the error
+            System.exit(newCommandLine().execute(args));
+            return;
         }
-        return true;
+        // -w before a command is refused rather than parsed here; see LaunchOptions for why
+        if (launch.misplacesTheWorkspaceOption(args)) {
+            System.exit(newCommandLine().execute(args));
+            return;
+        }
+        if (!launch.connects() && launch.isOneShot()) {
+            System.exit(newCommandLine().execute(args));      // the plain one-shot path, unchanged
+            return;
+        }
+        System.exit(runSession(launch, new HttpControlPlaneClient(), Cli::terminalPrompter));
     }
 
-    public static void main(String[] args) {
-        if (isReplLaunch(args)) {
-            Path seed;
-            try {
-                seed = WorkspaceOption.resolve(args);
-            } catch (RuntimeException e) {
-                // malformed workspace flags (e.g. a -w with no value): let the command table render it
-                System.exit(newCommandLine().execute(args));
-                return;
-            }
-            new Repl(newCommandLine(), seed, new HttpControlPlaneClient()).run();
-        } else {
-            System.exit(newCommandLine().execute(args));
+    /** The production password reader: a JLine prompter over the terminal, opened only if one is needed. */
+    private static Prompter terminalPrompter() {
+        try {
+            return JLinePrompter.system();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
+    }
+
+    /**
+     * Runs whatever the launch options asked for: establish the connection they name, then either run
+     * the one command they carry and leave, or open the session and hand over to the read loop.
+     *
+     * <p>A failed connection or sign-in stops there. Dropping into a session that is not connected after
+     * being asked for one would look like it had worked, and running the command anyway would report a
+     * missing connection rather than the reason there is none.
+     */
+    static int runSession(LaunchOptions launch, ControlPlaneClient controlPlane,
+                          Supplier<Prompter> prompter) {
+        Repl repl = new Repl(newCommandLine(), launch.root(), controlPlane);
+        if (launch.connects()) {
+            int established = repl.signIn(launch.connect(), launch.user(),
+                    () -> launch.resolvePassword(prompter), launch.isOneShot());
+            if (established != EXIT_OK) {
+                return established;
+            }
+        }
+        if (launch.isOneShot()) {
+            repl.dispatch(launch.command());
+            return repl.lastExitCode();
+        }
+        repl.run();
+        return EXIT_OK;
     }
 }

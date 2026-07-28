@@ -731,38 +731,51 @@ class CliTest {
         assertThat(r.err()).contains("--connector");
     }
 
-    // --- F1d: REPL-launch detection + workspace seed ---------------------------------------------
+    // --- F1d: session-vs-one-shot launch + workspace seed ----------------------------------------
 
     @Test
-    void bareArgsLaunchTheReplWithTheDefaultWorkspace() {
-        assertThat(Cli.isReplLaunch(new String[]{})).isTrue();
-        assertThat(WorkspaceOption.resolve()).isEqualTo(Path.of("tap-work"));
+    void bareArgsOpenASessionInTheDefaultWorkspace() {
+        LaunchOptions launch = LaunchOptions.parse();
+        assertThat(launch.isOneShot()).isFalse();
+        assertThat(launch.connects()).isFalse();
+        assertThat(launch.root()).isEqualTo(Path.of("tap-work"));
     }
 
     @Test
-    void workspaceOnlyArgsLaunchTheReplSeededWithThatWorkspace() {
-        assertThat(Cli.isReplLaunch(new String[]{"-w", "foo"})).isTrue();
-        assertThat(Cli.isReplLaunch(new String[]{"--workdir", "foo"})).isTrue();
-        assertThat(Cli.isReplLaunch(new String[]{"--workdir=foo"})).isTrue();
+    void workspaceOnlyArgsOpenASessionSeededWithThatWorkspace() {
+        assertThat(LaunchOptions.parse("-w", "foo").isOneShot()).isFalse();
+        assertThat(LaunchOptions.parse("--workdir", "foo").isOneShot()).isFalse();
+        assertThat(LaunchOptions.parse("--workdir=foo").isOneShot()).isFalse();
         // the seed honours the flag with the option's own precedence
-        assertThat(WorkspaceOption.resolve("-w", "foo")).isEqualTo(Path.of("foo"));
-        assertThat(WorkspaceOption.resolve("--workdir=bar")).isEqualTo(Path.of("bar"));
+        assertThat(LaunchOptions.parse("-w", "foo").root()).isEqualTo(Path.of("foo"));
+        assertThat(LaunchOptions.parse("--workdir=bar").root()).isEqualTo(Path.of("bar"));
     }
 
     @Test
-    void aVerbIsOneShotNotAReplLaunch() {
-        assertThat(Cli.isReplLaunch(new String[]{"validate"})).isFalse();
-        assertThat(Cli.isReplLaunch(new String[]{"new", "--kind", "source"})).isFalse();
-        // a verb after a workspace flag is still one-shot: the top-level table has no -w, so this is a
-        // loud usage error rather than a silently-ignored workspace
-        assertThat(Cli.isReplLaunch(new String[]{"-w", "foo", "validate"})).isFalse();
+    void aVerbMakesTheLaunchOneShot() {
+        assertThat(LaunchOptions.parse("validate").isOneShot()).isTrue();
+        assertThat(LaunchOptions.parse("new", "--kind", "source").isOneShot()).isTrue();
+        // a verb's own options are captured verbatim rather than parsed here, so the table sees them
+        assertThat(LaunchOptions.parse("new", "--kind", "source").command())
+                .containsExactly("new", "--kind", "source");
+    }
+
+    @Test
+    void aVerbAfterTheWorkspaceOptionIsRoutedToTheTableToBeRefused() {
+        // parsing -w here would bind the directory to the launch and leave the verb on its own default,
+        // dropping the one the user named. It is detected and handed to the table, which says so
+        LaunchOptions launch = LaunchOptions.parse("-w", "foo", "validate");
+        assertThat(launch.misplacesTheWorkspaceOption("-w", "foo", "validate")).isTrue();
+        assertThat(LaunchOptions.parse("validate").misplacesTheWorkspaceOption("validate")).isFalse();
     }
 
     @Test
     void helpVersionAndUnknownTokensAreOneShot() {
-        assertThat(Cli.isReplLaunch(new String[]{"--help"})).isFalse();
-        assertThat(Cli.isReplLaunch(new String[]{"--version"})).isFalse();
-        assertThat(Cli.isReplLaunch(new String[]{"florp"})).isFalse();
+        // --help / --version are not launch options, so they reach the command table; an unknown word is
+        // a command name as far as the launch is concerned, and the table is what rejects it
+        assertThatThrownBy(() -> LaunchOptions.parse("--help")).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> LaunchOptions.parse("--version")).isInstanceOf(RuntimeException.class);
+        assertThat(LaunchOptions.parse("florp").isOneShot()).isTrue();
     }
 
     @Test
