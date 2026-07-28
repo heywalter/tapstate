@@ -163,9 +163,10 @@ jobs:
           echo "${{ matrix.os }}-${{ matrix.arch }} macos $floor" > "${{ matrix.os }}-${{ matrix.arch }}.minimum"
           cat "${{ matrix.os }}-${{ matrix.arch }}.minimum"
       # Linux: the binary links glibc dynamically, and the loader refuses any symbol version the running
-      # glibc does not carry. The answer is the newest GLIBC_x.y it actually references -- which is not
-      # the build image's own glibc, and is not what the loader's error message names either: that names
-      # the first missing version it happens to reach, which can be lower than the highest required.
+      # glibc does not carry. The answer is the newest GLIBC_x.y it actually references, which is not the
+      # build image's own glibc -- these are built against a far newer one than they need. Nor can it be
+      # read off a failure: the loader lists the versions whichever machine you tried happens to lack, so
+      # the list depends on that machine and its first line is not the highest. Ask the binary instead.
       - name: measure the glibc version this binary requires
         if: matrix.os == 'linux'
         shell: bash
