@@ -83,6 +83,12 @@ final class Repl {
     /** The session workspace: the current {@code cd} directory, injected into workspace-aware verbs. */
     private Path workdir;
 
+    /** The status of the last dispatched line; see {@link #lastExitCode()}. */
+    private int lastExitCode;
+
+    /** Whether to drop the connect / sign-in confirmations; see {@link #confirm}. */
+    private boolean quiet;
+
     /**
      * The environment {@code ${...}} references are substituted from — the author's own, since this side
      * loads the files. A scripted stand-in is injected in tests; the real one is the process environment.
@@ -131,6 +137,15 @@ final class Repl {
         return session;
     }
 
+    /**
+     * The status the last dispatched line produced, in the same scheme one-shot mode exits with. The
+     * read loop ignores it — a line that failed does not end a session — but a scripted invocation that
+     * runs one line and leaves has nothing else to report with.
+     */
+    int lastExitCode() {
+        return lastExitCode;
+    }
+
     /** Requests any in-flight {@code --watch} / {@code --follow} stream to stop; wired to Ctrl-C in {@link #run}. */
     void cancelStream() {
         streamCancelled = true;
@@ -157,54 +172,131 @@ final class Repl {
         return "tapstate(offline:" + label + ")> ";
     }
 
-    /** Handles one input line. Returns {@code false} when the loop should stop (exit / quit). */
+    /**
+     * Establishes the session a one-line launch asked for: reach the server, then sign in if a user was
+     * named. Returns the status of the first step that failed, or success. Nothing is persisted — the
+     * credential lives in this session's memory and goes when the process does — so every invocation
+     * that wants a connected session establishes its own.
+     *
+     * <p>Signing in is optional: being connected is a usable state on its own (the prompt reflects it
+     * and {@code login} can follow), so a launch that names no user simply lands connected. The password
+     * arrives as a supplier so that one that has to be asked for is only asked for once the connection
+     * has been made — there is no point prompting for a password to a server that is not there.
+     */
+    int signIn(String seeds, String username, Supplier<String> password, boolean quiet) {
+        this.quiet = quiet;
+        try {
+            int connected = connect(List.of("connect", seeds));
+            if (connected != Cli.EXIT_OK || username == null || username.isBlank()) {
+                return connected;
+            }
+            return login(username, password.get());
+        } finally {
+            this.quiet = false;
+        }
+    }
+
+    /**
+     * Where a confirmation of having connected or signed in goes. In a session it is the answer to what
+     * was just typed, so it goes to stdout with everything else. Running one command from a script it is
+     * not: the command's own output is, and two lines about the connection ahead of it would land in
+     * whatever is reading the result. Quiet drops them; the failures are unaffected, since those go to
+     * stderr and are the reason the run stopped.
+     */
+    private void confirm(String line) {
+        if (quiet) {
+            return;
+        }
+        PrintWriter out = commandLine.getOut();
+        out.println(line);
+        out.flush();
+    }
+
+    /**
+     * Handles one input line. Returns {@code false} when the loop should stop (exit / quit); the status
+     * the line produced is left in {@link #lastExitCode()}, which is what a one-shot invocation exits
+     * with. Inside the read loop nothing consumes it — a failed line does not end a session.
+     */
     boolean dispatch(String line) {
-        String trimmed = line == null ? "" : line.trim();
+        return dispatchLine(line == null ? "" : line.trim());
+    }
+
+    /**
+     * Runs one already-split command, as a one-shot launch hands it over. Re-joining the words into a
+     * line only to split them again would put the quoting rules between the shell and the verb twice,
+     * and the shell has already done that job.
+     */
+    boolean dispatch(List<String> words) {
+        return dispatchWords(words);
+    }
+
+    private boolean dispatchLine(String trimmed) {
         if (trimmed.isEmpty()) {
+            lastExitCode = Cli.EXIT_OK;
             return true;
         }
         if (trimmed.equals("exit") || trimmed.equals("quit")) {
+            lastExitCode = Cli.EXIT_OK;
             return false;
         }
         if (trimmed.equals("help")) {
             commandLine.usage(commandLine.getOut());
             commandLine.getOut().flush();
+            lastExitCode = Cli.EXIT_OK;
             return true;
         }
         if (trimmed.equals("pwd")) {
             commandLine.getOut().println(workdir.toString());
             commandLine.getOut().flush();
+            lastExitCode = Cli.EXIT_OK;
             return true;
         }
-        List<String> words = tokenize(trimmed);
+        return dispatchWords(tokenize(trimmed));
+    }
+
+    /** The shared tail of both entry points: everything decided by the words rather than the raw line. */
+    private boolean dispatchWords(List<String> words) {
         if (words.isEmpty()) {
+            lastExitCode = Cli.EXIT_OK;
+            return true;
+        }
+        // the line-shaped builtins are matched here too, so a one-shot `exit` behaves the same way
+        if (words.size() == 1 && (words.get(0).equals("exit") || words.get(0).equals("quit"))) {
+            lastExitCode = Cli.EXIT_OK;
+            return false;
+        }
+        if (words.size() == 1 && words.get(0).equals("pwd")) {
+            commandLine.getOut().println(workdir.toString());
+            commandLine.getOut().flush();
+            lastExitCode = Cli.EXIT_OK;
             return true;
         }
         if (words.get(0).equals("cd")) {
-            changeDir(words);
+            lastExitCode = changeDir(words);
             return true;
         }
         if (words.get(0).equals("connect")) {
-            connect(words);
+            lastExitCode = connect(words);
             return true;
         }
         if (words.get(0).equals("disconnect")) {
-            disconnect();
+            lastExitCode = disconnect();
             return true;
         }
         if (words.get(0).equals("login")) {
-            login(words);
+            lastExitCode = login(words);
             return true;
         }
         if (words.get(0).equals("logout")) {
-            logout();
+            lastExitCode = logout();
             return true;
         }
         if (session.isConnected() && ONLINE_VERBS.contains(words.get(0))) {
-            onlineVerb(words);
+            lastExitCode = onlineVerb(words);
             return true;
         }
-        commandLine.execute(withWorkspace(words));
+        // the offline path already had a status -- picocli returns one -- and it was being discarded
+        lastExitCode = commandLine.execute(withWorkspace(words));
         return true;
     }
 
@@ -214,53 +306,45 @@ final class Repl {
      * provoking a server 401. On a request the landing node cannot answer, {@link #failover} re-lands on
      * another member and the verb is retried once against the new node.
      */
-    private void onlineVerb(List<String> words) {
+    private int onlineVerb(List<String> words) {
         PrintWriter err = commandLine.getErr();
         if (!session.isAuthenticated()) {
             Diagnostics.printText(err, CliError.NOT_AUTHENTICATED, Map.of("verb", words.get(0)));
-            return;
+            return Cli.EXIT_VERB_UNAVAILABLE;
         }
         // `test` and its read-back `test-result` return a structured report that is worth machine-reading, so
         // they accept an `-o` output flag and parse their own options — routed before the positional-only
         // guard the other verbs share.
         if (words.get(0).equals("test")) {
-            testOnline(words);
-            return;
+            return testOnline(words);
         }
         if (words.get(0).equals("test-result")) {
-            testResultOnline(words);
-            return;
+            return testResultOnline(words);
         }
         if (words.get(0).equals("discover-schema")) {
-            discoverSchemaOnline(words);
-            return;
+            return discoverSchemaOnline(words);
         }
         if (words.get(0).equals("schema")) {
-            schemaOnline(words);
-            return;
+            return schemaOnline(words);
         }
         // `register` uploads a local artifact and returns a structured report worth machine-reading, so it
         // accepts an `-o` output flag and parses its own operand (a local path) — routed before the
         // positional-only guard the other verbs share.
         if (words.get(0).equals("register")) {
-            registerOnline(words);
-            return;
+            return registerOnline(words);
         }
         // `connectors` lists the online catalog and returns a structured list worth machine-reading, so it
         // accepts an `-o` output flag and takes no operand — routed before the positional-only guard.
         if (words.get(0).equals("connectors")) {
-            connectorsOnline(words);
-            return;
+            return connectorsOnline(words);
         }
         // The two streaming sugars ride the read verbs over the websocket channel: `status --watch` and
         // `logs --follow`. They are the only dash-options a connected verb accepts, and only on their verb.
         if (words.get(0).equals("status") && words.contains("--watch")) {
-            statusWatch(words);
-            return;
+            return statusWatch(words);
         }
         if (words.get(0).equals("logs") && words.contains("--follow")) {
-            logsFollow(words);
-            return;
+            return logsFollow(words);
         }
         // The other connected verbs take positional operands only; a dash-option (e.g. `-o json`) is not yet
         // supported and must not be silently misread as an id / kind / path.
@@ -268,10 +352,10 @@ final class Repl {
             if (words.get(i).startsWith("-")) {
                 err.println(words.get(0) + ": options are not supported on a connected verb yet");
                 err.flush();
-                return;
+                return Cli.EXIT_USAGE;
             }
         }
-        switch (words.get(0)) {
+        return switch (words.get(0)) {
             case "apply" -> applyOnline(words);
             case "get" -> getOnline(words);
             case "ls" -> lsOnline(words);
@@ -281,7 +365,7 @@ final class Repl {
             case "snapshot" -> snapshotOnline(words);
             case "logs" -> logsOnline(words);
             default -> throw new IllegalStateException("not an online verb: " + words.get(0));
-        }
+        };
     }
 
     /**
@@ -292,27 +376,28 @@ final class Repl {
      * answer, {@link #withFailover} re-lands and retries once. There is no {@code rewind} verb: a re-dig is
      * the explicit two-step {@code stop} then {@code start}.
      */
-    private void lifecycleOnline(List<String> words) {
+    private int lifecycleOnline(List<String> words) {
         String verb = words.get(0);
         PrintWriter err = commandLine.getErr();
         if (words.size() < 2 || words.get(1).isBlank()) {
             err.println(verb + ": missing operand (usage: " + verb + " <pipeline-id>)");
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         String id = words.get(1);
         LifecycleOutcome outcome = withFailover(() ->
                 controlPlane.lifecycle(session.landingNode(), session.credential(), id, verb),
                 o -> o instanceof LifecycleOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case LifecycleOutcome.Accepted accepted -> {
                 out.println(accepted.pipelineId() + "  " + accepted.targetState().toLowerCase(Locale.ROOT));
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case LifecycleOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case LifecycleOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -322,7 +407,7 @@ final class Repl {
      * path is a benign usage line; a coded server refusal (a validation failure is a {@code dsl.*} code)
      * renders its code and message.
      */
-    private void applyOnline(List<String> words) {
+    private int applyOnline(List<String> words) {
         PrintWriter err = commandLine.getErr();
         Path target = words.size() > 1 ? workdir.resolve(words.get(1)).normalize() : workdir;
         List<LocalDraft> drafts;
@@ -331,32 +416,32 @@ final class Repl {
         } catch (IOException e) {
             err.println("apply: cannot read " + target + ": " + e.getMessage());
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         } catch (DslException e) {
             // an unresolved reference is refused here, before anything is sent: the server would only see
             // a literal ${...} and take it for a real value
-            renderLocalRefusal(e);
-            return;
+            return renderLocalRefusal(e);
         }
         if (drafts.isEmpty()) {
             err.println("apply: no *.tap.yml artifacts found in " + target);
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         ApplyOutcome outcome = withFailover(() ->
                 controlPlane.apply(session.landingNode(), session.credential(), drafts),
                 o -> o instanceof ApplyOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case ApplyOutcome.Applied applied -> {
                 for (ApplyOutcome.Item item : applied.items()) {
                     out.println(item.change().toLowerCase(Locale.ROOT) + "  " + item.kind() + "  " + item.id());
                 }
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case ApplyOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case ApplyOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -364,30 +449,34 @@ final class Repl {
      * form. A missing operand is a benign usage line; an id that resolves to nothing is a benign
      * "not found" line; a coded refusal renders its code and message.
      */
-    private void getOnline(List<String> words) {
+    private int getOnline(List<String> words) {
         PrintWriter err = commandLine.getErr();
         if (words.size() < 2 || words.get(1).isBlank()) {
             err.println("get: missing operand (usage: get <id>)");
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         String id = words.get(1);
         GetOutcome outcome = withFailover(() ->
                 controlPlane.get(session.landingNode(), session.credential(), id),
                 o -> o instanceof GetOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case GetOutcome.Found found -> {
                 out.println(found.artifact().canonicalForm().stripTrailing());
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case GetOutcome.Absent ignored -> {
                 err.println("not found: " + id);
                 err.flush();
+                // asking for an artifact that is not there did not do what was asked, so it is not a
+                // success -- a script reading only the status must not take an empty result for one
+                yield Cli.EXIT_DIAGNOSTIC;
             }
             case GetOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case GetOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -395,13 +484,13 @@ final class Repl {
      * counterpart of the offline workspace browser). Prints {@code kind  id} per artifact, or a benign
      * "no resources" line when the store is empty; a coded refusal renders its code and message.
      */
-    private void lsOnline(List<String> words) {
+    private int lsOnline(List<String> words) {
         String kind = words.size() > 1 ? words.get(1) : null;
         ListOutcome outcome = withFailover(() ->
                 controlPlane.list(session.landingNode(), session.credential(), kind),
                 o -> o instanceof ListOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case ListOutcome.Listed listed -> {
                 if (listed.artifacts().isEmpty()) {
                     out.println("no resources");
@@ -411,10 +500,11 @@ final class Repl {
                     }
                 }
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case ListOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case ListOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -425,14 +515,14 @@ final class Repl {
      * source connection is a benign "not a testable connection"; a coded refusal renders its code and
      * message. A failed connection is still a rendered report (the test ran), not an error.
      */
-    private void testOnline(List<String> words) {
+    private int testOnline(List<String> words) {
         IdAndFormat parsed = parseIdAndFormat("test", words);
         if (parsed == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         SourceResource source = fetchSourceConnection("test", parsed.id(), "testable");
         if (source == null) {
-            return;
+            return Cli.EXIT_DIAGNOSTIC;
         }
 
         final String connectionId = parsed.id();
@@ -440,12 +530,15 @@ final class Repl {
         ConnectionTestOutcome outcome = withFailover(() -> controlPlane.test(
                 session.landingNode(), session.credential(), connectionId, source.connector(), source.config()),
                 o -> o instanceof ConnectionTestOutcome.Unreachable);
-        switch (outcome) {
-            case ConnectionTestOutcome.Tested tested -> renderReport(tested.report(), chosen);
+        return switch (outcome) {
+            case ConnectionTestOutcome.Tested tested -> {
+                renderReport(tested.report(), chosen);
+                yield reportStatus(tested.report());
+            }
             case ConnectionTestOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case ConnectionTestOutcome.TimedOut ignored -> reportRequestTimedOut();
             case ConnectionTestOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -504,28 +597,30 @@ final class Repl {
      * that is not a source connection is a benign "not a discoverable connection"; a coded refusal renders
      * its code and message.
      */
-    private void discoverSchemaOnline(List<String> words) {
+    private int discoverSchemaOnline(List<String> words) {
         IdAndFormat parsed = parseIdAndFormat("discover-schema", words);
         if (parsed == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         SourceResource source = fetchSourceConnection("discover-schema", parsed.id(), "discoverable");
         if (source == null) {
-            return;
+            return Cli.EXIT_DIAGNOSTIC;
         }
 
         final String connectionId = parsed.id();
         ConnectionDiscoverSchemaOutcome outcome = withFailover(() -> controlPlane.discoverSchema(
                 session.landingNode(), session.credential(), connectionId, source.connector(), source.config()),
                 o -> o instanceof ConnectionDiscoverSchemaOutcome.Unreachable);
-        switch (outcome) {
-            case ConnectionDiscoverSchemaOutcome.Discovered discovered ->
-                    renderSchema(discovered.schema(), parsed.format());
+        return switch (outcome) {
+            case ConnectionDiscoverSchemaOutcome.Discovered discovered -> {
+                renderSchema(discovered.schema(), parsed.format());
+                yield Cli.EXIT_OK;
+            }
             case ConnectionDiscoverSchemaOutcome.Rejected rejected ->
                     renderRejection(rejected.code(), rejected.message());
             case ConnectionDiscoverSchemaOutcome.TimedOut ignored -> reportRequestTimedOut();
             case ConnectionDiscoverSchemaOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -535,16 +630,16 @@ final class Repl {
      * server call; a table not in the model is a benign line naming the miss. A connection that has never
      * been discovered is a benign "not discovered yet" line; a coded refusal renders its code and message.
      */
-    private void schemaOnline(List<String> words) {
+    private int schemaOnline(List<String> words) {
         IdTableAndFormat parsed = parseIdTableAndFormat(words);
         if (parsed == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         final String connectionId = parsed.id();
         ConnectionSchemaOutcome outcome = withFailover(() ->
                 controlPlane.schema(session.landingNode(), session.credential(), connectionId),
                 o -> o instanceof ConnectionSchemaOutcome.Unreachable);
-        switch (outcome) {
+        return switch (outcome) {
             case ConnectionSchemaOutcome.Found found -> {
                 ConnectionSchema schema = found.schema();
                 if (parsed.table() != null) {
@@ -554,20 +649,22 @@ final class Repl {
                         err.println("schema: '" + parsed.table() + "' is not in the discovered model of '"
                                 + connectionId + "' (tables: " + tableNames(schema) + ")");
                         err.flush();
-                        return;
+                        yield Cli.EXIT_DIAGNOSTIC;
                     }
                     schema = narrowed;
                 }
                 renderSchema(schema, parsed.format());
+                yield Cli.EXIT_OK;
             }
             case ConnectionSchemaOutcome.Absent ignored -> {
                 PrintWriter err = commandLine.getErr();
                 err.println("schema: '" + connectionId + "' has not been discovered yet");
                 err.flush();
+                yield Cli.EXIT_DIAGNOSTIC;
             }
             case ConnectionSchemaOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case ConnectionSchemaOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /** The model narrowed to one table by exact name, or {@code null} when the model has no such table. */
@@ -593,25 +690,29 @@ final class Repl {
      * refusal renders its code and message. The rendered report is the last test's — its outcome may itself
      * be a failure, which is a valid result to read back, not an error.
      */
-    private void testResultOnline(List<String> words) {
+    private int testResultOnline(List<String> words) {
         IdAndFormat parsed = parseIdAndFormat("test-result", words);
         if (parsed == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         final String connectionId = parsed.id();
         ConnectionTestResultOutcome outcome = withFailover(() ->
                 controlPlane.testResult(session.landingNode(), session.credential(), connectionId),
                 o -> o instanceof ConnectionTestResultOutcome.Unreachable);
-        switch (outcome) {
-            case ConnectionTestResultOutcome.Found found -> renderReport(found.report(), parsed.format());
+        return switch (outcome) {
+            case ConnectionTestResultOutcome.Found found -> {
+                renderReport(found.report(), parsed.format());
+                yield reportStatus(found.report());
+            }
             case ConnectionTestResultOutcome.Absent ignored -> {
                 PrintWriter err = commandLine.getErr();
                 err.println("test-result: '" + connectionId + "' has not been tested yet");
                 err.flush();
+                yield Cli.EXIT_DIAGNOSTIC;
             }
             case ConnectionTestResultOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case ConnectionTestResultOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -622,15 +723,14 @@ final class Repl {
      * usage line; an unreadable path is a benign "cannot read" line; a coded refusal (a bad artifact, an id
      * conflict) renders its code and message, and on the machine surfaces an {@code {"error":{...}}} document.
      */
-    private void registerOnline(List<String> words) {
+    private int registerOnline(List<String> words) {
         PathAndFormat parsed = parsePathAndFormat(words);
         if (parsed == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         Path artifactPath = workdir.resolve(parsed.path()).normalize();
         if (Files.isDirectory(artifactPath)) {
-            registerDirectory(artifactPath, parsed.format());
-            return;
+            return registerDirectory(artifactPath, parsed.format());
         }
         PrintWriter err = commandLine.getErr();
         byte[] artifact;
@@ -639,18 +739,24 @@ final class Repl {
         } catch (IOException e) {
             err.println("register: cannot read " + artifactPath + ": " + e.getMessage());
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         echoUploading(artifactPath.getFileName().toString(), artifact.length, parsed.format());
         ConnectorRegisterOutcome outcome = withFailover(() -> controlPlane.register(
                 session.landingNode(), session.credential(), artifact),
                 o -> o instanceof ConnectorRegisterOutcome.Unreachable);
-        switch (outcome) {
-            case ConnectorRegisterOutcome.Registered registered -> renderRegistered(registered.connector(), parsed.format());
-            case ConnectorRegisterOutcome.Rejected rejected -> renderRegisterRejection(rejected.code(), rejected.message(), parsed.format());
+        return switch (outcome) {
+            case ConnectorRegisterOutcome.Registered registered -> {
+                renderRegistered(registered.connector(), parsed.format());
+                yield Cli.EXIT_OK;
+            }
+            case ConnectorRegisterOutcome.Rejected rejected -> {
+                renderRegisterRejection(rejected.code(), rejected.message(), parsed.format());
+                yield Cli.EXIT_DIAGNOSTIC;
+            }
             case ConnectorRegisterOutcome.TimedOut ignored -> reportRequestTimedOut();
             case ConnectorRegisterOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -765,7 +871,7 @@ final class Repl {
      * once the server is unreachable (there is no point uploading the rest). The collected outcomes render
      * as a human report, or on the machine surfaces as an {@code {"artifacts":[...],"summary":{...}}} document.
      */
-    private void registerDirectory(Path directory, OutputFormat format) {
+    private int registerDirectory(Path directory, OutputFormat format) {
         List<Path> jars;
         try (var entries = Files.list(directory)) {
             jars = entries.filter(Files::isRegularFile)
@@ -776,7 +882,7 @@ final class Repl {
             PrintWriter err = commandLine.getErr();
             err.println("register: cannot read " + directory + ": " + e.getMessage());
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         List<BatchEntry> outcomes = new ArrayList<>();
         for (Path jar : jars) {
@@ -799,6 +905,12 @@ final class Repl {
             }
         }
         renderBatch(directory, outcomes, jars.size(), format);
+        // A batch is only a success if nothing in it failed. Reporting the failures and still exiting 0
+        // would let a script register a directory, have half of it refused, and read that as done.
+        BatchCounts counts = BatchCounts.of(outcomes);
+        boolean anyFailed = counts.rejected() + counts.timedOut() + counts.unreachable()
+                + counts.unreadable() > 0;
+        return anyFailed ? Cli.EXIT_DIAGNOSTIC : Cli.EXIT_OK;
     }
 
     /** One artifact's place in a directory batch: uploaded (with the server's outcome) or unreadable locally. */
@@ -1004,19 +1116,22 @@ final class Repl {
      * snapshot union the connectors registered at runtime), each tagged bundled or registered. Takes no
      * operand; an unknown option is a benign usage line; a coded refusal renders its code and message.
      */
-    private void connectorsOnline(List<String> words) {
+    private int connectorsOnline(List<String> words) {
         OutputFormat format = parseFormatOnly("connectors", words);
         if (format == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         ConnectorListOutcome outcome = withFailover(() ->
                 controlPlane.connectorList(session.landingNode(), session.credential()),
                 o -> o instanceof ConnectorListOutcome.Unreachable);
-        switch (outcome) {
-            case ConnectorListOutcome.Listed listed -> renderConnectors(listed.connectors(), format);
+        return switch (outcome) {
+            case ConnectorListOutcome.Listed listed -> {
+                renderConnectors(listed.connectors(), format);
+                yield Cli.EXIT_OK;
+            }
             case ConnectorListOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case ConnectorListOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -1349,23 +1464,24 @@ final class Repl {
      * {@code <id>  <state>}. A missing id is a benign usage line; a pipeline that has published no
      * observation is a coded refusal ({@code monitor.no-observation}) rendering its code and message.
      */
-    private void statusOnline(List<String> words) {
+    private int statusOnline(List<String> words) {
         String id = readTargetId(words);
         if (id == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         StatusOutcome outcome = withFailover(() ->
                 controlPlane.status(session.landingNode(), session.credential(), id),
                 o -> o instanceof StatusOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case StatusOutcome.Found found -> {
                 out.println(found.pipelineId() + "  " + found.state().toLowerCase(Locale.ROOT));
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case StatusOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case StatusOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -1374,16 +1490,16 @@ final class Repl {
      * {@code perTableOffset.<table>} key), or a benign {@code no metrics} line when none are wired yet
      * (unavailable, never faked). A coded refusal renders its code and message.
      */
-    private void metricsOnline(List<String> words) {
+    private int metricsOnline(List<String> words) {
         String id = readTargetId(words);
         if (id == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         MetricsOutcome outcome = withFailover(() ->
                 controlPlane.metrics(session.landingNode(), session.credential(), id),
                 o -> o instanceof MetricsOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case MetricsOutcome.Found found -> {
                 Map<String, String> lines = new TreeMap<>();
                 found.metrics().forEach((name, value) -> lines.put(name, String.valueOf(value)));
@@ -1394,10 +1510,11 @@ final class Repl {
                     lines.forEach((name, value) -> out.println(name + "  " + value));
                 }
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case MetricsOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case MetricsOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /**
@@ -1406,16 +1523,16 @@ final class Repl {
      * shows {@code <rowsDone>/?} — honest partial data), or a benign {@code no snapshot} line when there is
      * none. A coded refusal renders its code and message.
      */
-    private void snapshotOnline(List<String> words) {
+    private int snapshotOnline(List<String> words) {
         String id = readTargetId(words);
         if (id == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         SnapshotOutcome outcome = withFailover(() ->
                 controlPlane.snapshot(session.landingNode(), session.credential(), id),
                 o -> o instanceof SnapshotOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case SnapshotOutcome.Found found -> {
                 if (found.tables().isEmpty()) {
                     out.println("no snapshot");
@@ -1424,22 +1541,23 @@ final class Repl {
                             out.println(table + "  " + renderProgress(progress)));
                 }
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case SnapshotOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case SnapshotOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
-    private void logsOnline(List<String> words) {
+    private int logsOnline(List<String> words) {
         String id = readTargetId(words);
         if (id == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         LogsOutcome outcome = withFailover(() ->
                 controlPlane.logs(session.landingNode(), session.credential(), id),
                 o -> o instanceof LogsOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
-        switch (outcome) {
+        return switch (outcome) {
             case LogsOutcome.Found found -> {
                 if (found.lines().isEmpty()) {
                     out.println("no logs");
@@ -1447,10 +1565,11 @@ final class Repl {
                     found.lines().forEach(line -> out.println(renderLogLine(line)));
                 }
                 out.flush();
+                yield Cli.EXIT_OK;
             }
             case LogsOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case LogsOutcome.Unreachable ignored -> reportRequestFailed();
-        }
+        };
     }
 
     /** One tailed line as {@code <iso-timestamp> <level> <message>}. */
@@ -1464,10 +1583,10 @@ final class Repl {
      * user interrupts (Ctrl-C). A missing id is a benign usage line. The state stream re-attaches across a
      * dropped connection; nothing is printed until the pipeline has published an observation.
      */
-    private void statusWatch(List<String> words) {
+    private int statusWatch(List<String> words) {
         String id = streamTargetId(words, "--watch");
         if (id == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         PrintWriter out = commandLine.getOut();
         streamCancelled = false;
@@ -1477,6 +1596,8 @@ final class Repl {
                     out.flush();
                 },
                 this::isStreamCancelled);
+        // a stream ends because the user stopped it, which is the way it is meant to end
+        return Cli.EXIT_OK;
     }
 
     /**
@@ -1484,10 +1605,10 @@ final class Repl {
      * appended line over the websocket ({@code tail -f}), until the connection ends or the user interrupts
      * (Ctrl-C). A missing id is a benign usage line.
      */
-    private void logsFollow(List<String> words) {
+    private int logsFollow(List<String> words) {
         String id = streamTargetId(words, "--follow");
         if (id == null) {
-            return;
+            return Cli.EXIT_USAGE;
         }
         PrintWriter out = commandLine.getOut();
         streamCancelled = false;
@@ -1497,6 +1618,8 @@ final class Repl {
                     out.flush();
                 },
                 this::isStreamCancelled);
+        // a stream ends because the user stopped it, which is the way it is meant to end
+        return Cli.EXIT_OK;
     }
 
     /**
@@ -1615,7 +1738,7 @@ final class Repl {
      * on. Distinct from {@link #renderRejection} only in where the message comes from: a server refusal
      * arrives rendered, while this one is rendered here from the code and its arguments.
      */
-    private void renderLocalRefusal(DslException e) {
+    private int renderLocalRefusal(DslException e) {
         MessageCatalog.Rendered rendered = MessageCatalog.bundled().render(e.code(), e.args());
         PrintWriter err = commandLine.getErr();
         String at = e.source() + (e.line() > 0 ? ":" + e.line() + ":" + e.column() : "");
@@ -1625,16 +1748,29 @@ final class Repl {
             err.println("  " + rendered.solution());
         }
         err.flush();
+        return Cli.EXIT_DIAGNOSTIC;
+    }
+
+    /**
+     * The exit status a rendered connection report carries. The server's {@code outcome} is otherwise
+     * rendered rather than interpreted, and this reads exactly the one value that means the test did not
+     * pass — a `test` that reports FAILED and still exits 0 would be no use to a script, which is what
+     * the verb's machine-readable output exists for. Any other status, including one added later, is
+     * left alone rather than guessed at.
+     */
+    private static int reportStatus(ConnectionReport report) {
+        return "FAILED".equalsIgnoreCase(report.outcome()) ? Cli.EXIT_DIAGNOSTIC : Cli.EXIT_OK;
     }
 
     /** Renders a coded server refusal: the {@code code} (when present) then the rendered message, to err. */
-    private void renderRejection(String code, String message) {
+    private int renderRejection(String code, String message) {
         PrintWriter err = commandLine.getErr();
         if (!code.isBlank()) {
             err.println(Ansi.AUTO.string("@|bold,red error:|@") + " " + code);
         }
         err.println("  " + message);
         err.flush();
+        return Cli.EXIT_DIAGNOSTIC;
     }
 
     /**
@@ -1642,13 +1778,14 @@ final class Repl {
      * unreachable while a landing node is still held; a total loss of the cluster has already been reported
      * by {@link #failover} (which then took the session offline), so this stays silent in that case.
      */
-    private void reportRequestFailed() {
+    private int reportRequestFailed() {
         if (!session.isConnected()) {
-            return;   // failover already reported the connection loss and went offline
+            return Cli.EXIT_DIAGNOSTIC;   // failover already reported the connection loss and went offline
         }
         PrintWriter err = commandLine.getErr();
         err.println("request failed: " + hostPort(session.landingNode()) + " is unreachable");
         err.flush();
+        return Cli.EXIT_DIAGNOSTIC;
     }
 
     /**
@@ -1656,12 +1793,13 @@ final class Repl {
      * timeout window — a distinct, coded outcome from {@link #reportRequestFailed()}, since the server is
      * busy rather than gone and a heavy verb (a large register) may even have completed there already.
      */
-    private void reportRequestTimedOut() {
+    private int reportRequestTimedOut() {
         if (!session.isConnected()) {
-            return;   // failover already reported the connection loss and went offline
+            return Cli.EXIT_DIAGNOSTIC;   // failover already reported the connection loss and went offline
         }
         Diagnostics.printText(commandLine.getErr(), CliError.REQUEST_TIMED_OUT,
                 Map.of("server", hostPort(session.landingNode())));
+        return Cli.EXIT_DIAGNOSTIC;
     }
 
     /**
@@ -1672,7 +1810,7 @@ final class Repl {
      * line before any probe, so a typo never silently connects to a subset. No reachable well-formed
      * seed is the coded {@code cli.connect-failed} diagnostic.
      */
-    private void connect(List<String> words) {
+    private int connect(List<String> words) {
         PrintWriter err = commandLine.getErr();
         String arg = words.size() > 1 ? words.get(1) : "";
         ParsedSeeds parsed = parseSeeds(arg);
@@ -1680,28 +1818,27 @@ final class Repl {
             err.println("connect: invalid seed '" + parsed.invalidToken()
                     + "' (usage: connect <host:port>[,<host:port>...])");
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         List<URI> seeds = parsed.valid();
         if (seeds.isEmpty()) {
             err.println("connect: missing operand (usage: connect <host:port>[,<host:port>...])");
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         for (URI seed : seeds) {
             if (controlPlane.isHealthy(seed)) {
                 session.connect(seeds, seed);
-                PrintWriter out = commandLine.getOut();
-                out.println("connected to " + hostPort(seed));
-                out.flush();
-                return;
+                confirm("connected to " + hostPort(seed));
+                return Cli.EXIT_OK;
             }
         }
         reportConnectFailed(seeds);
+        return Cli.EXIT_DIAGNOSTIC;
     }
 
     /** Clears the connection back to offline; a benign line either way, never an error. */
-    private void disconnect() {
+    private int disconnect() {
         PrintWriter out = commandLine.getOut();
         if (session.isConnected()) {
             session.disconnect();
@@ -1710,6 +1847,8 @@ final class Repl {
             out.println("not connected");
         }
         out.flush();
+        // dropping a connection that was not held is not a failure -- the session ends up where asked
+        return Cli.EXIT_OK;
     }
 
     /**
@@ -1721,33 +1860,43 @@ final class Repl {
      * wrong); an unreachable landing node is a benign transient line. The member set for failover is the
      * seeds until membership discovery lands.
      */
-    private void login(List<String> words) {
+    private int login(List<String> words) {
         PrintWriter out = commandLine.getOut();
         PrintWriter err = commandLine.getErr();
         if (!session.isConnected()) {
             Diagnostics.printText(err, CliError.NOT_CONNECTED, Map.of("verb", "login"));
-            return;
+            return Cli.EXIT_VERB_UNAVAILABLE;
         }
         if (words.size() < 2 || words.get(1).isBlank()) {
             err.println("login: missing operand (usage: login <username>)");
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
-        String username = words.get(1);
-        String password = prompter.secret("Password");
+        return login(words.get(1), prompter.secret("Password"));
+    }
+
+    /**
+     * Signs in with a password already in hand. Split from the typed {@code login} so the password can
+     * come from somewhere other than the prompt — a one-line launch supplies its own — without either
+     * path having to know where the other got it.
+     */
+    private int login(String username, String password) {
+        PrintWriter out = commandLine.getOut();
+        PrintWriter err = commandLine.getErr();
         URI node = session.landingNode();
-        switch (controlPlane.login(node, username, password)) {
+        return switch (controlPlane.login(node, username, password)) {
             case LoginOutcome.Success success -> {
                 session.authenticate(success.token(), username, null, session.seeds());
-                out.println("logged in as " + username);
-                out.flush();
+                confirm("logged in as " + username);
+                yield Cli.EXIT_OK;
             }
             case LoginOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case LoginOutcome.Unreachable ignored -> {
                 err.println("login: cannot reach " + hostPort(node));
                 err.flush();
+                yield Cli.EXIT_DIAGNOSTIC;
             }
-        }
+        };
     }
 
     /**
@@ -1779,7 +1928,7 @@ final class Repl {
     }
 
     /** Drops the credential while keeping the transport connection; a benign line either way. */
-    private void logout() {
+    private int logout() {
         PrintWriter out = commandLine.getOut();
         if (session.isAuthenticated()) {
             session.logout();
@@ -1788,6 +1937,8 @@ final class Repl {
             out.println("not logged in");
         }
         out.flush();
+        // dropping a credential that was not held leaves the session where asked, so it is not a failure
+        return Cli.EXIT_OK;
     }
 
     /** Renders the {@code cli.connect-failed} diagnostic through the shared coded-error renderer. */
@@ -1842,21 +1993,22 @@ final class Repl {
     }
 
     /** Changes the session workspace to an existing directory, resolved against the current one. */
-    private void changeDir(List<String> words) {
+    private int changeDir(List<String> words) {
         PrintWriter err = commandLine.getErr();
         if (words.size() < 2) {
             err.println("cd: missing operand");
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         String arg = words.get(1);
         Path target = workdir.resolve(arg).normalize();
         if (!Files.isDirectory(target)) {
             err.println("cd: not a directory: " + arg);
             err.flush();
-            return;
+            return Cli.EXIT_USAGE;
         }
         workdir = target;
+        return Cli.EXIT_OK;
     }
 
     /**
@@ -1920,7 +2072,8 @@ final class Repl {
     /** Runs the interactive read loop until {@code exit} / {@code quit} or end-of-input. */
     void run() {
         PrintWriter out = commandLine.getOut();
-        out.println("Tapstate offline CLI. Type 'help' for commands, 'exit' to quit.");
+        // not "offline": a session can now start connected, and the prompt is what reports which it is
+        out.println("Tapstate CLI. Type 'help' for commands, 'exit' to quit.");
         out.flush();
         // system(true) for a real terminal; dumb(true) degrades silently to a dumb terminal when
         // there is no TTY (piped / redirected input) instead of printing a JLine warning.

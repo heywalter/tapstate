@@ -41,7 +41,10 @@ enum CliError implements TapstateErrorCode {
     NOT_AUTHENTICATED("cli.not-authenticated", Set.of("verb")),
 
     /** A verb whose name is declared and reserved but which is not built yet; {@code verb} names it. */
-    VERB_NOT_IMPLEMENTED("cli.verb-not-implemented", Set.of("verb"));
+    VERB_NOT_IMPLEMENTED("cli.verb-not-implemented", Set.of("verb")),
+
+    /** A REPL builtin typed as a one-shot command, where it does not exist; {@code verb} names it. */
+    REPL_BUILTIN_ONLY("cli.repl-builtin-only", Set.of("verb"));
 
     private final String code;
     private final Set<String> placeholders;

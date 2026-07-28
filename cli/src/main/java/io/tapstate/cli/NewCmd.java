@@ -43,7 +43,7 @@ import java.util.concurrent.Callable;
  * {@code <id>.tap.yml}, refuse to clobber unless {@code --force}, {@code --dry-run} previews on
  * stdout, and {@code -o json|yaml} reports a structured result envelope.
  */
-@Command(name = "new",
+@Command(name = "new", mixinStandardHelpOptions = true,
         description = "Scaffold a new artifact (source, pipeline, transform, view or serve) as a canonical *.tap.yml.")
 final class NewCmd implements Callable<Integer> {
 
