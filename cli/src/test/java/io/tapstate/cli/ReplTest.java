@@ -303,6 +303,18 @@ class ReplTest {
     }
 
     @Test
+    void helpTakesTheNameOfAVerbAndDescribesIt() {
+        // bare `help` is a builtin handled here, but `help <verb>` falls through to the command table --
+        // where it used to be an unmatched argument answered with a spelling guess. Asking about one verb
+        // is the more common question of the two, and it was the one that did not work.
+        Harness h = harness();
+        assertThat(h.repl().dispatch("help status")).isTrue();
+        assertThat(h.sink().toString())
+                .contains("Usage: tapstate status")
+                .contains(Cli.VERB_HELP.get("status").summary());
+    }
+
+    @Test
     void verbsDispatchThroughTheSameTable() {
         Harness h = harness();
         assertThat(h.repl().dispatch("explain")).isTrue();

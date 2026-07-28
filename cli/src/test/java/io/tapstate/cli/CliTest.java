@@ -85,6 +85,10 @@ class CliTest {
         TreeSet<String> registeredOffline = new TreeSet<>(Cli.newCommandLine().getSubcommands().keySet());
         registeredOffline.removeAll(Cli.CONNECTED_VERBS);
         registeredOffline.removeAll(Cli.UNIMPLEMENTED_COMPOSITE_VERBS);
+        // the meta commands are about the CLI, not about a resource: they project no operation and so
+        // belong to no verb whitelist. Subtracting them by name keeps this guard's real job -- catching
+        // a *product* verb registered without being declared -- rather than widening it to anything new
+        registeredOffline.removeAll(Cli.META_VERBS);
         assertThat(registeredOffline).containsExactlyInAnyOrderElementsOf(Cli.OFFLINE_VERBS);
     }
 
@@ -452,6 +456,26 @@ class CliTest {
         Run r = run(verb, "some-id", "--force");
         assertThat(r.code()).isEqualTo(3);
         assertThat(r.err()).contains("cli.verb-not-implemented").contains(verb);
+    }
+
+    @Test
+    void helpIsAWordTheCliAnswersTo() {
+        // the REPL's own banner says "Type 'help' for commands", and that is the word a user carries to
+        // the shell. It used to be an unmatched argument there, answered with a spelling guess -- "Did
+        // you mean: tapstate schema or tapstate discover-schema?" -- for a word that was never misspelt
+        Run r = run("help");
+        assertThat(r.code()).isZero();
+        assertThat(r.out()).contains("Usage: tapstate").contains("validate");
+        assertThat(r.err()).isEmpty();
+    }
+
+    @Test
+    void helpTakesTheNameOfAVerb() {
+        Run r = run("help", "apply");
+        assertThat(r.code()).isZero();
+        assertThat(r.out()).contains("Usage: tapstate apply")
+                .contains(Cli.VERB_HELP.get("apply").summary());
+        assertThat(r.err()).isEmpty();
     }
 
     @Test

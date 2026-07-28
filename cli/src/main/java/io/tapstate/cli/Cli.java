@@ -168,9 +168,20 @@ public final class Cli implements Runnable {
     @Spec
     CommandSpec spec;
 
+    /**
+     * Commands that are about the CLI rather than about a resource. They are registered like verbs and
+     * so appear on the table, but they project no operation and belong to no whitelist — the guard that
+     * pins registered verbs to the offline whitelist reads this to tell "meta" from "undeclared".
+     */
+    static final List<String> META_VERBS = List.of("help");
+
     /** Builds the shared command table used by both one-shot mode and the REPL. */
     public static CommandLine newCommandLine() {
         CommandLine commandLine = new CommandLine(new Cli());
+        // `help` is a word the CLI hands the user itself -- the REPL banner says to type it -- so it has
+        // to be a word the CLI answers to, in both modes. Unregistered it was an unmatched argument,
+        // answered with a spelling suggestion for a word that was spelt right.
+        commandLine.addSubcommand(new CommandLine.HelpCommand());
         for (String verb : CONNECTED_VERBS) {
             commandLine.addSubcommand(verb, new ConnectedVerb());
         }
