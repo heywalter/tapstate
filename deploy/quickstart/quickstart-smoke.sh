@@ -254,10 +254,11 @@ CLI
   cat > "$shim/docker" <<'DOCK'
 #!/bin/sh
 # `compose ps ... server` -> report healthy so the wait loop ends; `compose exec ... mongosh` (the
-# snapshot count read) -> report a row count so the verify loop ends; every other subcommand no-ops.
+# snapshot count read) -> report the row count the case asked for, so a run that delivers and a run
+# that delivers nothing can both be driven; every other subcommand no-ops.
 for a in "$@"; do
   [ "$a" = ps ] && { echo '{"Health":"healthy"}'; exit 0; }
-  [ "$a" = exec ] && { echo 5; exit 0; }
+  [ "$a" = exec ] && { echo "${FAKE_TARGET_ROWS:-5}"; exit 0; }
 done
 exit 0
 DOCK
@@ -265,6 +266,7 @@ DOCK
   RUN_OUT="$(cd "$RUN" && PATH="$shim:$PATH" \
     TAPSTATE_VERSION="$VERSION" TAPSTATE_BASE_URL="file://$CLI_STUB" \
     TAPSTATE_QUICKSTART_BASE_URL="file://$QS_STUB" TAPSTATE_CONNECTORS_URL="file://$QS_STUB/connectors-preview" \
+    FAKE_TARGET_ROWS="${1:-5}" \
     sh "$RUN/quickstart.sh" 2>&1)"; RUN_RC=$?
   rm -rf "$shim"
 }
@@ -297,6 +299,28 @@ if printf '%s' "$RUN_OUT" | grep -q 'INSERT INTO orders' \
   ok "the CDC section demonstrates insert, update and delete"
 else
   bad "CDC section does not walk insert/update/delete: $RUN_OUT"
+fi
+
+# A run whose online verbs did not take must fail, loudly and non-zero. The REPL is the reason this
+# needs its own check: an interactive session does not end because one command was rejected, so it
+# exits 0 whether register / apply / start succeeded or errored, and set -e sees nothing wrong. The
+# row count is therefore the script's only evidence that a pipeline is actually moving data, and a run
+# that reports an empty target while exiting 0 is the worst of both -- it reads as success everywhere
+# a machine looks. The stack is deliberately left standing on the failure path: the server log is the
+# next thing to read, and tearing the stack down would take it away.
+run_phase_fakes 0
+if [ "$RUN_RC" -ne 0 ] && printf '%s' "$RUN_OUT" | grep -q 'did not reach the target'; then
+  ok "fails non-zero when the pipeline delivers nothing to the target"
+else
+  bad "an empty target was reported as success (rc=$RUN_RC): $RUN_OUT"
+fi
+# The same check must not fire on a run that did deliver: the failure path above is worth nothing if it
+# also rejects the successful one.
+run_phase_fakes 5
+if [ "$RUN_RC" -eq 0 ] && printf '%s' "$RUN_OUT" | grep -q 'the target now holds 5 rows'; then
+  ok "still succeeds when the target holds the seeded rows"
+else
+  bad "a delivering run was rejected (rc=$RUN_RC): $RUN_OUT"
 fi
 
 # --- what the release serves: one pinned version, and a stack that pulls rather than builds ----------
