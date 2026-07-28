@@ -468,6 +468,27 @@ class CliTest {
     }
 
     @Test
+    void helpExplainsTheTwoModesAndWhereTheWorkspaceOptionGoes() {
+        // the dual shape is the whole of how this CLI is used and the usage text said nothing about it.
+        // -w was the sharp edge: it opens a session in a directory, but before a verb it is an error --
+        // which is worth stating, since the obvious guess `tapstate -w DIR validate` is the wrong one
+        Run r = run("help");
+        assertThat(r.out()).contains("open a session").contains("run one command and exit");
+        assertThat(r.out()).contains("tapstate validate -w DIR");
+        assertThat(r.out()).contains("$TAPSTATE_WORKDIR");
+    }
+
+    @Test
+    void theWorkspaceOptionBeforeAVerbIsRefusedNotIgnored() {
+        // the top level deliberately does not declare -w: picocli would then parse it into the root and
+        // leave the verb on its own default, so the directory the user named would be silently dropped.
+        // Refusing it is what makes the help's "put -w after the verb" advice safe to follow
+        Run r = run("-w", "somewhere", "validate");
+        assertThat(r.code()).isEqualTo(2);
+        assertThat(r.err()).contains("-w");
+    }
+
+    @Test
     void helpStaysWithinItsOwnUsageWidth() {
         // the session-command list is rendered by hand, so it is the one section picocli does not wrap
         // for us -- a summary edited to a few words longer would push a ragged line past every other

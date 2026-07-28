@@ -23,6 +23,27 @@ import java.util.Map;
  */
 @Command(name = "tapstate", mixinStandardHelpOptions = true, version = Cli.VERSION,
         subcommands = {ValidateCmd.class, NewCmd.class, ExplainCmd.class, LsCmd.class, DescCmd.class},
+        // the second line is indented by hand under the "Usage: " heading picocli prints before the first
+        customSynopsis = {
+                "tapstate [-w DIR]              open a session (interactive)",
+                "       tapstate [COMMAND] [ARGS...]   run one command and exit"},
+        description = {
+                "",
+                "With no command, opens a session: a prompt that holds a workspace and, once you",
+                "connect, a server connection. The session commands are listed below.",
+                "",
+                "With a command, runs it once and exits -- the form for scripts. A command takes",
+                "its own options, so the workspace is `tapstate validate -w DIR`, not",
+                "`tapstate -w DIR validate`.",
+                "",
+                "The workspace defaults to tap-work, or $TAPSTATE_WORKDIR when that is set.",
+                ""},
+        footerHeading = "%nExamples:%n",
+        footer = {
+                "  tapstate                      open a session in the default workspace",
+                "  tapstate -w ./work            open a session in ./work",
+                "  tapstate validate ./work      validate a workspace and exit",
+                "  tapstate help apply           describe one command"},
         exitCodeListHeading = "%nExit codes:%n",
         exitCodeList = {
                 "0:success",
