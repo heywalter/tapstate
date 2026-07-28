@@ -98,6 +98,73 @@ public final class Cli implements Runnable {
             .sorted()
             .toList();
 
+    /**
+     * What one verb's own help says: the operands it takes, and what it does.
+     *
+     * @param operands the operand grammar, worded exactly as the runtime's own "missing operand" lines
+     *                 word it, so the two can be read side by side without translating between them
+     * @param summary  one line saying what the verb does
+     */
+    record VerbHelp(String operands, String summary) {
+    }
+
+    /**
+     * Per-verb help for the twenty verbs behind the two shared handlers. Each handler is a single class
+     * registered under many names, so an annotation can only give all of them the same sentence — which
+     * is why every one of these verbs used to render "(requires a connection to a Tapstate server)" and
+     * nothing else, telling the reader that a verb exists but never what it is for. The table is applied
+     * to each registered command's spec instead, and a guard test pins it to the registered names so a
+     * verb cannot be added with no help of its own.
+     *
+     * <p>The operand grammar is quoted from the runtime's own usage lines rather than restated, so a
+     * verb that changes its operands in one place fails the other. It carries the flags that are easy to
+     * discover only by accident: the streaming forms of the two read verbs, and the output-format option
+     * that only some of these verbs accept.
+     */
+    static final Map<String, VerbHelp> VERB_HELP = Map.ofEntries(
+            Map.entry("apply", new VerbHelp("[<path>]",
+                    "Upload the workspace, or one artifact, creating or updating each resource.")),
+            Map.entry("get", new VerbHelp("<id>",
+                    "Fetch one stored artifact back as canonical YAML.")),
+            Map.entry("connectors", new VerbHelp("[-o text|json|yaml]",
+                    "List the connectors registered on the server.")),
+            Map.entry("register", new VerbHelp("<path> [-o text|json|yaml]",
+                    "Upload a connector artifact, or a directory of them.")),
+            Map.entry("test", new VerbHelp("<id> [-o text|json|yaml]",
+                    "Try a connection's configuration against the live endpoint.")),
+            Map.entry("test-result", new VerbHelp("<id> [-o text|json|yaml]",
+                    "Read back the stored result of that connection's last test.")),
+            Map.entry("discover-schema", new VerbHelp("<id> [-o text|json|yaml]",
+                    "Discover a connection's source schema and store it.")),
+            Map.entry("schema", new VerbHelp("<id> [table] [-o text|json|yaml]",
+                    "Show a connection's discovered schema, or one table of it.")),
+            Map.entry("start", new VerbHelp("<pipeline-id>",
+                    "Start a pipeline.")),
+            Map.entry("stop", new VerbHelp("<pipeline-id>",
+                    "Stop a pipeline.")),
+            Map.entry("pause", new VerbHelp("<pipeline-id>",
+                    "Pause a running pipeline, holding its position.")),
+            Map.entry("resume", new VerbHelp("<pipeline-id>",
+                    "Resume a paused pipeline from where it stopped.")),
+            Map.entry("status", new VerbHelp("<pipeline-id> [--watch]",
+                    "Show a pipeline's current state; --watch streams it until Ctrl-C.")),
+            Map.entry("metrics", new VerbHelp("<pipeline-id>",
+                    "Show a pipeline's counters and per-table positions.")),
+            Map.entry("snapshot", new VerbHelp("<pipeline-id>",
+                    "Show a pipeline's per-table snapshot progress.")),
+            Map.entry("logs", new VerbHelp("<pipeline-id> [--follow]",
+                    "Tail a pipeline's log on its node; --follow streams until Ctrl-C.")),
+            // The reserved verbs. Each says what it is reserved for: "not implemented yet" answers the
+            // question only once the reader knows what was going to be there.
+            Map.entry("run", new VerbHelp("[<path>]",
+                    "Apply a workspace and start its pipelines in one step.")),
+            Map.entry("export", new VerbHelp("<id>",
+                    "Write a stored artifact back out as canonical YAML.")),
+            Map.entry("diff", new VerbHelp("<file>",
+                    "Compare a local file against the stored artifact it declares.")),
+            Map.entry("edit", new VerbHelp("<id>",
+                    "Fetch an artifact, open it in $EDITOR, and apply what was saved.")));
+
     @Spec
     CommandSpec spec;
 
@@ -118,6 +185,15 @@ public final class Cli implements Runnable {
         for (CommandLine subcommand : commandLine.getSubcommands().values()) {
             subcommand.getCommandSpec().version(VERSION);
         }
+        // Give each verb behind a shared handler its own help. The synopsis carries the operand grammar,
+        // which is the half the shared description could never say, and the summary leads the description
+        // so that what the verb does is read before the reason it cannot run here.
+        VERB_HELP.forEach((verb, help) -> {
+            CommandSpec verbSpec = commandLine.getSubcommands().get(verb).getCommandSpec();
+            verbSpec.usageMessage()
+                    .customSynopsis(commandLine.getCommandName() + " " + verb + " " + help.operands() + " [-hV]")
+                    .description(help.summary(), verbSpec.usageMessage().description()[0]);
+        });
         // accept -o json / -o JSON alike; the lower-case forms are the documented spelling
         commandLine.setCaseInsensitiveEnumValuesAllowed(true);
         return commandLine;

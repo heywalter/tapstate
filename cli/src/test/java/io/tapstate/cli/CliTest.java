@@ -454,6 +454,44 @@ class CliTest {
         assertThat(r.err()).contains("cli.verb-not-implemented").contains(verb);
     }
 
+    @Test
+    void everyVerbBehindASharedHandlerHasHelpOfItsOwn() {
+        // twenty verbs are two classes registered under many names, so an annotation can only give them
+        // all one sentence. Without a per-verb entry the table lists a verb and still cannot say what it
+        // does — this pins the entries to the registered names, in both directions
+        TreeSet<String> registered = new TreeSet<>(Cli.CONNECTED_VERBS);
+        registered.addAll(Cli.UNIMPLEMENTED_COMPOSITE_VERBS);
+        assertThat(new TreeSet<>(Cli.VERB_HELP.keySet())).isEqualTo(registered);
+    }
+
+    @Test
+    void noTwoVerbsAreDescribedTheSameWay() {
+        // a copy-pasted summary is the failure this table exists to prevent, and it reads as plausible
+        // in review precisely because every one of these verbs is a near neighbour of another
+        assertThat(Cli.VERB_HELP.values().stream().map(Cli.VerbHelp::summary).toList())
+                .doesNotHaveDuplicates();
+    }
+
+    @ParameterizedTest
+    @MethodSource("connectedVerbs")
+    void everyConnectedVerbHelpShowsTheOperandsItTakes(String verb) {
+        // the grammar is the half of the answer a description cannot carry: `schema` taking an optional
+        // table, `status` taking --watch, and which verbs accept -o at all were discoverable only by
+        // typing the verb wrong and reading the complaint
+        Run r = run(verb, "--help");
+        assertThat(r.out()).contains(Cli.VERB_HELP.get(verb).operands());
+        assertThat(r.out()).contains(Cli.VERB_HELP.get(verb).summary());
+    }
+
+    @ParameterizedTest
+    @MethodSource("unimplementedCompositeVerbs")
+    void everyReservedVerbHelpSaysWhatItIsReservedFor(String verb) {
+        Run r = run(verb, "--help");
+        assertThat(r.out()).contains(Cli.VERB_HELP.get(verb).summary());
+        // and still says it does not exist yet, which is the fact that governs today
+        assertThat(r.out()).contains("not implemented yet");
+    }
+
     @ParameterizedTest
     @MethodSource("connectedVerbs")
     void everyConnectedVerbSupportsHelp(String verb) {
