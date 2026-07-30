@@ -110,6 +110,16 @@ class PipelineLogsApiTest {
                 });
     }
 
+    @Test
+    void logsHonorsTheRequestedLineLimit() {
+        PipelineLogs body = client().get().uri("/api/pipelines/pl1/logs?limit=1")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .retrieve().toEntity(PipelineLogs.class).getBody();
+
+        assertThat(body.lines()).extracting(LogLine::message)
+                .containsExactly("converged to RUNNING");
+    }
+
     // ---- a read of a pipeline with no lines is a benign empty tail (200), never a 404 ----
 
     @Test

@@ -1,6 +1,9 @@
 package io.tapstate.cli;
 
 import io.tapstate.core.common.JsonReader;
+import io.tapstate.control.client.ControlResponse;
+import io.tapstate.control.client.HttpControlClient;
+import io.tapstate.control.client.RequestBudget;
 
 import java.io.IOException;
 import java.net.URI;
@@ -54,6 +57,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     private final Duration probeTimeout;
     private final Duration heavyTimeout;
     private HttpClient httpClient;
+    private final HttpControlClient sharedClient;
 
     HttpControlPlaneClient() {
         this(PROBE_TIMEOUT, HEAVY_TIMEOUT);
@@ -66,6 +70,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     HttpControlPlaneClient(Duration probeTimeout, Duration heavyTimeout) {
         this.probeTimeout = probeTimeout;
         this.heavyTimeout = heavyTimeout;
+        this.sharedClient = new HttpControlClient(probeTimeout, heavyTimeout);
     }
 
     /**
@@ -130,6 +135,51 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         } catch (IOException | RuntimeException e) {
             return new LoginOutcome.Unreachable();
         }
+    }
+
+    @Override
+    public TokenCreateOutcome tokenCreate(URI baseUrl, String credential, String scope) {
+        ControlResponse response = sharedClient.post(
+                baseUrl, credential, "/api/tokens", Map.of("scope", scope), RequestBudget.LIGHT);
+        return switch (response) {
+            case ControlResponse.Success success -> {
+                RemoteCreatedToken created = createdToken(success.body());
+                yield created == null
+                        ? new TokenCreateOutcome.Unreachable()
+                        : new TokenCreateOutcome.Issued(created);
+            }
+            case ControlResponse.Rejected rejected ->
+                    new TokenCreateOutcome.Rejected(rejected.code(), rejected.message());
+            case ControlResponse.Unreachable ignored -> new TokenCreateOutcome.Unreachable();
+        };
+    }
+
+    @Override
+    public TokenListOutcome tokenList(URI baseUrl, String credential) {
+        ControlResponse response = sharedClient.get(baseUrl, credential, "/api/tokens");
+        return switch (response) {
+            case ControlResponse.Success success -> new TokenListOutcome.Listed(tokens(success.body()));
+            case ControlResponse.Rejected rejected ->
+                    new TokenListOutcome.Rejected(rejected.code(), rejected.message());
+            case ControlResponse.Unreachable ignored -> new TokenListOutcome.Unreachable();
+        };
+    }
+
+    @Override
+    public TokenRevokeOutcome tokenRevoke(URI baseUrl, String credential, String tokenId) {
+        ControlResponse response = sharedClient.post(
+                baseUrl, credential, "/api/tokens/" + urlSegment(tokenId) + ":revoke", null, RequestBudget.LIGHT);
+        return switch (response) {
+            case ControlResponse.Success ignored -> new TokenRevokeOutcome.Revoked();
+            case ControlResponse.Rejected rejected ->
+                    new TokenRevokeOutcome.Rejected(rejected.code(), rejected.message());
+            case ControlResponse.Unreachable ignored -> new TokenRevokeOutcome.Unreachable();
+        };
+    }
+
+    @Override
+    public void close() {
+        sharedClient.close();
     }
 
     @Override
@@ -961,5 +1011,36 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             // fall through: a non-coded / unparseable error body is still a refusal, not a crash
         }
         return new Rejection("", genericMessage);
+    }
+
+    private static RemoteCreatedToken createdToken(Object body) {
+        if (body instanceof Map<?, ?> map
+                && map.get("tokenId") instanceof String tokenId
+                && map.get("scope") instanceof String scope
+                && map.get("token") instanceof String token
+                && map.get("createdAt") instanceof String createdAt) {
+            return new RemoteCreatedToken(tokenId, scope, token, createdAt);
+        }
+        return null;
+    }
+
+    private static List<RemoteToken> tokens(Object body) {
+        List<RemoteToken> out = new ArrayList<>();
+        if (body instanceof Map<?, ?> map && map.get("tokens") instanceof List<?> rows) {
+            for (Object row : rows) {
+                if (row instanceof Map<?, ?> token
+                        && token.get("tokenId") instanceof String tokenId
+                        && token.get("scope") instanceof String scope
+                        && token.get("revoked") instanceof Boolean revoked
+                        && token.get("createdAt") instanceof String createdAt) {
+                    out.add(new RemoteToken(tokenId, scope, revoked, createdAt));
+                }
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    private static String urlSegment(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 }

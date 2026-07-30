@@ -79,7 +79,7 @@ class ControlPlaneAssemblyIT {
         assertThat(context.getBeansOfType(SourceService.class)).hasSize(1);
         assertThat(context.getBeansOfType(AuditedSourceService.class)).hasSize(1);
         assertThat(context.getBeansOfType(StorePort.class)).hasSize(1);
-        assertThat(context.getBeansOfType(ArtifactStore.class)).isEmpty();
+        assertThat(context.getBeansOfType(ArtifactStore.class)).hasSize(1);
 
         // Anonymous: the verb surface is guarded from the first request.
         HttpStatusCode anonymous = client.get().uri("/api/artifacts")

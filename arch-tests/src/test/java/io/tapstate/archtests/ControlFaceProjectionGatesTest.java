@@ -72,17 +72,16 @@ class ControlFaceProjectionGatesTest {
 
     /**
      * The registered operations that have no HTTP endpoint yet, each a deliberate deferral rather than an
-     * oversight. The whole security domain has no face anywhere — no endpoint and no CLI command — so
-     * nothing invokes these verbs today; the first administrator is created through the bootstrap entry
-     * point instead, which is guarded on its own terms. Two of them ({@code user.passwd}, {@code user.list})
-     * have no control-plane service behind them either, so opening those is a control-plane change and not
-     * merely a routing one.
+     * oversight. User administration still has no face; the first administrator is created through the
+     * bootstrap entry point, which is guarded on its own terms. Two operations ({@code user.passwd},
+     * {@code user.list}) have no control-plane service behind them either, so opening those is a
+     * control-plane change and not merely a routing one.
      *
      * <p>An entry here is a reviewed decision, not a running to-do list: a verb added to the registry with
      * no face must turn this gate red, and deleting its entry is how it earns one.
      */
     private static final Set<String> DEFERRED_WITH_NO_FACE = Set.of(
-            "user.create", "user.passwd", "user.list", "token.create", "token.revoke", "token.list");
+            "user.create", "user.passwd", "user.list");
 
     @Test
     @DisplayName("every registered operation is reachable over HTTP, bar the deferred ones")

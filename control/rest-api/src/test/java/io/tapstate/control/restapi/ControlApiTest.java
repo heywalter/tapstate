@@ -3,6 +3,7 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.ApplyResult;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactOutcome;
+import io.tapstate.control.core.ArtifactValidationResult;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
 import jakarta.servlet.http.HttpServletRequest;
@@ -154,6 +155,32 @@ class ControlApiTest {
             assertThat(o.change()).isEqualTo(ArtifactOutcome.Change.CREATED);
             assertThat(o.contentHash()).matches("[0-9a-f]{64}");
         });
+    }
+
+    @Test
+    void validateReportsChangesAndDiagnosticsWithoutWritingOrAuditing() {
+        ArtifactValidationResult valid = client().post().uri("/api/artifacts:validate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(Map.of("content", TGT_MY))))
+                .retrieve().toEntity(ArtifactValidationResult.class).getBody();
+
+        assertThat(valid.valid()).isTrue();
+        assertThat(valid.diagnostics()).isEmpty();
+        assertThat(valid.outcomes()).singleElement()
+                .extracting(ArtifactOutcome::change).isEqualTo(ArtifactOutcome.Change.CREATED);
+        assertThat(context.getBean(ArtifactStore.class).list()).isEmpty();
+        assertThat(context.getBean(RecordingAuditStore.class).records).isEmpty();
+
+        ArtifactValidationResult invalid = client().post().uri("/api/artifacts:validate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(Map.of("content", UNKNOWN_FIELD_DRAFT))))
+                .retrieve().toEntity(ArtifactValidationResult.class).getBody();
+
+        assertThat(invalid.valid()).isFalse();
+        assertThat(invalid.diagnostics()).singleElement()
+                .extracting("code").isEqualTo("dsl.unknown-field");
+        assertThat(context.getBean(ArtifactStore.class).list()).isEmpty();
+        assertThat(context.getBean(RecordingAuditStore.class).records).isEmpty();
     }
 
     @Test

@@ -33,6 +33,20 @@ class PipelineLogQueryServiceTest {
     }
 
     @Test
+    void appliesTheRequestedLimitToTheMostRecentLines() {
+        RingBufferLogSink sink = new RingBufferLogSink(8, 8);
+        sink.append("orders_sync", line("first"));
+        sink.append("orders_sync", line("second"));
+        sink.append("orders_sync", line("third"));
+        var service = new PipelineLogQueryService(sink);
+
+        PipelineLogs logs = service.logs("orders_sync", 2);
+
+        assertThat(logs.lines()).extracting(LogLine::message)
+                .containsExactly("second", "third");
+    }
+
+    @Test
     void aPipelineWithNoLinesProjectsAnEmptyTailNotAnError() {
         var service = new PipelineLogQueryService(new RingBufferLogSink(8, 8));
 

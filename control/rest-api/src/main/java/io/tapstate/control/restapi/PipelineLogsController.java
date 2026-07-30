@@ -4,6 +4,7 @@ import io.tapstate.control.core.PipelineLogQueryService;
 import io.tapstate.control.core.PipelineLogs;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -26,7 +27,9 @@ class PipelineLogsController {
 
     @Verb("pipeline.logs")
     @GetMapping("/pipelines/{id}/logs")
-    PipelineLogs logs(@PathVariable("id") String id) {
-        return logs.logs(id);
+    PipelineLogs logs(
+            @PathVariable("id") String id,
+            @RequestParam(value = "limit", required = false) Integer limit) {
+        return limit == null ? logs.logs(id) : logs.logs(id, limit);
     }
 }

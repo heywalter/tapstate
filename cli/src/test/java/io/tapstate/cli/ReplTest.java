@@ -86,6 +86,11 @@ class ReplTest {
         LoginOutcome loginOutcome = new LoginOutcome.Unreachable();
         final List<String> loginCalls = new ArrayList<>();
 
+        TokenCreateOutcome tokenCreateOutcome = new TokenCreateOutcome.Unreachable();
+        TokenListOutcome tokenListOutcome = new TokenListOutcome.Unreachable();
+        TokenRevokeOutcome tokenRevokeOutcome = new TokenRevokeOutcome.Unreachable();
+        final List<String> tokenCalls = new ArrayList<>();
+
         /** The canned connected-verb outcomes (used when the target base is healthy) and their call logs. */
         ApplyOutcome applyOutcome = new ApplyOutcome.Unreachable();
         GetOutcome getOutcome = new GetOutcome.Unreachable();
@@ -145,6 +150,24 @@ class ReplTest {
         public LoginOutcome login(URI baseUrl, String username, String password) {
             loginCalls.add(username + ":" + password + "@" + baseUrl);
             return loginOutcome;
+        }
+
+        @Override
+        public TokenCreateOutcome tokenCreate(URI baseUrl, String credential, String scope) {
+            tokenCalls.add("create " + scope + " " + credential + "@" + baseUrl);
+            return healthy.contains(baseUrl) ? tokenCreateOutcome : new TokenCreateOutcome.Unreachable();
+        }
+
+        @Override
+        public TokenListOutcome tokenList(URI baseUrl, String credential) {
+            tokenCalls.add("list " + credential + "@" + baseUrl);
+            return healthy.contains(baseUrl) ? tokenListOutcome : new TokenListOutcome.Unreachable();
+        }
+
+        @Override
+        public TokenRevokeOutcome tokenRevoke(URI baseUrl, String credential, String tokenId) {
+            tokenCalls.add("revoke " + tokenId + " " + credential + "@" + baseUrl);
+            return healthy.contains(baseUrl) ? tokenRevokeOutcome : new TokenRevokeOutcome.Unreachable();
         }
 
         @Override
@@ -829,6 +852,53 @@ class ReplTest {
         h.repl().dispatch("connect node1:7900");
         h.repl().dispatch("login alice");
         return h;
+    }
+
+    @Test
+    void tokenCreatePrintsTheNewBearerExactlyOnce() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.tokenCreateOutcome = new TokenCreateOutcome.Issued(
+                new RemoteCreatedToken("tok_01", "WRITE", "ts_live_secret", "2026-07-30T01:02:03Z"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token create --scope write -o json")).isTrue();
+
+        String output = h.sink().toString().substring(mark);
+        assertThat(output).contains("\"tokenId\": \"tok_01\"").contains("\"token\": \"ts_live_secret\"");
+        assertThat(output.split("ts_live_secret", -1)).hasSize(2);
+        assertThat(client.tokenCalls).containsExactly("create write jwt-tok@http://node1:7900");
+        assertThat(h.repl().lastExitCode()).isZero();
+    }
+
+    @Test
+    void tokenListRendersSecretFreeMetadata() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.tokenListOutcome = new TokenListOutcome.Listed(List.of(
+                new RemoteToken("tok_01", "READ", false, "2026-07-30T01:02:03Z")));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token list -o yaml")).isTrue();
+
+        String output = h.sink().toString().substring(mark);
+        assertThat(output).contains("tokenId: tok_01").contains("scope: READ").contains("revoked: false");
+        assertThat(output).doesNotContain("secret").doesNotContain("token:");
+        assertThat(client.tokenCalls).containsExactly("list jwt-tok@http://node1:7900");
+    }
+
+    @Test
+    void tokenRevokeRequiresAnIdAndConfirmsTheRevocation() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.tokenRevokeOutcome = new TokenRevokeOutcome.Revoked();
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token revoke tok_01")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).contains("revoked").contains("tok_01");
+        assertThat(client.tokenCalls).containsExactly("revoke tok_01 jwt-tok@http://node1:7900");
+        assertThat(h.repl().lastExitCode()).isZero();
     }
 
     /** An authenticated session whose interpolation reads {@code env} instead of the process environment. */

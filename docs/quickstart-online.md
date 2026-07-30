@@ -134,9 +134,13 @@ curl -sSL https://install.tapstate.dev/cli | TAPSTATE_INSTALL_DIR=. sh
 in the repository, needs GraalVM for JDK 21 — but nothing in this walkthrough
 requires it.)
 
+The source build also produces the MCP sidecar used by `tapstate mcp`; the
+relocatable bundle keeps the launcher and sidecar together when installed.
+
 The CLI drives both the offline authoring loop and the online verbs below. It runs
 on the host and talks to the server over HTTP; put it on your `PATH`, or keep it
-here as `./tapstate` as above.
+here as `./tapstate-cli/bin/tapstate` as above. The sibling `libexec` artifact is
+loaded only by `tapstate mcp`; every other CLI command stays independent of Spring.
 
 ## 4. Get the connector jars
 
@@ -249,7 +253,7 @@ the row (`after.<field>`) and the change envelope (`src`, plus `op` and `ts`).
 Validate offline before going online (no server needed):
 
 ```sh
-./tapstate validate work       # expects: valid: 3 resources in work
+./tapstate-cli/bin/tapstate validate work       # expects: valid: 3 resources in work
 ```
 
 ## 6. Go online and run
@@ -258,7 +262,7 @@ Start the interactive REPL and drive it. The connection is session state, so the
 run inside one REPL session:
 
 ```console
-$ ./tapstate -w work
+$ ./tapstate-cli/bin/tapstate -w work
 tapstate(offline:work)> connect http://127.0.0.1:8080
 tapstate(127.0.0.1:8080)> login admin
 Password:                       # the admin password from step 2 (not echoed)
@@ -281,6 +285,79 @@ tapstate(admin@127.0.0.1:8080)> start sync_orders
   and primary key. Run it **before** `start`.
 - **`start sync_orders`** submits the pipeline: it reads the current rows (snapshot),
   then tails changes (CDC).
+
+## AI-driven alternative: run the pipeline through MCP
+
+The local MCP sidecar lets an MCP-capable coding agent perform the online part of
+the same workflow. The sidecar is a foreground stdio process. It does not contain a
+model, start a Tapstate Server, or access the state store directly; every tool call
+uses the Server's authenticated HTTP control API.
+
+Register connector jars and create a revocable machine token from an authenticated
+CLI session first:
+
+```console
+tapstate(admin@127.0.0.1:8080)> register ../mysql-connector.jar
+tapstate(admin@127.0.0.1:8080)> register ../mongodb-connector.jar
+tapstate(admin@127.0.0.1:8080)> token create --scope write
+created <token-id> WRITE
+token <one-time-token>
+```
+
+The bearer value is shown only once. Inject it into the MCP process environment; do
+not put it in command arguments:
+
+```json
+{
+  "mcpServers": {
+    "tapstate": {
+      "command": "/absolute/path/to/tapstate",
+      "args": ["mcp", "--server", "http://127.0.0.1:8080", "--allow-write"],
+      "env": {
+        "TAPSTATE_TOKEN": "<one-time-token>",
+        "MYSQL_PASSWORD": "secret"
+      }
+    }
+  }
+}
+```
+
+`--server` wins over `TAPSTATE_SERVER_URL`; the final default is
+`http://127.0.0.1:8080`. There is intentionally no `--token` option. Without
+`--allow-write`, the sidecar exposes exactly the 11 read tools. With it, six write
+tools are added, but the Server still enforces the token scope. A read token cannot
+write even when the tools are locally visible.
+
+An agent should use this sequence:
+
+1. Call `connector_list`, then `connector_get` for each required connector.
+2. Build each Source envelope from the DSL semantics and build its `config` only
+   from the complete live connector spec returned by `connector_get`.
+3. Call `source_create`, `connection_test`, and
+   `connection_discover_schema`. Source config may contain `${NAME}` or
+   `${var:NAME:default}` references; the sidecar expands them only inside `config`
+   immediately before the HTTP request.
+4. Author the complete `tapstate/v1` workspace and send every resource as a YAML
+   draft to `artifact_validate`. Fix all diagnostics before `artifact_apply`.
+5. Call `pipeline_start`, then use `pipeline_status`, `pipeline_metrics`,
+   `pipeline_snapshot`, and `pipeline_logs` until the expected state and data are
+   visible. Finish with `pipeline_stop`.
+
+`source_create` refuses to guess connector fields. If the connector is bundled-only,
+its runtime is unavailable, or the live response has no complete spec and content
+hash, the call fails before writing the Source. Secret values are returned only in
+redacted Source views; the MCP tool result exposes configured secret field names,
+not their values.
+
+Revoke the credential when the automation no longer needs it:
+
+```console
+tapstate(admin@127.0.0.1:8080)> token revoke <token-id>
+```
+
+Revocation is immediate. The next MCP request using that token is rejected by the
+Server. Closing the MCP host's stdin stops the foreground sidecar; there is no MCP
+tool for stopping its own process.
 
 ## 7. Observe and verify
 

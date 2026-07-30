@@ -18,7 +18,7 @@ class DomainTest {
                 .containsExactlyInAnyOrder(
                         "dsl", "cli", "core", "catalog", "schema", "lifecycle", "role", "boot",
                         "actuation", "store", "connector", "transform", "io", "control",
-                        "engine", "monitor", "source", "capture");
+                        "engine", "monitor", "source", "mcp", "capture");
     }
 
     @Test
@@ -33,6 +33,7 @@ class DomainTest {
         assertThat(Domain.isRegistered("engine")).isTrue();
         assertThat(Domain.isRegistered("monitor")).isTrue();
         assertThat(Domain.isRegistered("source")).isTrue();
+        assertThat(Domain.isRegistered("mcp")).isTrue();
     }
 
     @Test

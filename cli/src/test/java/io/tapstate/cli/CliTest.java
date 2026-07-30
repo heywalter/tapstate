@@ -78,6 +78,15 @@ class CliTest {
     }
 
     @Test
+    void mcpLauncherIsAOneShotMetaCommand() {
+        Run help = run("mcp", "--help");
+
+        assertThat(help.code()).isZero();
+        assertThat(help.out()).contains("Usage: tapstate mcp", "--server", "--allow-write");
+        assertThat(help.err()).isEmpty();
+    }
+
+    @Test
     void offlineVerbWhitelistMatchesRegisteredSubcommands() {
         // single source of truth: every registered subcommand that needs neither a server nor an
         // implementation it has not got must be exactly the declared offline whitelist (so the

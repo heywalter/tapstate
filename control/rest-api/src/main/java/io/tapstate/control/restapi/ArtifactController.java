@@ -4,6 +4,7 @@ import io.tapstate.control.core.ApplyResult;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactDraft;
 import io.tapstate.control.core.ArtifactQueryService;
+import io.tapstate.control.core.ArtifactValidationResult;
 import io.tapstate.control.core.StoredArtifact;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -42,6 +43,14 @@ class ArtifactController {
         List<ArtifactDraft> drafts = MalformedRequest.require(
                 request == null ? null : request.drafts(), "the request must carry a `drafts` array");
         return applyService.apply(principal, drafts);
+    }
+
+    @Verb("artifact.validate")
+    @PostMapping("/artifacts:validate")
+    ArtifactValidationResult validate(@RequestBody ApplyRequest request) {
+        List<ArtifactDraft> drafts = MalformedRequest.require(
+                request == null ? null : request.drafts(), "the request must carry a `drafts` array");
+        return applyService.validate(drafts);
     }
 
     @Verb("artifact.get")
