@@ -17,6 +17,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Framework-free JDK HTTP transport shared by local control-plane frontends. */
@@ -72,8 +74,9 @@ public final class HttpControlClient implements AutoCloseable {
             return new ControlResponse.Unreachable();
         }
         try {
+            Duration requestTimeout = timeout(budget);
             HttpRequest.Builder request = HttpRequest.newBuilder(endpoint(baseUrl, path))
-                    .timeout(timeout(budget))
+                    .timeout(requestTimeout)
                     .header("Authorization", "Bearer " + token)
                     .header("Accept", "application/json");
             if (body == null) {
@@ -88,14 +91,20 @@ public final class HttpControlClient implements AutoCloseable {
                 future.cancel(true);
             }
             try {
-                return decode(future.get());
+                try {
+                    return decode(future.get(
+                            Math.max(1, requestTimeout.toMillis()), TimeUnit.MILLISECONDS));
+                } catch (InterruptedException | TimeoutException error) {
+                    future.cancel(true);
+                    throw error;
+                }
             } finally {
                 inFlight.remove(future);
             }
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             return new ControlResponse.Unreachable();
-        } catch (ExecutionException | RuntimeException error) {
+        } catch (ExecutionException | TimeoutException | RuntimeException error) {
             return new ControlResponse.Unreachable();
         }
     }

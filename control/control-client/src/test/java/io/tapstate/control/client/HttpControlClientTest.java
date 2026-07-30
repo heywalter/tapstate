@@ -74,6 +74,33 @@ class HttpControlClientTest {
     }
 
     @Test
+    void requestBudgetBoundsAStalledExchange() throws Exception {
+        CountDownLatch received = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        HttpServer server = server(exchange -> {
+            received.countDown();
+            try {
+                release.await();
+                answer(exchange, 200, "{}");
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        try (HttpControlClient client = new HttpControlClient(
+                Duration.ofMillis(250), Duration.ofMillis(250))) {
+            CompletableFuture<ControlResponse> response = CompletableFuture.supplyAsync(() ->
+                    client.get(baseOf(server), "token", "/api/tokens"));
+
+            assertThat(received.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(response.get(2, TimeUnit.SECONDS))
+                    .isInstanceOf(ControlResponse.Unreachable.class);
+        } finally {
+            release.countDown();
+            server.stop(0);
+        }
+    }
+
+    @Test
     void closeCancelsAnInFlightExchange() throws Exception {
         CountDownLatch received = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);

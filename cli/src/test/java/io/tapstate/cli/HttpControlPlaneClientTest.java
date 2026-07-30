@@ -444,8 +444,9 @@ class HttpControlPlaneClientTest {
         try (ServerSocket socket = new ServerSocket(0)) {
             closedPort = socket.getLocalPort();
         }
-        ApplyOutcome outcome = new HttpControlPlaneClient().apply(URI.create("http://127.0.0.1:" + closedPort),
-                "tok", List.of(new LocalDraft("a.tap.yml", "kind: source\n")));
+        ApplyOutcome outcome = new HttpControlPlaneClient(Duration.ofMillis(400), Duration.ofMillis(400))
+                .apply(URI.create("http://127.0.0.1:" + closedPort),
+                        "tok", List.of(new LocalDraft("a.tap.yml", "kind: source\n")));
         assertThat(outcome).isInstanceOf(ApplyOutcome.Unreachable.class);
     }
 
