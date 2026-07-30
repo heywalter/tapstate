@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Redacts runtime secret values before log text reaches an observable sink. Registrations are
@@ -15,7 +16,7 @@ public final class SecretRedactor {
     private static final String REDACTED = "********";
 
     private final Map<String, List<String>> valuesByOwner = new LinkedHashMap<>();
-    private volatile List<String> snapshot = List.of();
+    private final AtomicReference<List<String>> snapshot = new AtomicReference<>(List.of());
 
     /** Replaces every secret associated with {@code owner}. Blank values are ignored. */
     public synchronized void replace(String owner, Collection<String> values) {
@@ -47,17 +48,17 @@ public final class SecretRedactor {
             return null;
         }
         String result = text;
-        for (String secret : snapshot) {
+        for (String secret : snapshot.get()) {
             result = result.replace(secret, REDACTED);
         }
         return result;
     }
 
     private void rebuildSnapshot() {
-        snapshot = valuesByOwner.values().stream()
+        snapshot.set(valuesByOwner.values().stream()
                 .flatMap(Collection::stream)
                 .distinct()
                 .sorted((left, right) -> Integer.compare(right.length(), left.length()))
-                .toList();
+                .toList());
     }
 }
