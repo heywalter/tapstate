@@ -53,9 +53,10 @@ class McpOnlineControlIT {
             if (exchange.getRequestMethod().equals("GET")) {
                 answer(exchange, 200, """
                         {"id":"mysql","origin":"registered","runtimeAvailable":true,
-                         "spec":{"properties":{"host":{"type":"string"},
-                         "password":{"type":"string","secret":true}}},
-                         "specContentHash":"e2e-spec-hash"}
+                         "spec":{"contentHash":"e2e-spec-hash",
+                         "text":"{\\"properties\\":{\\"host\\":{\\"type\\":\\"string\\"},
+                         \\"password\\":{\\"type\\":\\"string\\",\\"secret\\":true}}}",
+                         "unavailable":null}}
                         """);
                 return;
             }
