@@ -60,19 +60,21 @@ jobs:
           fi
           echo "clean: no server image, no quickstart volumes"
 
-      - name: Run the quickstart from an empty directory
-        # The three commands a user runs, with the download standing in as a copy (see the header).
-        # Nothing else is done to the directory: any manual step here would be a step the user has to
-        # take too, and the whole claim is that there are none.
+      - name: Run the quickstart, piped, and let it make its own directory
+        # The one command a user runs, with the checkout's copy standing in for the published one (see
+        # the header). Piped rather than saved on purpose: the pipe is the form on the README, and the
+        # tapstate-demo directory the script then makes for itself is part of what is being proved.
+        # Nothing else is done first: any manual step here would be a step the user has to take too,
+        # and the whole claim is that there are none.
         run: |
           # pipefail is not in the default shell's flags, and without it `tee` decides the step's fate --
           # which is the very failure this lane exists to catch, reintroduced one level up.
           set -euo pipefail
-          mkdir "$RUNNER_TEMP/tapstate-demo"
-          cp deploy/quickstart/quickstart.sh "$RUNNER_TEMP/tapstate-demo/"
-          cd "$RUNNER_TEMP/tapstate-demo"
-          sh quickstart.sh 2>&1 | tee run.log
+          script="$GITHUB_WORKSPACE/deploy/quickstart/quickstart.sh"
+          cd "$RUNNER_TEMP"
+          cat "$script" | sh 2>&1 | tee run.log
           grep -q 'the target now holds' run.log
+          test -d tapstate-demo || { echo "the piped run did not make its own directory" >&2; exit 1; }
 
       - name: The server was pulled, not built
         # A registry pull leaves a repo digest; an image built locally has none. This is what "zero build"

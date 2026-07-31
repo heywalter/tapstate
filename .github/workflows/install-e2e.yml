@@ -1,28 +1,31 @@
-# Installer end-to-end lane.
+# Installer end-to-end lane: the CLI-only install path, on every supported platform.
 #
-# Proves the promise on the README: `curl -sSL https://install.tapstate.dev | sh` on a clean
-# machine, on every supported platform, ending in a CLI that answers and authors offline. It dials
-# the real domain, not the file in this repository - the domain serving a stale or broken copy is
-# exactly the failure this lane exists to catch, and reading the repository file cannot see it.
+# Proves the promise on the README: pipe the published install.sh into sh on a clean machine and end
+# with a CLI that answers and authors offline. It dials the raw URL the README names, not the file in
+# this checkout - the published copy being stale or broken is exactly the failure this lane exists to
+# catch, and reading the checkout cannot see it.
 #
-# Three parts per platform:
-#   - the real install: pipe the real domain into sh, then `tapstate --version` (which must not be
-#     a SNAPSHOT - the installer only serves releases) and the offline authoring loop (new +
-#     validate), with no JDK and no toolchain on the runner's PATH being asked for;
+# This lane is the CLI half only. The full-stack promise - the compose quickstart that is the
+# product's actual one-liner - has its own literal-from-the-docs witness in quickstart-live.yml;
+# macOS runners have no Docker, so this four-platform lane is exactly the half that can run
+# everywhere.
+#
+# Three parts:
+#   - the real install: pipe the published script into sh, then `tapstate --version` (which must not
+#     be a SNAPSHOT - the installer only serves releases) and the offline authoring loop (new +
+#     validate), with no JDK and no toolchain being asked for;
 #   - the negative paths: install-smoke.sh, the checked-in harness whose fixtures cover the
 #     tampered-checksum, truncated-script and unsupported-platform cases without touching the
 #     network - those must hold on every platform, not only where they were written;
 #   - musl (Linux x64 only): the installer inside an Alpine container must refuse loudly - nonzero
 #     exit, an actionable message, nothing half-installed.
-#
-# Dispatch-only until install.tapstate.dev is live; the schedule below turns on in the same change
-# that lights the domain, so a red here always means the promise broke, never that it is not made yet.
 name: Installer e2e
 
 on:
   workflow_dispatch:
-  # schedule:            # enable together with the domain going live
-  #   - cron: "45 20 * * *"
+  schedule:
+    # Off the hour, like every scheduled lane here: on-the-hour slots queue behind everyone else's.
+    - cron: "45 20 * * *"
 
 concurrency:
   group: install-e2e-${{ github.ref }}
@@ -45,10 +48,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Install from the real domain
+      - name: Install from the published script
         run: |
           set -eu
-          curl -sSL https://install.tapstate.dev | sh
+          curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/install/install.sh | sh
           bin="$HOME/.tapstate/bin/tapstate"
           test -x "$bin"
           version="$("$bin" --version)"
@@ -66,7 +69,7 @@ jobs:
       - name: Re-run is an in-place upgrade, not an accretion
         run: |
           set -eu
-          curl -sSL https://install.tapstate.dev | sh
+          curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/install/install.sh | sh
           count="$(find "$HOME/.tapstate/bin" -type f | wc -l | tr -d ' ')"
           test "$count" = "1" || { echo "a re-run left $count files behind" >&2; exit 1; }
       - name: Negative paths against the checked-in fixtures
@@ -79,7 +82,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: The installer refuses Alpine with a usable message and no residue
         # The script under test is the local file on purpose here: the case is the refusal logic,
-        # and the positive jobs above already hold the domain to serving the same file.
+        # and the positive jobs above already hold the published copy to being this same file.
         run: |
           set -eu
           docker run --rm -v "$PWD/install:/install:ro" alpine:3 sh -c '

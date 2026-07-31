@@ -24,10 +24,17 @@ any PDK connector works the same way.
 
 ## The one-command demo
 
-`quickstart.sh` runs everything on this page for you. From an empty directory it
-fetches the stack, installs the CLI in place, generates the demo workspace, brings
-the stack up, and runs the pipeline — then prints the target row count and the
-commands to drive CDC and tear down:
+`quickstart.sh` runs everything on this page for you: it makes itself a
+`tapstate-demo` directory, fetches the stack, installs the CLI in place, generates
+the demo workspace, brings the stack up, and runs the pipeline — then prints the
+target row count and the commands to drive CDC and tear down:
+
+```sh
+curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh | sh
+```
+
+To read the script before running it, download it into a directory of your own
+first — it then works right there:
 
 ```sh
 mkdir tapstate-demo && cd tapstate-demo
@@ -39,9 +46,8 @@ The rest of this page is that same flow by hand. Run it when you want to see the
 online verbs the script drives, or to point the pipeline at your own databases.
 
 > **Preview.** The script installs a released CLI binary and pulls a published
-> server image. Until the first preview release is cut, follow the manual
-> walkthrough below — it builds both from the source tree, and the inline
-> **Preview** notes mark the steps a release will remove.
+> server image; the version is pinned in the script, so the same script always
+> installs the same stack.
 
 ## Prerequisites
 
@@ -118,7 +124,7 @@ Install it right here in the demo directory — the same installer as a permanen
 install, pointed at `.` so that deleting the directory later removes everything:
 
 ```sh
-curl -sSL https://install.tapstate.dev | TAPSTATE_INSTALL_DIR=. sh
+curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/install/install.sh | TAPSTATE_INSTALL_DIR=. sh
 ```
 
 (Building from source still works — `mvn -Pnative -pl cli -am -DskipTests package`
