@@ -18,7 +18,7 @@
 #   * Change-data-capture is exercised the way the script's closing instructions tell a user to, with all
 #     three operations, because a pipeline that only ever inserts is not the claim being made.
 #
-# The script under test is the checkout's, standing in for the `curl -fLO` a user runs. That is
+# The script under test is the checkout's, standing in for the pipe from install.tapstate.dev a user runs. That is
 # deliberate: a fix on a branch has to be exercised before it merges, and on main the two are the same
 # file. Everything the script then fetches -- the compose file, install.sh, the CLI, the jars -- still
 # comes from the pinned release, exactly as a user's run does.

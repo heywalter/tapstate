@@ -148,6 +148,17 @@ main() {
         printf 'quickstart: working in %s\n' "$PWD"
     fi
 
+    # The whole product runs as a compose stack, so a machine without Docker is refused here, before
+    # anything is downloaded -- an actionable sentence beats "docker: command not found" three
+    # downloads later. The prepare-only test seam deliberately skips this: it exists to stop before
+    # Docker, so it must not require it. The CLI alone needs neither; say where to get it.
+    if [ -z "${TAPSTATE_QUICKSTART_PREPARE_ONLY:-}" ]; then
+        command -v docker >/dev/null 2>&1 \
+            || die "Docker is required to run the stack. Install Docker with the Compose v2 plugin, or install only the offline CLI:  curl -sSL https://install.tapstate.dev/cli | sh"
+        docker compose version >/dev/null 2>&1 \
+            || die "Docker is present but the Compose v2 plugin is not ('docker compose version' failed). Update Docker, or install only the offline CLI:  curl -sSL https://install.tapstate.dev/cli | sh"
+    fi
+
     # Where the stack's assets come from: the same release the CLI is pinned to, derived from that pin
     # rather than named separately. A branch would keep moving after the release, handing a later user a
     # CLI frozen at one version beside a compose file from another -- a mismatch that shows up only on

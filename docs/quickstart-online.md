@@ -30,7 +30,7 @@ the demo workspace, brings the stack up, and runs the pipeline — then prints t
 target row count and the commands to drive CDC and tear down:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh | sh
+curl -sSL https://install.tapstate.dev | sh
 ```
 
 To read the script before running it, download it into a directory of your own
@@ -38,7 +38,7 @@ first — it then works right there:
 
 ```sh
 mkdir tapstate-demo && cd tapstate-demo
-curl -fLO https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh
+curl -sSL https://install.tapstate.dev -o quickstart.sh
 sh quickstart.sh
 ```
 
@@ -124,7 +124,7 @@ Install it right here in the demo directory — the same installer as a permanen
 install, pointed at `.` so that deleting the directory later removes everything:
 
 ```sh
-curl -sSL https://install.tapstate.dev | TAPSTATE_INSTALL_DIR=. sh
+curl -sSL https://install.tapstate.dev/cli | TAPSTATE_INSTALL_DIR=. sh
 ```
 
 (Building from source still works — `mvn -Pnative -pl cli -am -DskipTests package`

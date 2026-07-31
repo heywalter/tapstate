@@ -51,7 +51,7 @@ jobs:
       - name: Install from the published script
         run: |
           set -eu
-          curl -sSL https://install.tapstate.dev | sh
+          curl -sSL https://install.tapstate.dev/cli | sh
           bin="$HOME/.tapstate/bin/tapstate"
           test -x "$bin"
           version="$("$bin" --version)"
@@ -69,7 +69,7 @@ jobs:
       - name: Re-run is an in-place upgrade, not an accretion
         run: |
           set -eu
-          curl -sSL https://install.tapstate.dev | sh
+          curl -sSL https://install.tapstate.dev/cli | sh
           count="$(find "$HOME/.tapstate/bin" -type f | wc -l | tr -d ' ')"
           test "$count" = "1" || { echo "a re-run left $count files behind" >&2; exit 1; }
       - name: Negative paths against the checked-in fixtures

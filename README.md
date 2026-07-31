@@ -72,7 +72,7 @@ first-admin bootstrap brought up together — driving a real MySQL → MongoDB s
 directory it makes for itself:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh | sh
+curl -sSL https://install.tapstate.dev | sh
 ```
 
 Prefer to read it first? Download, read, then run — same script, and it works in
@@ -80,7 +80,7 @@ the directory you saved it in:
 
 ```sh
 mkdir tapstate-demo && cd tapstate-demo
-curl -fLO https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh
+curl -sSL https://install.tapstate.dev -o quickstart.sh
 sh quickstart.sh
 ```
 
@@ -105,7 +105,7 @@ To install just the CLI — the offline authoring loop, one native binary, no Do
 no JDK:
 
 ```bash
-curl -sSL https://install.tapstate.dev | sh
+curl -sSL https://install.tapstate.dev/cli | sh
 ```
 
 It installs a preview build to `~/.tapstate/bin`, verifies the download against its
@@ -114,7 +114,7 @@ to read before you run — or to skip the pipe entirely? Both are supported:
 
 ```bash
 # Audit the script first, then run the copy you read:
-curl -sSL https://install.tapstate.dev -o install.sh && less install.sh && sh install.sh
+curl -sSL https://install.tapstate.dev/cli -o install.sh && less install.sh && sh install.sh
 
 # Or skip the installer: download a release asset and check it yourself.
 # Assets are tapstate-<version>-<os>-<arch>.tar.gz, each next to its .sha256
