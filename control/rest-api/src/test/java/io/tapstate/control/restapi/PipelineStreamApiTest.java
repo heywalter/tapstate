@@ -12,9 +12,11 @@ import io.tapstate.control.core.TokenSigner;
 import io.tapstate.control.core.VerifiedToken;
 import io.tapstate.core.common.JsonReader;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.LogSink;
+import io.tapstate.messages.MessageCatalog;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.Resource;
@@ -118,6 +120,32 @@ class PipelineStreamApiTest {
         }
     }
 
+    // ---- the one frame reporting a death also carries why, over a real connection ----
+
+    @Test
+    void watchStreamsTheCodedFailureReasonInTheSameFrameThatReportsAPipelineDead() throws Exception {
+        FakeObservationStore observations = context.getBean(FakeObservationStore.class);
+        observations.save(new Observation("pl1", PipelineState.FAILED, Map.of("errorCount", 1L),
+                Map.of(), Map.of(), new ObservationFailure(
+                        "engine.job-failed", Map.of("pipeline", "pl1", "cause", "sink refused the batch"))));
+
+        FrameSink sink = new FrameSink();
+        WebSocket ws = connect("/api/pipelines/pl1/status/watch", readToken(), sink);
+        try {
+            Map<?, ?> frame = sink.nextFrame();
+            assertThat(frame.get("state")).isEqualTo("FAILED");
+            Object failure = frame.get("failure");
+            assertThat(failure).isInstanceOf(Map.class);
+            Map<?, ?> failureMap = (Map<?, ?>) failure;
+            assertThat(failureMap.get("code")).isEqualTo("engine.job-failed");
+            assertThat(failureMap.get("message")).isNotNull();
+            Map<?, ?> params = (Map<?, ?>) failureMap.get("params");
+            assertThat(params.get("cause")).isEqualTo("sink refused the batch");
+        } finally {
+            ws.abort();
+        }
+    }
+
     // ---- a follower gets existing lines, then a newly appended one ----
 
     @Test
@@ -191,6 +219,11 @@ class PipelineStreamApiTest {
     @EnableAutoConfiguration
     @Import({PipelineStreamConfiguration.class})
     static class TestApp {
+
+        @Bean
+        MessageCatalog messageCatalog() {
+            return MessageCatalog.bundled();
+        }
 
         @Bean
         FakeObservationStore observationStore() {

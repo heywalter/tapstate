@@ -1370,9 +1370,10 @@ final class Repl {
             case StatusOutcome.Found found -> {
                 out.println(found.pipelineId() + "  " + found.state().toLowerCase(Locale.ROOT));
                 if (found.failureCode() != null) {
-                    // A failed state that cannot say what failed sends the user hunting through logs. The
-                    // reason arrives with its code, and prints through the same renderer as a coded refusal.
-                    renderRejection(found.failureCode(), found.failureMessage());
+                    // A failed state that cannot say what failed sends the user hunting through logs. This
+                    // read succeeded -- it is not a refusal -- so it renders to stdout, not alongside a
+                    // coded refusal on stderr.
+                    renderStatusFailure(found.failureCode(), found.failureMessage());
                 }
                 out.flush();
             }
@@ -1490,8 +1491,14 @@ final class Repl {
         PrintWriter out = commandLine.getOut();
         streamCancelled = false;
         controlPlane.watchStatus(session.landingNode(), session.credential(), id,
-                (pipelineId, state) -> {
+                (pipelineId, state, failureCode, failureMessage) -> {
                     out.println(pipelineId + "  " + state.toLowerCase(Locale.ROOT));
+                    if (failureCode != null) {
+                        // Mirrors the one-shot `status` read: a failed state that cannot say what failed
+                        // sends the watcher hunting through logs instead of the frame that just reported it.
+                        // This frame arrived over an open stream, not a refusal, so it renders to stdout.
+                        renderStatusFailure(failureCode, failureMessage);
+                    }
                     out.flush();
                 },
                 this::isStreamCancelled);
@@ -1653,6 +1660,23 @@ final class Repl {
         }
         err.println("  " + message);
         err.flush();
+    }
+
+    /**
+     * Renders why a pipeline died, for a status read that succeeded and simply reports an unhealthy
+     * pipeline -- distinct from {@link #renderRejection}, which reports that the command itself was
+     * refused. Both arrive as a code plus a rendered message, but this one is not a refusal: it prints to
+     * stdout, without the red {@code error:} banner, so a caller separating the streams (piped or
+     * redirected input, e.g. {@code status pl1 > out.txt 2> err.txt}) can still tell "your command was
+     * refused" from "the pipeline you asked about is dead" by which stream carried it.
+     */
+    private void renderStatusFailure(String code, String message) {
+        PrintWriter out = commandLine.getOut();
+        if (!code.isBlank()) {
+            out.println(Ansi.AUTO.string("@|bold reason:|@") + " " + code);
+        }
+        out.println("  " + message);
+        out.flush();
     }
 
     /**

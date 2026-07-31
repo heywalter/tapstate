@@ -12,11 +12,13 @@ import io.tapstate.control.core.TokenSigner;
 import io.tapstate.control.core.VerifiedToken;
 import io.tapstate.control.restapi.PipelineStreamConfiguration;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.LogSink;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.Resource;
+import io.tapstate.messages.MessageCatalog;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.TokenRecord;
@@ -102,7 +104,7 @@ class PipelineStreamRoundTripTest {
         BlockingQueue<String> states = new LinkedBlockingQueue<>();
         AtomicBoolean stop = new AtomicBoolean(false);
         Thread watcher = new Thread(() -> client.watchStatus(
-                baseUrl(), readToken(), "pl1", (id, state) -> states.add(state), stop::get));
+                baseUrl(), readToken(), "pl1", (id, state, failureCode, failureMessage) -> states.add(state), stop::get));
         watcher.setDaemon(true);
         watcher.start();
         try {
@@ -111,6 +113,36 @@ class PipelineStreamRoundTripTest {
             observations.save(new Observation("pl1", PipelineState.PAUSED, null, null));
 
             assertThat(states.poll(5, TimeUnit.SECONDS)).isEqualTo("PAUSED");
+        } finally {
+            stop.set(true);
+            watcher.join(TimeUnit.SECONDS.toMillis(3));
+        }
+    }
+
+    @Test
+    @DisplayName("watchStatus delivers the coded failure reason alongside a FAILED state")
+    void watchStatusDeliversTheFailureReasonAlongsideAFailedState() throws Exception {
+        // The full stack, real server: app assembly -> control-core -> rest-api -> a real websocket -> the
+        // production HttpControlPlaneClient. Proves the reason a pipeline died actually reaches a CLI-side
+        // caller end to end, not just that some intermediate layer encodes it correctly in isolation.
+        FakeObservationStore observations = context.getBean(FakeObservationStore.class);
+        observations.save(new Observation("pl1", PipelineState.FAILED, Map.of("errorCount", 1L),
+                Map.of(), Map.of(), new ObservationFailure(
+                        "engine.job-failed", Map.of("pipeline", "pl1", "cause", "sink refused the batch"))));
+
+        BlockingQueue<String[]> found = new LinkedBlockingQueue<>();
+        AtomicBoolean stop = new AtomicBoolean(false);
+        Thread watcher = new Thread(() -> client.watchStatus(baseUrl(), readToken(), "pl1",
+                (id, state, failureCode, failureMessage) -> found.add(new String[] {state, failureCode, failureMessage}),
+                stop::get));
+        watcher.setDaemon(true);
+        watcher.start();
+        try {
+            String[] frame = found.poll(5, TimeUnit.SECONDS);
+            assertThat(frame).isNotNull();
+            assertThat(frame[0]).isEqualTo("FAILED");
+            assertThat(frame[1]).isEqualTo("engine.job-failed");
+            assertThat(frame[2]).contains("sink refused the batch");
         } finally {
             stop.set(true);
             watcher.join(TimeUnit.SECONDS.toMillis(3));
@@ -151,6 +183,11 @@ class PipelineStreamRoundTripTest {
     @EnableAutoConfiguration
     @Import(PipelineStreamConfiguration.class)
     static class TestApp {
+
+        @Bean
+        MessageCatalog messageCatalog() {
+            return MessageCatalog.bundled();
+        }
 
         @Bean
         FakeObservationStore observationStore() {
