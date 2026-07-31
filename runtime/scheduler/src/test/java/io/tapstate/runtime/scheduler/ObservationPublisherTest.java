@@ -225,6 +225,25 @@ class ObservationPublisherTest {
         assertThat(published.metrics()).containsOnly(entry("errorCount", 2L));
     }
 
+    @Test
+    void publishReconcileFailurePreservesThePreviouslyPublishedFailureAndPositions() {
+        // A pass that could not run witnessed no transition in the failure reason or the source positions,
+        // any more than it witnessed one in the state: a dead pipeline whose reconcile then starts throwing
+        // must keep saying why it died and where each table's read had gotten to, not go blank on both.
+        ObservationFailure priorFailure = new ObservationFailure("engine.job-failed", Map.of("cause", "boom"));
+        Map<String, String> priorPositions = Map.of("orders", "binlog.000123:456");
+        observations.save(new Observation(
+                "orders", PipelineState.FAILED, Map.of("errorCount", 1L), Map.of(), priorPositions, priorFailure));
+
+        publisher.publishReconcileFailure("orders", 5L);
+
+        Observation published = observations.read("orders").orElseThrow();
+        assertThat(published.state()).isEqualTo(PipelineState.FAILED);
+        assertThat(published.metrics()).containsOnly(entry("errorCount", 5L));
+        assertThat(published.failure()).isEqualTo(priorFailure);
+        assertThat(published.positions()).isEqualTo(priorPositions);
+    }
+
     /** In-memory state store double: seedable checkpoints, read-only for what the publisher needs. */
     private static final class MutableStateStore implements StateStore {
 

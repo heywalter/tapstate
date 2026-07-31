@@ -100,14 +100,19 @@ public final class ObservationPublisher {
      * Publishes a reconcile-failure observation for a pipeline whose converge pass keeps throwing and so
      * never reaches {@link #publish}. Without it the read face stays empty and "permanently broken" cannot be
      * told apart from "still converging". The consecutive-failure count rides out as errorCount; the last
-     * observed lifecycle state is preserved (or NEW when the pipeline has never been observed), since a
-     * reconcile that could not run witnessed no state transition. The snapshot dataset is left unavailable and
-     * the failure cause stays in the driver's log — neither fits the numeric metric map.
+     * observed lifecycle state, coded failure and source positions are all preserved as they last stood, since
+     * a reconcile that could not run witnessed no transition in any of them — a pass that never ran did not
+     * just recover either. The snapshot dataset is left unavailable: this path has no capture-side source to
+     * read it from, unlike positions and failure which are simply carried forward from the last observation.
      */
     public void publishReconcileFailure(String pipelineId, long consecutiveFailures) {
         Objects.requireNonNull(pipelineId, "pipelineId");
-        PipelineState lastState = observations.read(pipelineId).map(Observation::state).orElse(PipelineState.NEW);
-        observations.save(new Observation(pipelineId, lastState, Map.of("errorCount", consecutiveFailures), null));
+        Observation previous = observations.read(pipelineId).orElse(null);
+        PipelineState lastState = previous != null ? previous.state() : PipelineState.NEW;
+        Map<String, String> lastPositions = previous != null ? previous.positions() : Map.of();
+        ObservationFailure lastFailure = previous != null ? previous.failure() : null;
+        observations.save(new Observation(pipelineId, lastState, Map.of("errorCount", consecutiveFailures),
+                null, lastPositions, lastFailure));
     }
 
     /**
