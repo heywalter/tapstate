@@ -24,14 +24,21 @@ any PDK connector works the same way.
 
 ## The one-command demo
 
-`quickstart.sh` runs everything on this page for you. From an empty directory it
-fetches the stack, installs the CLI in place, generates the demo workspace, brings
-the stack up, and runs the pipeline — then prints the target row count and the
-commands to drive CDC and tear down:
+`quickstart.sh` runs everything on this page for you: it makes itself a
+`tapstate-demo` directory, fetches the stack, installs the CLI in place, generates
+the demo workspace, brings the stack up, and runs the pipeline — then prints the
+target row count and the commands to drive CDC and tear down:
+
+```sh
+curl -sSL https://install.tapstate.dev | sh
+```
+
+To read the script before running it, download it into a directory of your own
+first — it then works right there:
 
 ```sh
 mkdir tapstate-demo && cd tapstate-demo
-curl -fLO https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh
+curl -sSL https://install.tapstate.dev -o quickstart.sh
 sh quickstart.sh
 ```
 
@@ -39,9 +46,8 @@ The rest of this page is that same flow by hand. Run it when you want to see the
 online verbs the script drives, or to point the pipeline at your own databases.
 
 > **Preview.** The script installs a released CLI binary and pulls a published
-> server image. Until the first preview release is cut, follow the manual
-> walkthrough below — it builds both from the source tree, and the inline
-> **Preview** notes mark the steps a release will remove.
+> server image; the version is pinned in the script, so the same script always
+> installs the same stack.
 
 ## Prerequisites
 
@@ -50,10 +56,9 @@ online verbs the script drives, or to point the pipeline at your own databases.
   together, on the loopback interface only.
 - **The system version named in the release notes** — a macOS version on a Mac, a glibc
   version on Linux. A recommendation, not a gate; see the note at the top of this page.
-- **JDK 21** — a GraalVM or plain JDK 21 (`java -version`). Preview-only: used to
-  build the CLI, and — until the server image is published — to build the server jar
-  the stack's image is assembled from. A published image and a CLI installer remove
-  both; Docker is the only lasting prerequisite.
+- **JDK 21** (`java -version`) — only for the dev overlay below, which builds the
+  server image from this checkout. The CLI needs no toolchain at all: it is installed
+  as a native binary in step 3, and GraalVM is only for building it from source.
 
 ## 1. Get the stack
 
@@ -115,12 +120,16 @@ docker compose ps          # the "server" row should read "healthy"
 
 ## 3. Get the CLI
 
-> **Preview.** Build the native CLI from the source tree; a CLI installer replaces
-> this step.
-> ```sh
-> ( cd ../.. && mvn -Pnative -pl cli -am -DskipTests package )    # -> cli/target/tapstate
-> cp ../../cli/target/tapstate ./tapstate
-> ```
+Install it right here in the demo directory — the same installer as a permanent
+install, pointed at `.` so that deleting the directory later removes everything:
+
+```sh
+curl -sSL https://install.tapstate.dev/cli | TAPSTATE_INSTALL_DIR=. sh
+```
+
+(Building from source still works — `mvn -Pnative -pl cli -am -DskipTests package`
+in the repository, needs GraalVM for JDK 21 — but nothing in this walkthrough
+requires it.)
 
 The CLI drives both the offline authoring loop and the online verbs below. It runs
 on the host and talks to the server over HTTP; put it on your `PATH`, or keep it
