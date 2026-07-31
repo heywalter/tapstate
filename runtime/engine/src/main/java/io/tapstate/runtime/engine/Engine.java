@@ -40,8 +40,15 @@ public final class Engine {
      * Submits the pipeline's topology as a Jet job named by the pipeline id. Idempotent: if a job
      * under that name is already active it is left running and returned, so a repeated convergence
      * pass does not start a second job for the same pipeline.
+     *
+     * <p>Clears any failure {@link JobFailureRegistry} recorded for this pipeline id first: a fresh
+     * submission means a fresh run (the caller only submits after driving the pipeline back toward
+     * RUNNING), so a cause an earlier run recorded must not be mistaken for this one's while it is
+     * still healthy. A submission that finds the job already active clears a registry entry that was
+     * never set, which is a no-op.
      */
     public void submit(String pipelineId, DAG dag) {
+        JobFailureRegistry.of(member).clear(pipelineId);
         JobConfig config = new JobConfig()
                 .setName(pipelineId)
                 .setProcessingGuarantee(ProcessingGuarantee.NONE);
@@ -80,11 +87,23 @@ public final class Engine {
      * bare status check cannot tell a real failure from a stop; the terminal future tells them apart —
      * a cancelled job completes with a {@link CancellationException}, a failed one with its own cause.
      * The job is terminal here, so joining its future returns or throws at once without blocking.
+     *
+     * <p>Checks the {@link JobFailureRegistry} first: once a job's terminal result is durable, Jet tears
+     * down the live context backing {@code job.getFuture()} and later reconstructs a cause-free mock
+     * throwable from the failure's stored text (measured: production loses the real cause this way the
+     * large majority of the time, a race of a few milliseconds wide). A processor that caught the real
+     * exception records it there before that teardown can happen, so a hit is always the real cause. Only
+     * a job that failed for a reason no processor recorded — a fault inside Jet itself, for one — falls
+     * through to asking Jet, which after that same teardown can answer with the degraded mock instead.
      */
     public Optional<Throwable> failureOf(String pipelineId) {
         Job job = member.getJet().getJob(pipelineId);
         if (job == null || job.getStatus() != JobStatus.FAILED) {
             return Optional.empty();
+        }
+        Optional<Throwable> recorded = JobFailureRegistry.of(member).get(pipelineId);
+        if (recorded.isPresent()) {
+            return recorded;
         }
         try {
             job.getFuture().join();
