@@ -22,6 +22,7 @@ import java.util.Optional;
 import static io.tapstate.core.lifecycle.PipelineState.FAILED;
 import static io.tapstate.core.lifecycle.PipelineState.NEW;
 import static io.tapstate.core.lifecycle.PipelineState.RUNNING;
+import static io.tapstate.core.lifecycle.PipelineState.STOPPED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.entry;
 
@@ -228,6 +229,31 @@ class ConvergenceDriverTest {
     }
 
     @Test
+    void aPipelineStillFailedOnALaterPassKeepsReportingWhyItDied() {
+        // PipelineConverger reports the cause only on the one pass that drives RUNNING -> FAILED; every
+        // later pass over an already-FAILED checkpoint returns a bare CONVERGED with no cause attached (it
+        // did not just fail again, it is still failed from before). Without the driver carrying it forward,
+        // a pipeline dead for an hour would say why for exactly the one second it transitioned in.
+        FailingActuator actuator = new FailingActuator();
+        PipelineConverger converger =
+                new PipelineConverger(desired, state, actuator, Clock.fixed(T0, ZoneOffset.UTC));
+        ConvergenceDriver driver =
+                new ConvergenceDriver(converger, desired, new ObservationPublisher(state, observations));
+        desired.save(new DesiredState("orders", RUNNING, "rev-1"));
+        driver.reconcile();
+        actuator.failWith(new IllegalStateException("sink write failed"));
+        driver.reconcile(); // orders -> FAILED, cause published
+
+        driver.reconcile(); // still FAILED, unchanged
+        driver.reconcile(); // still FAILED, unchanged again
+
+        ObservationFailure failure = observations.read("orders").orElseThrow().failure();
+        assertThat(failure).isNotNull();
+        assertThat(failure.code()).isEqualTo("engine.job-failed");
+        assertThat(failure.params()).containsEntry("cause", "sink write failed");
+    }
+
+    @Test
     void aPipelineThatRecoversStopsReportingTheFailureThatKilledItsPreviousRun() {
         FailingActuator actuator = new FailingActuator();
         PipelineConverger converger =
@@ -240,13 +266,18 @@ class ConvergenceDriverTest {
         driver.reconcile();
         assertThat(observations.read("orders").orElseThrow().failure()).isNotNull();
 
-        // The operator restarts the pipeline and the job stays up: the observation is current-state, so the
-        // stale reason must not keep being served next to a healthy pipeline.
+        // A failed run stays failed on its own (PipelineConverger never re-drives FAILED toward RUNNING);
+        // the only real recovery path is an explicit stop, then a fresh start. Once that happens the
+        // observation is current-state again, so the stale reason must not keep being served.
         actuator.failWith(null);
-        desired.save(new DesiredState("orders", RUNNING, "rev-2"));
+        desired.save(new DesiredState("orders", STOPPED, "rev-2"));
+        driver.reconcile();
+        desired.save(new DesiredState("orders", RUNNING, "rev-3"));
         driver.reconcile();
 
-        assertThat(observations.read("orders").orElseThrow().failure()).isNull();
+        Observation recovered = observations.read("orders").orElseThrow();
+        assertThat(recovered.state()).isEqualTo(RUNNING);
+        assertThat(recovered.failure()).isNull();
     }
 
     /** A no-op actuator whose failure() a test can arm, to drive a pipeline to FAILED without a real job. */
