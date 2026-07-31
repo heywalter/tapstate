@@ -22,6 +22,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -48,27 +49,46 @@ import java.util.Objects;
 public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
 
     /**
-     * The connectors this release officially supports, in the order the refusal message names them.
-     * A list rather than a set so that order — and therefore the message — is fixed; the membership
-     * test over two entries costs nothing. Deliberately a constant, not a collaborator: which
-     * connectors are supported is a property of the release, not something a deployment configures.
+     * The connectors this release officially supports, in the order a refusal message names them. A
+     * list rather than a set so that order — and therefore the message — is fixed; the membership test
+     * over two entries costs nothing. This is the default accepted set and the only one any shipped
+     * artifact uses; a test pins its exact contents, because a silent addition here would be a support
+     * promise nobody made.
      */
-    private static final List<String> OFFICIAL_CONNECTOR_IDS = List.of("mysql", "mongodb");
+    static final List<String> OFFICIAL_CONNECTOR_IDS = List.of("mysql", "mongodb");
 
     private final ConnectorRegistry registry;
     private final ConnectorIntrospector introspector;
     private final CapabilityDeriver capabilityDeriver;
     private final ConnectorCatalogStore catalogStore;
     private final ConnectorSpecStore specStore;
+    private final List<String> acceptedConnectorIds;
 
+    /** Registers with the release's own accepted set — what every shipped artifact uses. */
     public ConnectorArtifactRegistrar(ConnectorRegistry registry, ConnectorIntrospector introspector,
                                       CapabilityDeriver capabilityDeriver, ConnectorCatalogStore catalogStore,
                                       ConnectorSpecStore specStore) {
+        this(registry, introspector, capabilityDeriver, catalogStore, specStore, List.of());
+    }
+
+    /**
+     * Registers with further connector ids accepted beyond the official set. Empty in every shipped
+     * artifact: this exists for a deployment that stands up its own server and supplies its own
+     * connector — the product's end-to-end harness is the case it was built for. Naming ids here does
+     * not make them supported; it only stops the register path refusing them.
+     */
+    public ConnectorArtifactRegistrar(ConnectorRegistry registry, ConnectorIntrospector introspector,
+                                      CapabilityDeriver capabilityDeriver, ConnectorCatalogStore catalogStore,
+                                      ConnectorSpecStore specStore, List<String> alsoAccept) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.introspector = Objects.requireNonNull(introspector, "introspector");
         this.capabilityDeriver = Objects.requireNonNull(capabilityDeriver, "capabilityDeriver");
         this.catalogStore = Objects.requireNonNull(catalogStore, "catalogStore");
         this.specStore = Objects.requireNonNull(specStore, "specStore");
+        Objects.requireNonNull(alsoAccept, "alsoAccept");
+        List<String> accepted = new ArrayList<>(OFFICIAL_CONNECTOR_IDS);
+        accepted.addAll(alsoAccept);
+        this.acceptedConnectorIds = List.copyOf(accepted);
     }
 
     /** Registers the artifact at {@code artifact} if its content hash is not already registered. */
@@ -123,13 +143,15 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
      * startup (the sweep contains a per-jar failure and carries on) while doing nothing about the
      * surface this guard exists for, which is an artifact arriving over the wire from a client.
      */
-    private static void rejectUnofficialConnector(String connectorId, RegistrationSource source) {
-        if (source != RegistrationSource.REGISTER || OFFICIAL_CONNECTOR_IDS.contains(connectorId)) {
+    private void rejectUnofficialConnector(String connectorId, RegistrationSource source) {
+        if (source != RegistrationSource.REGISTER || acceptedConnectorIds.contains(connectorId)) {
             return;
         }
+        // The message names what would actually be accepted here, not the release default: a caller
+        // debugging a refusal needs the set this server is applying, whatever it was started with.
         throw new TapstateException(ConnectorError.NOT_OFFICIAL,
                 Map.of("connector", connectorId,
-                        "official", String.join(", ", OFFICIAL_CONNECTOR_IDS)),
+                        "official", String.join(", ", acceptedConnectorIds)),
                 null);
     }
 

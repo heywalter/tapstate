@@ -208,10 +208,13 @@ class ControlPlaneConfiguration {
     }
 
     @Bean
-    ConnectorCatalogView connectorCatalogView(ConnectorCatalogStore connectorCatalogStore) {
+    ConnectorCatalogView connectorCatalogView(
+            ConnectorCatalogStore connectorCatalogStore, ConnectorSpecStore connectorSpecStore,
+            ConnectorRegistry connectorRegistry) {
         // The online catalog view = the bundled snapshot overlaid with the rows derived for registered
         // connectors, read live; the offline native CLI keeps reading only the bundled snapshot.
-        return new ConnectorCatalogView(TapstateCatalog.load(), connectorCatalogStore);
+        return new ConnectorCatalogView(
+                TapstateCatalog.load(), connectorCatalogStore, connectorSpecStore, connectorRegistry);
     }
 
     @Bean
@@ -237,9 +240,10 @@ class ControlPlaneConfiguration {
     ConnectorArtifactRegistrar connectorArtifactRegistrar(
             ConnectorRegistry registry, ConnectorIntrospector introspector,
             CapabilityDeriver capabilityDeriver, ConnectorCatalogStore connectorCatalogStore,
-            ConnectorSpecStore connectorSpecStore) {
+            ConnectorSpecStore connectorSpecStore, ConnectorPluginProperties properties) {
         return new ConnectorArtifactRegistrar(
-                registry, introspector, capabilityDeriver, connectorCatalogStore, connectorSpecStore);
+                registry, introspector, capabilityDeriver, connectorCatalogStore, connectorSpecStore,
+                properties.getAlsoAcceptIds());
     }
 
     @Bean

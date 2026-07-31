@@ -14,6 +14,7 @@ import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -154,6 +155,30 @@ class ConnectorArtifactRegistrarTest {
                 });
         assertThat(registry.list()).isEmpty();
         assertThat(rows.get("orders")).isEmpty();
+    }
+
+    @Test
+    void theDefaultAcceptedSetIsExactlyTheTwoOfficialConnectors() {
+        // The pin. Widening is a deployment's explicit act; the default must not drift, because every
+        // shipped artifact leaves it alone and a silent addition here is a support promise nobody made.
+        assertThat(ConnectorArtifactRegistrar.OFFICIAL_CONNECTOR_IDS).containsExactly("mysql", "mongodb");
+    }
+
+    @Test
+    void acceptsAWidenedIdOnlyWhenTheDeploymentNamesIt(@TempDir Path dir) {
+        // A deployment that starts its own server — the product's own test harness — can name further
+        // ids to accept. Nothing ships with any named, so this changes no released behaviour.
+        Path jar = Synthetic.seedableOrdersConnector(dir);
+        InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
+        ConnectorArtifactRegistrar widened = new ConnectorArtifactRegistrar(
+                registry, new ConnectorIntrospector(),
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")),
+                new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore(), List.of("orders"));
+
+        RegistrationOutcome outcome = widened.register(jar, RegistrationSource.REGISTER);
+
+        assertThat(outcome.newlyRegistered()).isTrue();
+        assertThat(registry.list()).hasSize(1);
     }
 
     @Test

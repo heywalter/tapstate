@@ -3,10 +3,16 @@ package io.tapstate.control.core;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
+import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.RegistrationOutcome;
+import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.core.catalog.CatalogEntryReader;
 import io.tapstate.core.catalog.TapstateCatalog;
 
@@ -31,10 +37,88 @@ class ConnectorCatalogViewTest {
             """;
 
     @Test
+    void detailCarriesTheStoredSpecSourceUnderTheRowsProvenanceHash() {
+        // The normalized row is a lossy projection; the source is kept beside it under the very hash the
+        // row's provenance already records. The detail read is where that pointer stops being a pointer.
+        InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
+        store.upsert(CatalogEntryReader.read(ACME_ROW));
+        InMemoryConnectorSpecStore specs = new InMemoryConnectorSpecStore();
+        String source = "{\"properties\":{\"id\":\"acme\"},\"zz\":1,\"a\":2}";
+        specs.put("h", source.getBytes(StandardCharsets.UTF_8));
+        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store, specs, emptyRegistry());
+
+        ConnectorDetail detail = view.detail("acme");
+
+        assertThat(detail.spec().contentHash()).isEqualTo("h");
+        assertThat(detail.spec().text()).isEqualTo(source);
+        assertThat(detail.spec().unavailable()).isNull();
+        // The projection stands unchanged beside it: the source is an addition, not a replacement, and
+        // the fields a connection form already consumes must not shift shape under it.
+        assertThat(detail.id()).isEqualTo("acme");
+        assertThat(detail.origin()).isEqualTo("registered");
+        assertThat(detail.config()).isEmpty();
+        assertThat(detail.modes()).containsExactly("snapshot");
+    }
+
+    @Test
+    void detailSaysWhyTheSpecSourceIsAbsentRatherThanReturningNothing() {
+        // A bundled row has no stored source. Answering with a bare null invites a consumer to
+        // reconstruct a spec from the normalized config — the one thing the source exists to prevent —
+        // so the absence is stated, with the hash still named so a later store can be checked again.
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore(), emptyRegistry());
+
+        ConnectorDetail detail = view.detail(BUNDLED.ids().iterator().next());
+
+        assertThat(detail.spec().text()).isNull();
+        assertThat(detail.spec().unavailable()).isEqualTo("not-stored");
+        assertThat(detail.origin()).isEqualTo("bundled");
+    }
+
+    @Test
+    void runtimeAvailableIsTrueOnlyWhenTheArtifactBytesAreActuallyThere() {
+        InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
+        store.upsert(CatalogEntryReader.read(ACME_ROW));
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), registryHolding("acme", "jar-hash", true));
+
+        assertThat(view.detail("acme").runtimeAvailable()).isTrue();
+    }
+
+    @Test
+    void runtimeAvailableIsFalseForARegisteredRowWhoseArtifactBytesAreGone() {
+        // The case that separates runtimeAvailable from origin. Both say "registered" here, yet the jar
+        // cannot be loaded — an implementation that reads origin and stops would answer true, and every
+        // consumer would be told a connector can run when it cannot.
+        InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
+        store.upsert(CatalogEntryReader.read(ACME_ROW));
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), registryHolding("acme", "jar-hash", false));
+
+        ConnectorDetail detail = view.detail("acme");
+
+        assertThat(detail.origin()).isEqualTo("registered");
+        assertThat(detail.runtimeAvailable()).isFalse();
+    }
+
+    @Test
+    void runtimeAvailableIsFalseForABundledRowThatWasNeverRegistered() {
+        // A bundled row is catalog metadata shipped with the release; nothing says its jar is present.
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore(), emptyRegistry());
+
+        ConnectorDetail detail = view.detail(BUNDLED.ids().iterator().next());
+
+        assertThat(detail.origin()).isEqualTo("bundled");
+        assertThat(detail.runtimeAvailable()).isFalse();
+    }
+
+    @Test
     void mergedUnionsRegisteredRowsOverTheBundledSnapshot() {
         InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
         store.upsert(CatalogEntryReader.read(ACME_ROW));
-        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store);
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), emptyRegistry());
 
         TapstateCatalog merged = view.merged();
 
@@ -45,7 +129,8 @@ class ConnectorCatalogViewTest {
     @Test
     void mergedReflectsRegistrationsMadeAfterTheViewWasConstructed() {
         InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
-        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store);
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), emptyRegistry());
         assertThat(view.merged().ids()).doesNotContain("acme");
 
         store.upsert(CatalogEntryReader.read(ACME_ROW));
@@ -58,7 +143,8 @@ class ConnectorCatalogViewTest {
     void summariesTagRegisteredRowsRegisteredAndBundledRowsBundled() {
         InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
         store.upsert(CatalogEntryReader.read(ACME_ROW));
-        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store);
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), emptyRegistry());
 
         List<ConnectorSummary> summaries = view.summaries();
 
@@ -73,7 +159,8 @@ class ConnectorCatalogViewTest {
     @Test
     void detailProjectsTheNormalizedConfigWithoutRawFormilyExpressions() {
         InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
-        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store);
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), emptyRegistry());
 
         ConnectorDetail detail = view.detail("mysql");
 
@@ -95,7 +182,8 @@ class ConnectorCatalogViewTest {
     @Test
     void detailReadsTheLiveRegisteredOverlayAndTagsItsOrigin() {
         InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
-        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store);
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), emptyRegistry());
 
         store.upsert(CatalogEntryReader.read(ACME_ROW));
 
@@ -104,10 +192,46 @@ class ConnectorCatalogViewTest {
 
     @Test
     void detailRejectsAnUnknownConnectorWithACodedError() {
-        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, new InMemoryConnectorCatalogStore());
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore(), emptyRegistry());
 
         assertThatThrownBy(() -> view.detail("missing"))
                 .isInstanceOfSatisfying(io.tapstate.core.common.TapstateException.class,
                         error -> assertThat(error.code().code()).isEqualTo("connector.not-found"));
+    }
+
+    private static ConnectorRegistry emptyRegistry() {
+        return registryHolding(null, null, false);
+    }
+
+    /**
+     * A registry carrying at most one registration, and answering independently whether its bytes are
+     * still there — the two facts the detail read combines, kept separable so a test can pull them apart.
+     */
+    private static ConnectorRegistry registryHolding(String connectorId, String contentHash, boolean bytesPresent) {
+        List<ConnectorRegistration> registrations = connectorId == null
+                ? List.of()
+                : List.of(new ConnectorRegistration(connectorId, contentHash, "1.0.0", RegistrationSource.REGISTER));
+        return new ConnectorRegistry() {
+            @Override
+            public RegistrationOutcome register(String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+                throw new UnsupportedOperationException("the detail read never registers");
+            }
+
+            @Override
+            public List<ConnectorRegistration> list() {
+                return registrations;
+            }
+
+            @Override
+            public Optional<byte[]> artifact(String hash) {
+                throw new UnsupportedOperationException("a detail read must not pull artifact bytes");
+            }
+
+            @Override
+            public boolean hasArtifact(String hash) {
+                return bytesPresent && hash.equals(contentHash);
+            }
+        };
     }
 }

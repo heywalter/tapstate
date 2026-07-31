@@ -648,6 +648,11 @@ class StorePortTest {
                     byte[] bytes = connectorArtifacts.get(contentHash);
                     return bytes == null ? Optional.empty() : Optional.of(bytes.clone());
                 }
+
+                @Override
+                public boolean hasArtifact(String contentHash) {
+                    return artifact(contentHash).isPresent();
+                }
             };
         }
 

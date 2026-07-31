@@ -25,6 +25,8 @@ import io.tapstate.spi.store.AuditStore;
 import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistrar;
 import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ContentHash;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
@@ -99,6 +101,7 @@ class ConnectorApiTest {
         context.getBean(RecordingAuditStore.class).clear();
         context.getBean(FakeTokenStore.class).clear();
         context.getBean(SeedableConnectorCatalogStore.class).clear();
+        context.getBean(SeedableConnectorSpecStore.class).clear();
     }
 
     private RestClient client() {
@@ -232,6 +235,46 @@ class ConnectorApiTest {
         assertThat(password.get("secret")).isEqualTo(true);
         assertThat(password.containsKey("x-component")).isFalse();
         assertThat(password.containsKey("x-reactions")).isFalse();
+    }
+
+    @Test
+    void getsOneConnectorWithItsSpecSourceAndRuntimeAvailability() {
+        // The wire shape a consumer that cannot use the lossy projection depends on: the source text,
+        // the hash it is filed under, and whether the connector could actually run here.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+        String source = "{\"properties\":{\"id\":\"orders\"},\"zz\":1,\"a\":2}";
+        context.getBean(SeedableConnectorSpecStore.class).put("h", source.getBytes(StandardCharsets.UTF_8));
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("contentHash")).isEqualTo("h");
+        // Verbatim over the wire, key order included: a consumer reading this to build a form must see
+        // what the artifact declared, not a re-rendering of it.
+        assertThat(spec.get("text")).isEqualTo(source);
+        assertThat(spec.get("unavailable")).isNull();
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(false);
+        // The projection is untouched beside the new fields.
+        assertThat(detail.get("origin")).isEqualTo("registered");
+        assertThat((List<?>) detail.get("config")).hasSize(2);
+    }
+
+    @Test
+    void getsAConnectorWhoseSpecSourceWasNeverStoredWithTheReasonStated() {
+        // Nothing stored under the row's hash. The response must say so rather than carrying a bare
+        // null, which is the shape that invites a consumer to rebuild a spec out of the config.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("text")).isNull();
+        assertThat(spec.get("unavailable")).isEqualTo("not-stored");
+        assertThat(spec.get("contentHash")).isEqualTo("h");
     }
 
     @Test
@@ -409,8 +452,40 @@ class ConnectorApiTest {
         }
 
         @Bean
-        ConnectorCatalogView connectorCatalogView(SeedableConnectorCatalogStore store) {
-            return new ConnectorCatalogView(TapstateCatalog.load(), store);
+        ConnectorRegistry connectorRegistry() {
+            return new ConnectorRegistry() {
+                @Override
+                public RegistrationOutcome register(
+                        String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+                    throw new UnsupportedOperationException("this suite drives the read face, not registration");
+                }
+
+                @Override
+                public List<ConnectorRegistration> list() {
+                    return List.of();
+                }
+
+                @Override
+                public java.util.Optional<byte[]> artifact(String contentHash) {
+                    return java.util.Optional.empty();
+                }
+
+                @Override
+                public boolean hasArtifact(String contentHash) {
+                    return false;
+                }
+            };
+        }
+
+        @Bean
+        SeedableConnectorSpecStore connectorSpecStore() {
+            return new SeedableConnectorSpecStore();
+        }
+
+        @Bean
+        ConnectorCatalogView connectorCatalogView(
+                SeedableConnectorCatalogStore store, SeedableConnectorSpecStore specs, ConnectorRegistry registry) {
+            return new ConnectorCatalogView(TapstateCatalog.load(), store, specs, registry);
         }
     }
 
@@ -574,6 +649,26 @@ class ConnectorApiTest {
                 return Optional.empty();
             }
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
+        }
+    }
+
+    /** A connector spec source store a test can seed, mirroring the seedable catalog store. */
+    static final class SeedableConnectorSpecStore implements ConnectorSpecStore {
+
+        private final Map<String, byte[]> specs = new java.util.LinkedHashMap<>();
+
+        void clear() {
+            specs.clear();
+        }
+
+        @Override
+        public void put(String contentHash, byte[] spec) {
+            specs.put(contentHash, spec.clone());
+        }
+
+        @Override
+        public java.util.Optional<byte[]> get(String contentHash) {
+            return java.util.Optional.ofNullable(specs.get(contentHash)).map(byte[]::clone);
         }
     }
 }

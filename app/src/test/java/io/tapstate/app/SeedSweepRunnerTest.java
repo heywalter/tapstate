@@ -159,5 +159,10 @@ class SeedSweepRunnerTest {
         public Optional<byte[]> artifact(String contentHash) {
             return Optional.empty();
         }
+
+        @Override
+        public boolean hasArtifact(String contentHash) {
+            return artifact(contentHash).isPresent();
+        }
     }
 }

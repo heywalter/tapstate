@@ -127,4 +127,11 @@ public final class MongoConnectorRegistry implements ConnectorRegistry {
     private static TapstateException unreadable(String contentHash) {
         return new TapstateException(IoError.DOCUMENT_UNREADABLE, Map.of("id", String.valueOf(contentHash)), null);
     }
+
+    @Override
+    public boolean hasArtifact(String contentHash) {
+        Objects.requireNonNull(contentHash, "contentHash");
+        // The same GridFS lookup artifact() does, stopping before the download.
+        return StoreIo.call(() -> artifacts.find(Filters.eq("filename", contentHash)).first()) != null;
+    }
 }

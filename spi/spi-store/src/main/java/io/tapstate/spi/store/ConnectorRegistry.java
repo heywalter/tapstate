@@ -26,4 +26,11 @@ public interface ConnectorRegistry {
 
     /** The artifact bytes stored under a content hash, or empty if none is stored. */
     Optional<byte[]> artifact(String contentHash);
+
+    /**
+     * Whether bytes are stored under a content hash, without fetching them. A read face asking "can this
+     * connector actually run here?" needs the answer, not the artifact; {@link #artifact(String)} would
+     * pull tens of megabytes to compute a boolean.
+     */
+    boolean hasArtifact(String contentHash);
 }

@@ -1,5 +1,6 @@
 package io.tapstate.control.core;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -11,6 +12,9 @@ import io.tapstate.core.catalog.ConnectorCatalogEntry;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
 
 /**
  * The online catalog view: the bundled snapshot overlaid with the rows derived for registered
@@ -25,10 +29,16 @@ public final class ConnectorCatalogView {
 
     private final TapstateCatalog bundled;
     private final ConnectorCatalogStore store;
+    private final ConnectorSpecStore specStore;
+    private final ConnectorRegistry registry;
 
-    public ConnectorCatalogView(TapstateCatalog bundled, ConnectorCatalogStore store) {
+    public ConnectorCatalogView(
+            TapstateCatalog bundled, ConnectorCatalogStore store, ConnectorSpecStore specStore,
+            ConnectorRegistry registry) {
         this.bundled = Objects.requireNonNull(bundled, "bundled");
         this.store = Objects.requireNonNull(store, "store");
+        this.specStore = Objects.requireNonNull(specStore, "specStore");
+        this.registry = Objects.requireNonNull(registry, "registry");
     }
 
     /** The live online catalog = the bundled snapshot with registered rows overlaid (registered shadows). */
@@ -50,6 +60,36 @@ public final class ConnectorCatalogView {
         return summaries;
     }
 
+    /**
+     * Whether this connector could actually be loaded here: a registration exists AND its bytes are
+     * still in the store. Not the same question as {@code origin} — a bundled row is catalog metadata
+     * that says nothing about a jar being present, and a registration whose bytes went missing is
+     * registered but unrunnable. Answered without fetching the artifact.
+     */
+    private boolean runnable(String connectorId) {
+        for (ConnectorRegistration registration : registry.list()) {
+            if (registration.connectorId().equals(connectorId) && registry.hasArtifact(registration.contentHash())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Dereferences the hash a row already records as provenance into the stored spec source. The row is
+     * a lossy projection, so a consumer needing what the projection dropped reads this; when nothing is
+     * stored the absence is stated rather than left as a bare nothing.
+     */
+    private SpecSource specSourceFor(ConnectorCatalogEntry entry) {
+        String hash = entry.provenance().specContentHash();
+        if (hash == null) {
+            return SpecSource.unavailable(null, SpecSource.NOT_STORED);
+        }
+        return specStore.get(hash)
+                .map(bytes -> SpecSource.of(hash, new String(bytes, StandardCharsets.UTF_8)))
+                .orElseGet(() -> SpecSource.unavailable(hash, SpecSource.NOT_STORED));
+    }
+
     /** One live connector row with the normalized fields a safe dynamic form consumes. */
     public ConnectorDetail detail(String id) {
         Objects.requireNonNull(id, "id");
@@ -62,6 +102,7 @@ public final class ConnectorCatalogView {
             throw new TapstateException(
                     ConnectorCatalogError.NOT_FOUND, Map.of("connector", id), error);
         }
-        return ConnectorDetail.of(entry, registeredOrigin ? REGISTERED : BUNDLED);
+        return ConnectorDetail.of(
+                entry, registeredOrigin ? REGISTERED : BUNDLED, specSourceFor(entry), runnable(id));
     }
 }
