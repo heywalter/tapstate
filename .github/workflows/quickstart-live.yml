@@ -1,0 +1,154 @@
+# Quickstart live lane: the user's journey, executed.
+#
+# Everything else that guards the quickstart guards half of it. quickstart-smoke.sh runs the script with
+# TAPSTATE_QUICKSTART_PREPARE_ONLY=1, which returns before Docker, so the fetches, the generated workspace
+# and the refusals are covered while `docker compose up`, the online verbs and the snapshot check are not.
+# That uncovered half is the half that only exists after a release, and it is where this lane's defects
+# have kept turning up: an image reference no checkout could build, a runner label that had gone away, a
+# script that reported success having delivered nothing. So this job runs the whole thing, on a machine
+# that has never seen any of it.
+#
+# What makes the run honest:
+#   * A fresh runner is the clean machine. The job asserts that up front rather than assuming it, so a
+#     warmer runner cannot quietly turn "pulled from GHCR" into "already had it".
+#   * Nothing is built. The server arrives as a published multi-arch image, the CLI as a release tarball,
+#     the connector jars as release assets -- no mvn, no GraalVM. The image is checked to carry a repo
+#     digest, which a locally built image does not have.
+#   * The pipeline is proved by reading the target, not by trusting the script's own summary.
+#   * Change-data-capture is exercised the way the script's closing instructions tell a user to, with all
+#     three operations, because a pipeline that only ever inserts is not the claim being made.
+#
+# The script under test is the checkout's, standing in for the `curl -fLO` a user runs. That is
+# deliberate: a fix on a branch has to be exercised before it merges, and on main the two are the same
+# file. Everything the script then fetches -- the compose file, install.sh, the CLI, the jars -- still
+# comes from the pinned release, exactly as a user's run does.
+#
+# Nightly rather than per-PR: it depends on published release assets, so a red here can mean the release
+# is stale rather than the pull request is wrong, and blocking unrelated work on that would be a lie
+# about what failed.
+name: Quickstart live
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Off the hour, and clear of the real-connector lane, so the two do not queue against each other.
+    - cron: "40 20 * * *"
+
+concurrency:
+  group: quickstart-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quickstart-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The runner is a clean machine
+        # Assert it rather than assume it. If any of this is already here, the run would still pass while
+        # proving something weaker than "a user starting from nothing".
+        run: |
+          set -eu
+          if docker image inspect ghcr.io/tapstate/tapstate:0.1.0 >/dev/null 2>&1; then
+            echo "the server image is already present; this run would not prove it can be pulled" >&2
+            exit 1
+          fi
+          if docker volume ls --format '{{.Name}}' | grep -q quickstart; then
+            echo "quickstart volumes already exist; this run would start from someone else's state" >&2
+            exit 1
+          fi
+          echo "clean: no server image, no quickstart volumes"
+
+      - name: Run the quickstart from an empty directory
+        # The three commands a user runs, with the download standing in as a copy (see the header).
+        # Nothing else is done to the directory: any manual step here would be a step the user has to
+        # take too, and the whole claim is that there are none.
+        run: |
+          # pipefail is not in the default shell's flags, and without it `tee` decides the step's fate --
+          # which is the very failure this lane exists to catch, reintroduced one level up.
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/tapstate-demo"
+          cp deploy/quickstart/quickstart.sh "$RUNNER_TEMP/tapstate-demo/"
+          cd "$RUNNER_TEMP/tapstate-demo"
+          sh quickstart.sh 2>&1 | tee run.log
+          grep -q 'the target now holds' run.log
+
+      - name: The server was pulled, not built
+        # A registry pull leaves a repo digest; an image built locally has none. This is what "zero build"
+        # reduces to once the run is over, and it is checkable after the fact rather than by watching.
+        run: |
+          set -eu
+          digests="$(docker image inspect ghcr.io/tapstate/tapstate:0.1.0 --format '{{join .RepoDigests ","}}')"
+          [ -n "$digests" ] || { echo "the server image carries no repo digest -- it was not pulled" >&2; exit 1; }
+          echo "pulled: $digests"
+
+      - name: The target really holds the seeded rows
+        # Read the target directly. The script prints a count of its own, and a check that only re-reads
+        # the script's summary would pass for a script that printed it unconditionally.
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/tapstate-demo"
+          rows="$(docker compose exec -T mongo mongosh --quiet \
+            'mongodb://mongo:27017/warehouse?directConnection=true' \
+            --eval 'db.orders.countDocuments()' | tr -d '[:space:]')"
+          [ "$rows" = 5 ] || { echo "target holds $rows rows, expected the 5 seeded ones" >&2; exit 1; }
+          echo "snapshot: $rows rows in the target"
+
+      - name: Change-data-capture carries insert, update and delete
+        # The operations the script's closing instructions hand the user, in the same order. Each wait is
+        # bounded: an unbounded one would spend the job timeout to say nothing, where a bounded one names
+        # which of the three did not arrive.
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/tapstate-demo"
+          uri='mongodb://mongo:27017/warehouse?directConnection=true'
+          # Poll the target until $2 holds, or fail naming the operation $1.
+          await() {
+            i=0
+            while [ "$i" -lt 60 ]; do
+              if docker compose exec -T mongo mongosh --quiet "$uri" --eval "quit($2 ? 0 : 1)" >/dev/null 2>&1; then
+                echo "cdc: $1 reached the target"
+                return 0
+              fi
+              i=$((i + 1)); sleep 1
+            done
+            echo "cdc: $1 never reached the target" >&2
+            docker compose logs server --tail 100 >&2
+            exit 1
+          }
+          docker compose exec -T mysql mysql -uroot -psecret appdb -e "INSERT INTO orders VALUES (6,'frank',60.00);"
+          await insert 'db.orders.countDocuments({id:6})'
+          # The mapped fields have to follow the change too: a target row that merely exists proves the
+          # insert landed, not that the transform is still being applied to later changes.
+          docker compose exec -T mysql mysql -uroot -psecret appdb -e "UPDATE orders SET customer='franky' WHERE id=6;"
+          await update '(db.orders.findOne({id:6})||{}).customer_name=="franky" && (db.orders.findOne({id:6})||{}).label=="franky <orders>"'
+          docker compose exec -T mysql mysql -uroot -psecret appdb -e "DELETE FROM orders WHERE id=6;"
+          await delete '!db.orders.countDocuments({id:6})'
+
+      - name: Server log on failure
+        if: failure()
+        run: |
+          cd "$RUNNER_TEMP/tapstate-demo" || exit 0
+          docker compose ps -a || true
+          docker compose logs server --tail 300 || true
+
+      - name: Teardown leaves nothing but the images
+        # The script's own closing instructions, run as printed, and then checked. "Back to a clean
+        # machine" is a promise the script makes to the user in writing, so it is one this lane keeps.
+        if: always()
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/tapstate-demo" 2>/dev/null || exit 0
+          docker compose down -v
+          cd "$RUNNER_TEMP" && rm -rf tapstate-demo
+          for what in \
+            "containers:$(docker ps -a --format '{{.Names}}' | grep tapstate-demo || true)" \
+            "volumes:$(docker volume ls --format '{{.Name}}' | grep quickstart || true)" \
+            "networks:$(docker network ls --format '{{.Name}}' | grep tapstate-demo || true)"; do
+            case "$what" in
+              *:) : ;;
+              *) echo "teardown left $what behind" >&2; exit 1 ;;
+            esac
+          done
+          echo "teardown: nothing left but the pulled images"

@@ -34,8 +34,11 @@ import java.util.concurrent.Callable;
  * structural slot but flagged misplaced, so the listing never claims the wrong shape. Both are left
  * to {@code validate} to diagnose.
  */
-@Command(name = "ls",
-        description = "List workspace resources by kind, or limit to a single kind.")
+@Command(name = "ls", mixinStandardHelpOptions = true,
+        description = {
+                "List workspace resources by kind, or limit to a single kind.",
+                "This is the local listing. In a connected session `ls` lists what the server holds"
+                        + " instead, and takes no options there yet."})
 final class LsCmd implements Callable<Integer> {
 
     /** Exit code when the kind argument is not one of the known resource kinds. */

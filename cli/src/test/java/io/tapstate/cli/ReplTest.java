@@ -306,6 +306,18 @@ class ReplTest {
     }
 
     @Test
+    void helpTakesTheNameOfAVerbAndDescribesIt() {
+        // bare `help` is a builtin handled here, but `help <verb>` falls through to the command table --
+        // where it used to be an unmatched argument answered with a spelling guess. Asking about one verb
+        // is the more common question of the two, and it was the one that did not work.
+        Harness h = harness();
+        assertThat(h.repl().dispatch("help status")).isTrue();
+        assertThat(h.sink().toString())
+                .contains("Usage: tapstate status")
+                .contains(Cli.VERB_HELP.get("status").summary());
+    }
+
+    @Test
     void verbsDispatchThroughTheSameTable() {
         Harness h = harness();
         assertThat(h.repl().dispatch("explain")).isTrue();
@@ -2612,5 +2624,197 @@ class ReplTest {
         assertThat(out).contains("connection lost");        // failover reported the loss
         assertThat(out).doesNotContain("request failed");   // and it is not double-reported
         assertThat(h.repl().session().isConnected()).isFalse();
+    }
+
+    // --- exit codes: a dispatched line yields the code a one-shot invocation would exit with -------
+
+    @Test
+    void aSuccessfulOnlineVerbYieldsSuccess() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = new GetOutcome.Found(
+                new RemoteArtifact("src_kfk", "source", "kind: source\nid: src_kfk\n"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        h.repl().dispatch("get src_kfk");
+        assertThat(h.repl().lastExitCode()).isZero();
+    }
+
+    @Test
+    void aRefusedOnlineVerbYieldsTheDiagnosticCode() {
+        // a coded refusal from the server is the same class of outcome as a coded local diagnostic, so it
+        // exits the same way -- a script that reads only the exit status must not read a refusal as success
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.lifecycleOutcome = new LifecycleOutcome.Rejected(
+                "pipeline.illegal-transition", "The pipeline cannot start from this state.");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        h.repl().dispatch("start sync_orders");
+        assertThat(h.repl().lastExitCode()).isEqualTo(1);
+    }
+
+    @Test
+    void anOnlineVerbMissingItsOperandYieldsTheUsageCode() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        h.repl().dispatch("start");
+        assertThat(h.repl().lastExitCode()).isEqualTo(2);
+    }
+
+    @Test
+    void anUnauthenticatedOnlineVerbYieldsTheUnavailableCode() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = harness(Path.of("tap-work"), client, new ScriptedPrompter());
+        h.repl().dispatch("connect node1:7900");   // connected, never logged in
+        h.repl().dispatch("get x");
+        assertThat(h.repl().lastExitCode()).isEqualTo(Cli.EXIT_VERB_UNAVAILABLE);
+    }
+
+    @Test
+    void anOfflineVerbKeepsTheCodeItsCommandReturned() {
+        // the offline path already had an exit code -- picocli returns one from execute -- and the REPL
+        // discarded it. It has to survive too, or a one-shot `validate` would report success on a
+        // workspace it had just called invalid
+        Harness h = harness();
+        h.repl().dispatch("validate does-not-exist");
+        assertThat(h.repl().lastExitCode()).isNotZero();
+    }
+
+    @Test
+    void aBuiltinThatSucceedsYieldsSuccess() {
+        Harness h = harness();
+        h.repl().dispatch("pwd");
+        assertThat(h.repl().lastExitCode()).isZero();
+    }
+
+    @Test
+    void aBuiltinGivenNoOperandYieldsTheUsageCode() {
+        Harness h = harness();
+        h.repl().dispatch("cd");
+        assertThat(h.repl().lastExitCode()).isEqualTo(2);
+    }
+
+    // --- one-line launch: -c / -u / -p establish the session before anything runs ------------------
+
+    @Test
+    void aOneLineLaunchConnectsSignsInAndRunsTheCommand() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.loginOutcome = new LoginOutcome.Success("jwt-tok");
+        client.listOutcome = new ListOutcome.Listed(List.of(
+                new RemoteArtifact("src_kfk", "source", "")));
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin", "-p", "pw", "ls");
+        int code = Cli.runSession(launch, client, () -> new ScriptedPrompter());
+        assertThat(code).isZero();
+        // the whole chain ran off one line: probe, credential exchange, then the verb against the server
+        assertThat(client.loginCalls).containsExactly("admin:pw@http://node1:7900");
+        assertThat(client.listCalls).hasSize(1);
+    }
+
+    @Test
+    void aOneShotLaunchKeepsItsConnectionNoiseOffTheCommandsOutput() {
+        // the point of the one-line form is piping the command's output somewhere; two lines about
+        // having connected, ahead of it, land in whatever is reading the result
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.loginOutcome = new LoginOutcome.Success("jwt-tok");
+        client.listOutcome = new ListOutcome.Listed(List.of(new RemoteArtifact("src", "source", "")));
+        StringWriter sink = new StringWriter();
+        Repl repl = replWritingTo(sink, client);
+        repl.signIn("node1:7900", "admin", () -> "pw", true);
+        assertThat(sink.toString()).doesNotContain("connected to").doesNotContain("logged in as");
+    }
+
+    @Test
+    void aSessionLaunchStillConfirmsThatItConnected() {
+        // in a session those lines are the answer to what was just typed, so they stay
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.loginOutcome = new LoginOutcome.Success("jwt-tok");
+        StringWriter sink = new StringWriter();
+        Repl repl = replWritingTo(sink, client);
+        repl.signIn("node1:7900", "admin", () -> "pw", false);
+        assertThat(sink.toString()).contains("connected to").contains("logged in as");
+    }
+
+    private static Repl replWritingTo(StringWriter sink, FakeControlPlane client) {
+        CommandLine cl = Cli.newCommandLine();
+        PrintWriter pw = new PrintWriter(sink);
+        cl.setOut(pw);
+        cl.setErr(pw);
+        return new Repl(cl, Path.of("tap-work"), client, new ScriptedPrompter());
+    }
+
+    @Test
+    void aOneLineLaunchYieldsTheCommandsOwnStatus() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.loginOutcome = new LoginOutcome.Success("jwt-tok");
+        client.getOutcome = new GetOutcome.Absent();
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin", "-p", "pw", "get", "nope");
+        assertThat(Cli.runSession(launch, client, () -> new ScriptedPrompter())).isNotZero();
+    }
+
+    @Test
+    void aLaunchThatCannotConnectStopsBeforeRunningTheCommand() {
+        FakeControlPlane client = new FakeControlPlane();   // nothing is healthy
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin", "-p", "pw", "ls");
+        int code = Cli.runSession(launch, client, () -> new ScriptedPrompter());
+        // running the verb anyway would report a missing connection rather than why there is none
+        assertThat(code).isNotZero();
+        assertThat(client.loginCalls).isEmpty();
+        assertThat(client.listCalls).isEmpty();
+    }
+
+    @Test
+    void aLaunchThatCannotSignInStopsBeforeRunningTheCommand() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.loginOutcome = new LoginOutcome.Rejected("auth.bad-credentials", "Wrong password.");
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin", "-p", "nope", "ls");
+        assertThat(Cli.runSession(launch, client, () -> new ScriptedPrompter())).isNotZero();
+        assertThat(client.listCalls).isEmpty();
+    }
+
+    @Test
+    void connectingWithoutAUserLandsConnectedButNotSignedIn() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "ls");
+        Cli.runSession(launch, client, () -> new ScriptedPrompter());
+        // connecting alone is a usable state, so it is not an error -- but nothing was signed in with
+        assertThat(client.loginCalls).isEmpty();
+    }
+
+    @Test
+    void thePasswordIsOnlyAskedForOnceTheConnectionIsMade() {
+        // asking for a password to a server that is not there wastes the one interaction the user has
+        FakeControlPlane client = new FakeControlPlane();   // nothing is healthy
+        ScriptedPrompter prompter = new ScriptedPrompter("secret");
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin")
+                .withEnv(name -> null);
+        Cli.runSession(launch, client, () -> prompter);
+        assertThat(client.loginCalls).isEmpty();
+    }
+
+    @Test
+    void anOmittedPasswordIsAskedForWhenTheEnvironmentHasNone() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.loginOutcome = new LoginOutcome.Success("jwt-tok");
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin", "ls")
+                .withEnv(name -> null);
+        Cli.runSession(launch, client, () -> new ScriptedPrompter("asked"));
+        assertThat(client.loginCalls).containsExactly("admin:asked@http://node1:7900");
+    }
+
+    @Test
+    void thePasswordFlagAlwaysTakesItsValueSoAVerbIsNeverSwallowed() {
+        // -p once had an optional value, and `-p ls` then signed in with the password "ls" and ran
+        // nothing. The command has to survive whatever precedes it
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin", "-p", "pw", "ls");
+        assertThat(launch.command()).containsExactly("ls");
+    }
+
+    @Test
+    void anOmittedPasswordFallsBackToTheEnvironmentBeforeAsking() {
+        // the point of the fallback is that a script need not put the password in argv, where the
+        // process list and the shell history can both read it
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.loginOutcome = new LoginOutcome.Success("jwt-tok");
+        LaunchOptions launch = LaunchOptions.parse("-c", "node1:7900", "-u", "admin", "ls")
+                .withEnv(name -> "TAPSTATE_PASSWORD".equals(name) ? "from-env" : null);
+        Cli.runSession(launch, client, () -> new ScriptedPrompter("asked"));
+        assertThat(client.loginCalls).containsExactly("admin:from-env@http://node1:7900");
     }
 }

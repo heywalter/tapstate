@@ -15,7 +15,7 @@ import java.util.concurrent.Callable;
  * reserved, but it must say what is actually true of it: it does not exist yet. Reporting "not
  * connected" here would be false in both states — connecting does not implement it.
  */
-@Command(description = "(not implemented yet)")
+@Command(mixinStandardHelpOptions = true, description = "(not implemented yet)")
 final class UnimplementedVerb implements Callable<Integer> {
 
     @Spec
@@ -25,6 +25,10 @@ final class UnimplementedVerb implements Callable<Integer> {
      * Swallows whatever the verb was given. A verb with no implementation has no argument grammar to
      * enforce yet, and rejecting the operands would report a usage error about a command that does not
      * exist — burying the only fact the user needs.
+     *
+     * <p>The standard help mixin above is the exception: its options are declared, so they are matched
+     * before anything reaches here. A reserved verb is exactly the one a user needs described, since
+     * "not implemented yet" only answers the question once they know what it was reserved for.
      */
     @Unmatched
     List<String> ignored;

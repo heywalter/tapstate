@@ -228,15 +228,24 @@ main() {
     # not an "it should have worked". A fresh snapshot of the seeded rows is quick, but the read still
     # retries so a slow first run is not misreported as an empty target.
     echo 'quickstart: waiting for the snapshot to reach the target'
+    seeded=5    # rows the demo seed puts in MySQL; the target is complete once it holds them all
     rows=0; i=0
     while [ "$i" -lt 30 ]; do
         rows="$(docker compose exec -T mongo mongosh --quiet \
             'mongodb://mongo:27017/warehouse?directConnection=true' \
             --eval 'db.orders.countDocuments()' 2>/dev/null | tr -d '[:space:]')"
         case "$rows" in ''|*[!0-9]*) rows=0 ;; esac
-        [ "$rows" -ge 5 ] && break
+        [ "$rows" -ge "$seeded" ] && break
         i=$((i + 1)); sleep 2
     done
+
+    # Falling out of that loop short is a failed run, and it has to be said with a non-zero exit. The
+    # REPL above cannot say it: an interactive session does not end because one command was rejected,
+    # so it exits 0 whether the verbs took or errored, and set -e sees nothing wrong. This count is the
+    # only evidence the script has that a pipeline is moving data. The stack is left standing rather
+    # than torn down -- the server log is the next thing to read, and a teardown would take it along.
+    [ "$rows" -ge "$seeded" ] \
+        || die "the snapshot did not reach the target ($rows of $seeded rows); inspect it with: docker compose logs server"
     printf 'quickstart: the target now holds %s rows (MySQL orders -> MongoDB warehouse.orders)\n' "$rows"
 
     print_next_steps

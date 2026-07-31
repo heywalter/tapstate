@@ -125,6 +125,21 @@
         </configuration>
       </plugin>
 
+      <!-- What `-V` prints is a compile-time constant in Cli, so that the version costs neither a jar
+           manifest nor a bundled resource in the native image (a manifest is absent there, and a
+           resource would need its own IncludeResources glob). The cost of a constant is that a release
+           can leave it behind, shipping a binary that misreports its own version. Handing the real
+           project version to the tests turns that drift into a red build instead. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <tapstate.project.version>${project.version}</tapstate.project.version>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+
       <!-- R6 coarse gate: only io.tapstate modules + picocli + jline on the compile/runtime surface.
            The fine-grained twin is the arch-tests R6 ArchUnit rule. -->
       <plugin>

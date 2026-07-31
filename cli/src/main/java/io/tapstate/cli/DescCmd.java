@@ -44,7 +44,7 @@ import java.util.concurrent.Callable;
  * an unreadable file is described as such rather than dropped, and a file whose declared kind does not
  * match its directory is flagged misplaced instead of being rendered with the wrong shape.
  */
-@Command(name = "desc",
+@Command(name = "desc", mixinStandardHelpOptions = true,
         description = "Describe one workspace resource: summary, validation status and references.")
 final class DescCmd implements Callable<Integer> {
 
