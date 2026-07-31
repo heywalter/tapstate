@@ -146,6 +146,7 @@ class SeedConnectorSweepTest {
     private static SeedConnectorSweep sweepOver(InMemoryConnectorRegistry registry) {
         CapabilityDeriver deriver = id -> new ConnectorCapabilities(Set.of("batch_read_function"));
         return new SeedConnectorSweep(new ConnectorArtifactRegistrar(
-                registry, new ConnectorIntrospector(), deriver, new InMemoryConnectorCatalogStore()));
+                registry, new ConnectorIntrospector(), deriver,
+                new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore()));
     }
 }

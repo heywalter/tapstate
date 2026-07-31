@@ -528,6 +528,7 @@ class StorePortTest {
         private final Map<String, ConnectorRegistration> registrations = new HashMap<>();
         private final Map<String, byte[]> connectorArtifacts = new HashMap<>();
         private final Map<String, ConnectorCatalogEntry> connectorCatalogRows = new HashMap<>();
+        private final Map<String, byte[]> connectorSpecs = new HashMap<>();
         private final Map<String, ConnectionTestResult> testResults = new HashMap<>();
         private final Map<String, DesiredState> desired = new HashMap<>();
         private final Map<String, Observation> observations = new HashMap<>();
@@ -666,6 +667,21 @@ class StorePortTest {
                 @Override
                 public List<ConnectorCatalogEntry> list() {
                     return new ArrayList<>(connectorCatalogRows.values());
+                }
+            };
+        }
+
+        @Override
+        public ConnectorSpecStore connectorSpecs() {
+            return new ConnectorSpecStore() {
+                @Override
+                public void put(String contentHash, byte[] spec) {
+                    connectorSpecs.put(contentHash, spec.clone());
+                }
+
+                @Override
+                public Optional<byte[]> get(String contentHash) {
+                    return Optional.ofNullable(connectorSpecs.get(contentHash)).map(byte[]::clone);
                 }
             };
         }

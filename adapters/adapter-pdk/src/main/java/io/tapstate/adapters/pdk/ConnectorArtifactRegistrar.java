@@ -12,6 +12,7 @@ import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistrar;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ContentHash;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
@@ -58,13 +59,16 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
     private final ConnectorIntrospector introspector;
     private final CapabilityDeriver capabilityDeriver;
     private final ConnectorCatalogStore catalogStore;
+    private final ConnectorSpecStore specStore;
 
     public ConnectorArtifactRegistrar(ConnectorRegistry registry, ConnectorIntrospector introspector,
-                                      CapabilityDeriver capabilityDeriver, ConnectorCatalogStore catalogStore) {
+                                      CapabilityDeriver capabilityDeriver, ConnectorCatalogStore catalogStore,
+                                      ConnectorSpecStore specStore) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.introspector = Objects.requireNonNull(introspector, "introspector");
         this.capabilityDeriver = Objects.requireNonNull(capabilityDeriver, "capabilityDeriver");
         this.catalogStore = Objects.requireNonNull(catalogStore, "catalogStore");
+        this.specStore = Objects.requireNonNull(specStore, "specStore");
     }
 
     /** Registers the artifact at {@code artifact} if its content hash is not already registered. */
@@ -195,12 +199,22 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
      */
     private void persistCatalogRow(
             String connectorId, IntrospectedConnector introspected, Object specTree, RegistrationOutcome outcome) {
-        if (!outcome.newlyRegistered() && catalogStore.get(connectorId).isPresent()) {
+        byte[] specSource = introspected.spec().getBytes(StandardCharsets.UTF_8);
+        String specHash = ContentHash.of(specSource);
+        if (!outcome.newlyRegistered()
+                && catalogStore.get(connectorId).isPresent()
+                && specStore.get(specHash).isPresent()) {
+            // Both artifacts of this registration are already stored, so there is nothing to redo. The
+            // spec source is part of the condition, not just the row: a connector registered before the
+            // source was kept has a row but no source, and that gap is what a re-register backfills.
             return;
         }
+        // Stored before derivation, which may fail for a connector that will not load here: the source
+        // is read straight off the artifact and does not depend on the connector loading, so there is no
+        // reason to lose it when the capability row cannot be built.
+        specStore.put(specHash, specSource);
         ConnectorCapabilities capabilities = capabilityDeriver.derive(connectorId);
         NormalizedSpec normalized = SpecNormalizer.normalize(asSpecObject(specTree));
-        String specHash = ContentHash.of(introspected.spec().getBytes(StandardCharsets.UTF_8));
         ConnectorCatalogEntry row = CatalogEntryAssembler.assemble(
                 normalized, capabilities.capabilityIds(), null, introspected.specPath(), specHash);
         catalogStore.upsert(row);

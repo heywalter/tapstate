@@ -139,7 +139,7 @@ class ConnectorArtifactRegistrarTest {
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
                 registry, new ConnectorIntrospector(),
-                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows);
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows, new InMemoryConnectorSpecStore());
 
         assertThatThrownBy(() -> registrar.register(jar, RegistrationSource.REGISTER))
                 .isInstanceOf(TapstateException.class)
@@ -164,13 +164,63 @@ class ConnectorArtifactRegistrarTest {
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
                 new InMemoryConnectorRegistry(), new ConnectorIntrospector(),
-                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows);
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows, new InMemoryConnectorSpecStore());
 
         registrar.register(jar, RegistrationSource.REGISTER);
 
         ConnectorCatalogEntry row = rows.get("mysql").orElseThrow();
         assertThat(row.id()).isEqualTo("mysql");
         assertThat(row.modes()).contains(SourceMode.SNAPSHOT);
+    }
+
+    @Test
+    void storesTheSpecSourceVerbatimUnderTheHashTheCatalogRowPointsAt(@TempDir Path dir) throws Exception {
+        // Normalization is lossy — it keeps the fields a safe form consumes and drops the rest. The
+        // source is kept alongside it, keyed by the very hash the row's provenance already carries, so
+        // that pointer can be dereferenced without reopening the jar.
+        Path jar = Synthetic.seedableMysqlConnector(dir);
+        InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
+        InMemoryConnectorSpecStore specs = new InMemoryConnectorSpecStore();
+        registrarOver(new InMemoryConnectorRegistry(), rows, specs)
+                .register(jar, RegistrationSource.REGISTER);
+
+        ConnectorCatalogEntry row = rows.get("mysql").orElseThrow();
+        // Byte-exact, not "equivalent JSON": a re-serialized copy would silently lose key order,
+        // unknown top-level keys and any type table the normalizer has no field for — which is the
+        // whole reason the source is kept.
+        assertThat(specs.get(row.provenance().specContentHash()))
+                .contains(specEntryBytes(jar, "mysql-spec.json"));
+        // The normalized row stands unchanged beside it: the source is an addition, not a replacement.
+        assertThat(row.id()).isEqualTo("mysql");
+        assertThat(row.modes()).contains(SourceMode.SNAPSHOT);
+    }
+
+    @Test
+    void reRegisteringBackfillsTheSpecSourceWhenOnlyTheRowIsAlreadyStored(@TempDir Path dir) throws Exception {
+        // A connector registered before sources were kept has bytes and a row but no source. A
+        // re-register must notice the missing source rather than stopping at "the row is there, nothing
+        // to do" — otherwise the hash every such row already carries stays permanently dangling.
+        Path jar = Synthetic.seedableMysqlConnector(dir);
+        InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
+        InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
+        registrarOver(registry, rows, new InMemoryConnectorSpecStore())
+                .register(jar, RegistrationSource.SEED);
+        InMemoryConnectorSpecStore specs = new InMemoryConnectorSpecStore();
+
+        RegistrationOutcome outcome = registrarOver(registry, rows, specs)
+                .register(jar, RegistrationSource.SEED);
+
+        assertThat(outcome.newlyRegistered()).isFalse();
+        ConnectorCatalogEntry row = rows.get("mysql").orElseThrow();
+        assertThat(specs.get(row.provenance().specContentHash()))
+                .contains(specEntryBytes(jar, "mysql-spec.json"));
+    }
+
+    /** The bytes of one entry inside a jar, read independently of the registrar's own reading of it. */
+    private static byte[] specEntryBytes(Path jar, String entryName) throws Exception {
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile())) {
+            return zip.getInputStream(zip.getEntry(entryName)).readAllBytes();
+        }
     }
 
     @Test
@@ -184,7 +234,8 @@ class ConnectorArtifactRegistrarTest {
             return new ConnectorCapabilities(Set.of("batch_read_function"));
         };
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
-                new InMemoryConnectorRegistry(), new ConnectorIntrospector(), counting, new InMemoryConnectorCatalogStore());
+                new InMemoryConnectorRegistry(), new ConnectorIntrospector(), counting,
+                new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore());
 
         registrar.register(jar, RegistrationSource.SEED);
         registrar.register(jar, RegistrationSource.SEED);
@@ -204,7 +255,7 @@ class ConnectorArtifactRegistrarTest {
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
                 registry, new ConnectorIntrospector(),
-                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows);
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows, new InMemoryConnectorSpecStore());
 
         RegistrationOutcome outcome = registrar.register(jar, RegistrationSource.SEED);
 
@@ -225,7 +276,8 @@ class ConnectorArtifactRegistrarTest {
         };
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
-                new InMemoryConnectorRegistry(), new ConnectorIntrospector(), failing, rows);
+                new InMemoryConnectorRegistry(), new ConnectorIntrospector(), failing, rows,
+                new InMemoryConnectorSpecStore());
 
         RegistrationOutcome outcome = registrar.register(jar, RegistrationSource.REGISTER);
 
@@ -240,12 +292,15 @@ class ConnectorArtifactRegistrarTest {
         CapabilityDeriver deriver = id -> new ConnectorCapabilities(Set.of());
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
 
-        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(null, introspector, deriver, rows));
-        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(registry, null, deriver, rows));
-        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(registry, introspector, null, rows));
-        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(registry, introspector, deriver, null));
+        InMemoryConnectorSpecStore specs = new InMemoryConnectorSpecStore();
 
-        ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(registry, introspector, deriver, rows);
+        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(null, introspector, deriver, rows, specs));
+        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(registry, null, deriver, rows, specs));
+        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(registry, introspector, null, rows, specs));
+        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(registry, introspector, deriver, null, specs));
+        assertThatNullPointerException().isThrownBy(() -> new ConnectorArtifactRegistrar(registry, introspector, deriver, rows, null));
+
+        ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(registry, introspector, deriver, rows, specs);
         assertThatNullPointerException().isThrownBy(() -> registrar.register((Path) null, RegistrationSource.SEED));
         assertThatNullPointerException().isThrownBy(() -> registrar.register(dir.resolve("x.jar"), null));
         assertThatNullPointerException().isThrownBy(() -> registrar.register((byte[]) null, RegistrationSource.SEED));
@@ -253,7 +308,12 @@ class ConnectorArtifactRegistrarTest {
     }
 
     private static ConnectorArtifactRegistrar registrarOver(InMemoryConnectorRegistry registry) {
+        return registrarOver(registry, new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore());
+    }
+
+    private static ConnectorArtifactRegistrar registrarOver(
+            InMemoryConnectorRegistry registry, InMemoryConnectorCatalogStore rows, InMemoryConnectorSpecStore specs) {
         return new ConnectorArtifactRegistrar(registry, new ConnectorIntrospector(),
-                id -> new ConnectorCapabilities(Set.of("batch_read_function")), new InMemoryConnectorCatalogStore());
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows, specs);
     }
 }
