@@ -155,6 +155,19 @@ class MongoObservationStoreTest {
     }
 
     @Test
+    void toObservationOnAFailureCodeStoredAsANonStringIsDocumentUnreadable() {
+        // Document.getString is an unchecked cast (get(key, String.class)): a wrong-typed code must surface
+        // as this same coded diagnostic, not escape as a bare ClassCastException while reconstructing.
+        Document corrupt = new Document("_id", "p1").append("state", "FAILED")
+                .append("failure", new Document("code", 42).append("params", new Document()));
+
+        Throwable thrown = catchThrowable(() -> MongoObservationStore.toObservation(corrupt));
+
+        assertThat(thrown).isInstanceOf(TapstateException.class);
+        assertThat(((TapstateException) thrown).code()).isEqualTo(IoError.DOCUMENT_UNREADABLE);
+    }
+
+    @Test
     void toObservationOnADocumentMissingStateIsDocumentUnreadable() {
         Document corrupt = new Document("_id", "p1").append("metrics", new Document());
 

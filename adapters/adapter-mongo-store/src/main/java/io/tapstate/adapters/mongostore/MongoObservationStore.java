@@ -113,11 +113,11 @@ public final class MongoObservationStore implements ObservationStore {
         if (!(raw instanceof Document failure)) {
             throw corrupt(id);
         }
-        String code = failure.getString("code");
-        if (code == null) {
-            // A failure no read face can name is corruption, not a null code handed on to the renderer.
-            throw corrupt(id);
-        }
+        // requireString covers both a missing code and a wrong-typed one: Document.getString is an
+        // unchecked cast (get(key, String.class)), so a non-string code (store corruption written by a
+        // future or foreign writer) would otherwise escape as a bare ClassCastException instead of this
+        // same coded diagnostic every other corrupt cell in this class already gets.
+        String code = requireString(failure.get("code"), id);
         Object rawParams = failure.get("params");
         if (rawParams == null) {
             return new ObservationFailure(code, Map.of());
