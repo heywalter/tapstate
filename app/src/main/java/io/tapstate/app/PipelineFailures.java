@@ -23,6 +23,17 @@ final class PipelineFailures {
     /** How deep to look for a coded cause before giving up; a chain longer than this is a cycle or a bug. */
     private static final int MAX_CAUSE_DEPTH = 32;
 
+    /**
+     * How much of an uncoded cause's description this carries. Bounding matters specifically because
+     * Jet can hand back a "failure" whose message is not a message at all: once a job's live context is
+     * gone, {@code JobResult.getFailureAsThrowable()} reconstructs a mock throwable from the stored
+     * failure text, which is a full {@code printStackTrace()} dump (measured: 1400+ characters, 17+
+     * lines) — every other free-text detail in this codebase bounds itself (e.g. {@code
+     * TransformErrors.detail}), this is the one path that read the raw driver/framework message
+     * unbounded.
+     */
+    private static final int MAX_DESCRIPTION_LENGTH = 200;
+
     private PipelineFailures() {
     }
 
@@ -55,14 +66,27 @@ final class PipelineFailures {
     }
 
     /**
-     * What the run died of, in one line: the throwable's message, or its type when it has none. A declared
-     * placeholder always gets a value, and an empty string would tell the user nothing.
+     * What the run died of, in one bounded line: the throwable's message, or its type when it has none.
+     * A declared placeholder always gets a value, and an empty string would tell the user nothing. Bounded
+     * to its first line and {@link #MAX_DESCRIPTION_LENGTH} characters, so a message that is itself a
+     * multi-line stack-trace dump never rides through whole.
      */
     private static String describe(Throwable failure) {
         if (failure == null) {
             return "unknown";
         }
         String message = failure.getMessage();
-        return message == null || message.isBlank() ? failure.getClass().getSimpleName() : message;
+        String description = message == null || message.isBlank() ? failure.getClass().getSimpleName() : message;
+        return bound(description);
+    }
+
+    /** Caps free text to its first line and {@link #MAX_DESCRIPTION_LENGTH} characters, marking either cut. */
+    private static String bound(String text) {
+        int newline = text.indexOf('\n');
+        boolean multiline = newline >= 0;
+        String firstLine = multiline ? text.substring(0, newline) : text;
+        boolean overlong = firstLine.length() > MAX_DESCRIPTION_LENGTH;
+        String capped = overlong ? firstLine.substring(0, MAX_DESCRIPTION_LENGTH) : firstLine;
+        return multiline || overlong ? capped + " …" : capped;
     }
 }

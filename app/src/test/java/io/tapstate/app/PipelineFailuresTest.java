@@ -67,4 +67,29 @@ class PipelineFailuresTest {
 
         assertThat(failure.params().keySet()).containsExactlyInAnyOrderElementsOf(EngineError.JOB_FAILED.placeholders());
     }
+
+    @Test
+    void aMultiLineCauseIsCutToItsFirstLine() {
+        // The shape Jet hands back once a job's live context is gone and it can only reconstruct a mock
+        // throwable from stored text: the "message" is a full printStackTrace() dump, several lines long.
+        String stackTraceShaped = "FakeCodedException: connector.write-failed"
+                + "\n\tat com.hazelcast.jet.impl.execution.TaskletExecutionService.handleTaskletExecutionError"
+                + "\n\tat com.hazelcast.jet.impl.execution.TaskletExecutionService.access$0";
+        ObservationFailure failure = PipelineFailures.of("orders", new RuntimeException(stackTraceShaped));
+
+        String cause = failure.params().get("cause");
+        assertThat(cause).isEqualTo("FakeCodedException: connector.write-failed …");
+        assertThat(cause).doesNotContain("\n").doesNotContain("TaskletExecutionService");
+    }
+
+    @Test
+    void aVeryLongSingleLineCauseIsCappedToABoundedLength() {
+        String longMessage = "x".repeat(500);
+
+        ObservationFailure failure = PipelineFailures.of("orders", new RuntimeException(longMessage));
+
+        String cause = failure.params().get("cause");
+        // Capped length plus the truncation marker, not the full 500 characters.
+        assertThat(cause).hasSize(200 + 2).endsWith(" …");
+    }
 }
