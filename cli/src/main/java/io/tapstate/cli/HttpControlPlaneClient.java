@@ -593,18 +593,28 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         }
     }
 
-    /** The status decoded from a 200 body, or {@code null} unless it carries a string id and a string state. */
+    /**
+     * The status decoded from a 200 body, or {@code null} unless it carries a string id and a string
+     * state -- and, when it carries a {@code failure} block at all, one shaped like a real one. A present
+     * but malformed failure block (not an object, or missing/wrong-typed code) is a regression of the
+     * status contract, not a healthy pipeline: it must not silently decode the same way an absent failure
+     * block does, so the whole body is treated as shape-wrong here rather than a fabricated healthy read.
+     */
     private static StatusOutcome.Found statusFound(String body) {
         if (JsonReader.parse(body) instanceof Map<?, ?> m
                 && m.get("pipelineId") instanceof String id
                 && m.get("state") instanceof String state) {
-            if (m.get("failure") instanceof Map<?, ?> failure && failure.get("code") instanceof String code) {
-                // The message is the server's rendering of that code; when it is absent the code still names
-                // the diagnosis, so it stands in rather than the whole read degrading to unreachable.
-                String message = failure.get("message") instanceof String rendered ? rendered : code;
-                return new StatusOutcome.Found(id, state, code, message);
+            Object rawFailure = m.get("failure");
+            if (rawFailure == null) {
+                return new StatusOutcome.Found(id, state);
             }
-            return new StatusOutcome.Found(id, state);
+            if (!(rawFailure instanceof Map<?, ?> failure) || !(failure.get("code") instanceof String code)) {
+                return null;
+            }
+            // The message is the server's rendering of that code; when it is absent the code still names
+            // the diagnosis, so it stands in rather than the whole read degrading to unreachable.
+            String message = failure.get("message") instanceof String rendered ? rendered : code;
+            return new StatusOutcome.Found(id, state, code, message);
         }
         return null;
     }
@@ -716,7 +726,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         stream(wsUri(baseUrl, "/api/pipelines/" + pipelineId + "/status/watch"), credential, stop, frame -> {
             StatusOutcome.Found found = statusFound(frame);
             if (found != null) {
-                sink.state(found.pipelineId(), found.state());
+                sink.state(found.pipelineId(), found.state(), found.failureCode(), found.failureMessage());
             }
         });
     }

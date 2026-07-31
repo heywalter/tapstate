@@ -1171,6 +1171,35 @@ class HttpControlPlaneClientTest {
     }
 
     @Test
+    void statusTreatsAFailureBlockMissingItsCodeAsUnreachableNotAHealthyState() throws Exception {
+        // A failure block present but missing its code is a regression of the status contract (the e2e
+        // reader over this identical shape throws for exactly this reason) -- it must not silently decode
+        // the same way an absent failure block does, which is precisely the encoding of a healthy pipeline.
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":{\"params\":{\"cause\":\"sink refused\"}}}",
+                new AtomicReference<>());
+        try {
+            assertThat(new HttpControlPlaneClient().status(baseOf(server), "tok", "pl1"))
+                    .isInstanceOf(StatusOutcome.Unreachable.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void statusTreatsANonObjectFailureBlockAsUnreachableNotAHealthyState() throws Exception {
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":\"engine.job-failed\"}",
+                new AtomicReference<>());
+        try {
+            assertThat(new HttpControlPlaneClient().status(baseOf(server), "tok", "pl1"))
+                    .isInstanceOf(StatusOutcome.Unreachable.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void metricsTreatsAShapeWrong200AsUnreachableNotAFabricatedMap() throws Exception {
         // A 200 with a non-object metrics field is not a usable metrics reply; it must not be read as an
         // empty (honest-empty is a real object), so it resolves to unreachable rather than a faked empty map.
