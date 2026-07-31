@@ -2,9 +2,9 @@
 # tapstate binary for their platform instead of installing GraalVM and building it from source.
 #
 # Manual only (workflow_dispatch): nothing outward-facing fires on a push. On each of the four target
-# platforms it builds the native binary with Liberica NIK, runs the full native smoke suite against it (offline
-# verbs + one online connect/login/register round-trip), then packages
-# tapstate-<version>-<os>-<arch>.tar.gz (bare binary + LICENSE + NOTICE). A final job adds a per-asset
+# platforms it builds the native CLI and stdio MCP sidecar with Liberica NIK, runs their smoke suites, then
+# packages tapstate-<version>-<os>-<arch>.tar.gz (the complete bin/ + libexec/ bundle + LICENSE + NOTICE).
+# A final job adds a per-asset
 # .sha256 and an aggregate checksums.txt and assembles a DRAFT, prerelease GitHub release. A human
 # reviews the draft and publishes it — nothing is published automatically, and no :latest / floating
 # pointer is ever produced (make_latest: false), which is the lever that keeps a preview build from
@@ -66,7 +66,7 @@ jobs:
     # by the Dockerfile (the image is a runtime image, it does not build the jar itself), so the tiny
     # build context the .dockerignore admits stays tiny. There is no draft state for an image, so this
     # push is the one step that cannot be taken back -- which is why it waits for `release`: by the time
-    # it runs, all four CLI binaries exist, are smoked, packaged, checksummed and staged. Depending on
+    # it runs, all four CLI bundles exist, are smoked, packaged, checksummed and staged. Depending on
     # `release` rather than on `cli-native` is the point: the CLI matrix going green does not mean the
     # assets made it into the draft, and a rehearsal proved exactly that failure.
     needs: [prepare, release]
@@ -142,10 +142,12 @@ jobs:
             </toolchain>
           </toolchains>
           EOF
-      - name: build the native image
-        run: mvn -B -Pnative -pl cli -am -DskipTests package
+      - name: build the native CLI, MCP sidecar, and bundle assembly
+        run: mvn -B -Pnative -pl cli,control/mcp-server,distribution/cli-bundle -am -DskipTests package
       - name: native smoke (black-box against the produced binary, offline + online)
         run: bash cli/native-smoke.sh cli/target/tapstate
+      - name: MCP stdio smoke (black-box against the produced sidecar)
+        run: bash control/mcp-server/mcp-smoke.sh control/mcp-server/target/tapstate-mcp
       # Read the oldest system this binary can run on back out of the binary, rather than asserting one.
       # Both platforms tie the answer to the machine that built it, and the hosted build machines move,
       # so measuring is what keeps the published number true without anyone having to remember. The two
@@ -185,10 +187,9 @@ jobs:
         run: |
           version='${{ needs.prepare.outputs.version }}'
           asset="tapstate-${version}-${{ matrix.os }}-${{ matrix.arch }}.tar.gz"
-          stage="$(mktemp -d)"
-          cp cli/target/tapstate "$stage/tapstate"
-          cp LICENSE NOTICE "$stage/"
-          tar -czf "$asset" -C "$stage" tapstate LICENSE NOTICE
+          bundle="$(find distribution/cli-bundle/target -type f -name '*-native.tar.gz' | head -1)"
+          [ -n "$bundle" ] || { echo "native CLI bundle assembly not found" >&2; exit 1; }
+          cp "$bundle" "$asset"
           echo "ASSET=$asset" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:

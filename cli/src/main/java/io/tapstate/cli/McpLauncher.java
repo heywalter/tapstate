@@ -60,7 +60,13 @@ final class McpLauncher {
             Map<String, String> properties,
             String server,
             boolean allowWrite) {
-        Path bin = cliExecutable.toAbsolutePath().normalize().getParent();
+        Path installedCli;
+        try {
+            installedCli = cliExecutable.toRealPath();
+        } catch (IOException error) {
+            throw unavailable("cannot resolve the installed CLI executable", error);
+        }
+        Path bin = installedCli.getParent();
         if (bin == null) {
             throw unavailable("cannot resolve the CLI installation directory", null);
         }

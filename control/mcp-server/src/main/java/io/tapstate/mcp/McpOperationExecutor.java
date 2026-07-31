@@ -85,12 +85,15 @@ final class McpOperationExecutor {
         if (!(body instanceof Map<?, ?> connector)) {
             return false;
         }
-        Object spec = connector.get("spec");
-        Object hash = connector.get("specContentHash");
+        if (!(connector.get("spec") instanceof Map<?, ?> spec)) {
+            return false;
+        }
+        Object hash = spec.get("contentHash");
+        Object text = spec.get("text");
         return "registered".equals(connector.get("origin"))
                 && Boolean.TRUE.equals(connector.get("runtimeAvailable"))
-                && (spec instanceof Map<?, ?> || spec instanceof String text && !text.isBlank())
-                && hash instanceof String text && !text.isBlank();
+                && hash instanceof String contentHash && !contentHash.isBlank()
+                && text instanceof String specText && !specText.isBlank();
     }
 
     private McpResult pipelineAction(Map<String, Object> arguments, String action) {

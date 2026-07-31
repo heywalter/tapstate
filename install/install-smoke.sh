@@ -33,11 +33,14 @@ make_asset() {   # $1 = platform label; the fake binary echoes its platform so a
   platform="$1"
   d="$STUB/download/v$VERSION"; mkdir -p "$d"
   stage="$(mktemp -d)"
-  printf '#!/bin/sh\necho "tapstate %s %s"\n' "$VERSION" "$platform" > "$stage/tapstate"
-  chmod +x "$stage/tapstate"
+  mkdir -p "$stage/tapstate-cli-$VERSION/bin" "$stage/tapstate-cli-$VERSION/libexec"
+  printf '#!/bin/sh\necho "tapstate %s %s"\n' "$VERSION" "$platform" > "$stage/tapstate-cli-$VERSION/bin/tapstate"
+  chmod +x "$stage/tapstate-cli-$VERSION/bin/tapstate"
+  printf '#!/bin/sh\necho mcp\n' > "$stage/tapstate-cli-$VERSION/libexec/tapstate-mcp"
+  chmod +x "$stage/tapstate-cli-$VERSION/libexec/tapstate-mcp"
   echo license > "$stage/LICENSE"; echo notice > "$stage/NOTICE"
   asset="tapstate-$VERSION-$platform.tar.gz"
-  tar -czf "$d/$asset" -C "$stage" tapstate LICENSE NOTICE
+  tar -czf "$d/$asset" -C "$stage" "tapstate-cli-$VERSION" LICENSE NOTICE
   ( cd "$d" && sha256_of "$asset" > "$asset.sha256" )
   rm -rf "$stage"
 }
@@ -90,8 +93,11 @@ for triple in "Darwin arm64 darwin-arm64" "Darwin x86_64 darwin-x64" "Linux x86_
   set -- $triple
   idir="$(mktemp -d)/bin"
   run_install "$1" "$2" glibc "$idir"
-  if [ "$RC" -eq 0 ] && [ -x "$idir/tapstate" ] && "$idir/tapstate" | grep -q "tapstate $VERSION $3"; then
-    ok "maps $1/$2 -> $3 and installs a runnable binary into TAPSTATE_INSTALL_DIR"
+  if [ "$RC" -eq 0 ] && [ -L "$idir/tapstate" ] \
+     && [ -x "$idir/versions/$VERSION/bin/tapstate" ] \
+     && [ -x "$idir/versions/$VERSION/libexec/tapstate-mcp" ] \
+     && "$idir/tapstate" | grep -q "tapstate $VERSION $3"; then
+    ok "maps $1/$2 -> $3 and installs an executable bundle with an atomic stable entry"
   else
     bad "install $1/$2 (want $3) rc=$RC: $OUT"
   fi
@@ -131,8 +137,10 @@ fi
 idir="$(mktemp -d)/bin"
 run_install Darwin arm64 glibc "$idir"; rc1=$RC
 run_install Darwin arm64 glibc "$idir"; rc2=$RC
-if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && [ -x "$idir/tapstate" ]; then
-  ok "re-run over the same install dir is idempotent (exit 0, binary intact)"
+if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && [ -L "$idir/tapstate" ] \
+   && [ -x "$idir/versions/$VERSION/bin/tapstate" ] \
+   && [ -x "$idir/versions/$VERSION/libexec/tapstate-mcp" ]; then
+  ok "re-run over the same install dir is idempotent (exit 0, bundle intact)"
 else
   bad "re-run not idempotent (rc1=$rc1 rc2=$rc2): $OUT"
 fi

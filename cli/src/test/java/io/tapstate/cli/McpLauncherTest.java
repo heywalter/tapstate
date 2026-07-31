@@ -15,6 +15,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class McpLauncherTest {
 
     @Test
+    void stableSymlinkFindsTheSidecarInTheVersionedBundle(@TempDir Path install) throws Exception {
+        Path version = install.resolve("versions/0.1.0");
+        Path cli = Files.createDirectories(version.resolve("bin")).resolve("tapstate");
+        Files.createFile(cli);
+        Path nativeSidecar = Files.createDirectories(version.resolve("libexec")).resolve("tapstate-mcp");
+        Files.createFile(nativeSidecar);
+        assertThat(nativeSidecar.toFile().setExecutable(true)).isTrue();
+        Path stableCli = Files.createDirectories(install.resolve("bin")).resolve("tapstate");
+        Files.createSymbolicLink(stableCli, cli);
+
+        assertThat(McpLauncher.command(stableCli, Map.of(), Map.of(), null, false))
+                .containsExactly(nativeSidecar.toRealPath().toString());
+    }
+
+    @Test
     void nativeSidecarIsPreferredAndReceivesOnlyMcpOptions(@TempDir Path bundle) throws Exception {
         Path cli = Files.createDirectories(bundle.resolve("bin")).resolve("tapstate");
         Files.createFile(cli);
@@ -26,7 +41,8 @@ class McpLauncherTest {
                 cli, Map.of(), Map.of(), "https://server.example", true);
 
         assertThat(command).containsExactly(
-                nativeSidecar.toString(), "--server", "https://server.example", "--allow-write");
+                nativeSidecar.toRealPath().toString(),
+                "--server", "https://server.example", "--allow-write");
     }
 
     @Test
@@ -48,10 +64,10 @@ class McpLauncherTest {
 
         assertThat(McpLauncher.command(
                 cli, Map.of("JAVA_HOME", bundle.resolve("jdk").toString()), Map.of(), null, false))
-                .containsExactly(java.toString(), "-jar", jar.toString());
+                .containsExactly(java.toString(), "-jar", jar.toRealPath().toString());
         assertThat(McpLauncher.command(
                 cli, Map.of("PATH", javaHome.toString()), Map.of(), null, false))
-                .containsExactly(java.toString(), "-jar", jar.toString());
+                .containsExactly(java.toString(), "-jar", jar.toRealPath().toString());
     }
 
     @Test

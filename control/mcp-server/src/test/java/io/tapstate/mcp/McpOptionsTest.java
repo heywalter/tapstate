@@ -32,6 +32,14 @@ class McpOptionsTest {
     }
 
     @Test
+    void equalsFormOfServerOptionIsSupported() {
+        assertThat(McpOptions.parse(
+                new String[] {"--server=https://server.example", "--allow-write"},
+                Map.of("TAPSTATE_TOKEN", "token")).server())
+                .isEqualTo(URI.create("https://server.example"));
+    }
+
+    @Test
     void tokenFlagAndMissingEnvironmentTokenAreRejected() {
         assertThatThrownBy(() -> McpOptions.parse(
                 new String[] {"--token", "leak"}, Map.of("TAPSTATE_TOKEN", "token")))
@@ -40,5 +48,21 @@ class McpOptionsTest {
         assertThatThrownBy(() -> McpOptions.parse(new String[0], Map.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("TAPSTATE_TOKEN");
+    }
+
+    @Test
+    void invalidServerAndUnknownOptionsAreRejectedBeforeStartingSpring() {
+        assertThatThrownBy(() -> McpOptions.parse(
+                new String[] {"--server", "not-a-url"}, Map.of("TAPSTATE_TOKEN", "token")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("absolute HTTP(S)");
+        assertThatThrownBy(() -> McpOptions.parse(
+                new String[] {"--unknown"}, Map.of("TAPSTATE_TOKEN", "token")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("unknown MCP option");
+        assertThatThrownBy(() -> McpOptions.parse(
+                new String[] {"--server"}, Map.of("TAPSTATE_TOKEN", "token")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requires an HTTP URL");
     }
 }

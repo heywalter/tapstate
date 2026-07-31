@@ -2,7 +2,9 @@ package io.tapstate.mcp;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ConfigurableApplicationContext;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,5 +31,17 @@ class TapstateMcpApplicationTest {
 
         assertThat(TapstateMcpApplication.options(new String[0], Map.of()).token())
                 .isEqualTo("tapstate-aot-context-only");
+    }
+
+    @Test
+    void startsAsAStdioOnlyApplicationAndRegistersTheConfiguredToolSurface() {
+        try (ConfigurableApplicationContext context = TapstateMcpApplication.start(
+                new String[] {"--server", "http://127.0.0.1:1", "--allow-write"},
+                Map.of("TAPSTATE_TOKEN", "machine-token"))) {
+            assertThat(context.isRunning()).isTrue();
+            assertThat(context.getBean(McpOptions.class).allowWrite()).isTrue();
+            assertThat(context.getBean(McpOperationExecutor.class)).isNotNull();
+            assertThat((List<?>) context.getBean("mcpTools")).hasSize(17);
+        }
     }
 }

@@ -901,6 +901,78 @@ class ReplTest {
         assertThat(h.repl().lastExitCode()).isZero();
     }
 
+    @Test
+    void tokenRequiresARecognizedActionAndValidatesCreateOptions() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+
+        assertThat(h.repl().dispatch("token")).isTrue();
+        assertThat(h.sink().toString()).contains("missing action");
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token unknown")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("unknown action");
+        mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token create")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("--scope must be read, write, or admin");
+        mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token create --scope nope")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("--scope must be read, write, or admin");
+        mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token create --scope read --output xml")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("unknown output format");
+        assertThat(client.tokenCalls).isEmpty();
+    }
+
+    @Test
+    void tokenCreateRejectsUnknownOptionsAndRendersServerRejections() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+
+        assertThat(h.repl().dispatch("token create --scope read --unexpected")).isTrue();
+        assertThat(h.sink().toString()).contains("unknown or incomplete option");
+        assertThat(client.tokenCalls).isEmpty();
+
+        client.tokenCreateOutcome = new TokenCreateOutcome.Rejected(
+                "control.forbidden", "Token creation is forbidden.");
+        int mark = h.sink().toString().length();
+        assertThat(h.repl().dispatch("token create --scope admin")).isTrue();
+        assertThat(h.sink().toString().substring(mark))
+                .contains("control.forbidden")
+                .contains("Token creation is forbidden.");
+    }
+
+    @Test
+    void tokenListAndRevokeValidateFormatsAndRenderFailures() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+
+        assertThat(h.repl().dispatch("token list --output")).isTrue();
+        assertThat(h.sink().toString()).contains("unknown or incomplete option");
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token list -o xml")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("unknown output format");
+        mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token revoke")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("missing token id");
+        mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token revoke tok_01 --output xml")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("unknown output format");
+        mark = h.sink().toString().length();
+
+        client.tokenListOutcome = new TokenListOutcome.Unreachable();
+        assertThat(h.repl().dispatch("token list")).isTrue();
+        assertThat(h.sink().toString().substring(mark)).contains("request failed");
+        assertThat(client.tokenCalls).containsExactly(
+                "list jwt-tok@http://node1:7900", "list jwt-tok@http://node1:7900");
+    }
+
     /** An authenticated session whose interpolation reads {@code env} instead of the process environment. */
     private static Harness onlineSession(Path workdir, FakeControlPlane client, Map<String, String> env) {
         client.loginOutcome = new LoginOutcome.Success("jwt-tok");

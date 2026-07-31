@@ -1,6 +1,7 @@
 package io.tapstate.mcp;
 
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
+import io.modelcontextprotocol.spec.McpSchema;
 import io.tapstate.control.client.HttpControlClient;
 import io.tapstate.control.core.ControlApiSchema;
 import io.tapstate.control.core.ControlOperations;
@@ -57,6 +58,25 @@ class McpToolCatalogTest {
                 assertThat(specification.tool().outputSchema())
                         .isEqualTo(ControlApiSchema.resolve(operation.schema().result()));
             }
+        }
+    }
+
+    @Test
+    void sdkSpecificationHandlerProjectsExecutorResultIntoMcpResult() {
+        try (HttpControlClient client = new HttpControlClient()) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    URI.create("http://127.0.0.1:1"), "token", Map.of(), client);
+            SyncToolSpecification specification = McpToolCatalog.specifications(false, executor).stream()
+                    .filter(candidate -> candidate.tool().name().equals("connector_list"))
+                    .findFirst()
+                    .orElseThrow();
+
+            McpSchema.CallToolResult result = specification.callHandler().apply(
+                    null, new McpSchema.CallToolRequest("connector_list", Map.of()));
+
+            assertThat(result.isError()).isTrue();
+            assertThat(result.structuredContent()).isInstanceOf(Map.class);
+            assertThat(result.content()).isNotEmpty();
         }
     }
 

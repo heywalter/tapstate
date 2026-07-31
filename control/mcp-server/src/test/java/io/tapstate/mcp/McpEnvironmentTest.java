@@ -18,4 +18,13 @@ class McpEnvironmentTest {
         assertThat(environment.values())
                 .containsExactly(Map.entry("MYSQL_PASSWORD", "connector-secret"));
     }
+
+    @Test
+    void emptyAndNullEnvironmentValuesAreRetainedWithoutControlVariables() {
+        McpEnvironment environment = new McpEnvironment(Map.of(
+                "EMPTY", "", "OTHER", "value"));
+
+        assertThat(environment.values()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "EMPTY", "", "OTHER", "value"));
+    }
 }

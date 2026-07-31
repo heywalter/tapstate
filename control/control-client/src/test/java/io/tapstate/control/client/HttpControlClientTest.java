@@ -18,8 +18,19 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class HttpControlClientTest {
+
+    @Test
+    void constructorRejectsNonPositiveTimeouts() {
+        assertThatThrownBy(() -> new HttpControlClient(Duration.ZERO, Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("lightTimeout");
+        assertThatThrownBy(() -> new HttpControlClient(Duration.ofSeconds(1), Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("heavyTimeout");
+    }
 
     @Test
     void postSendsBearerAndJsonAndReturnsTheDecodedTree() throws Exception {
@@ -61,6 +72,41 @@ class HttpControlClientTest {
     }
 
     @Test
+    void successfulEmptyBodyIsRepresentedAsNull() throws Exception {
+        HttpServer server = server(exchange -> answer(exchange, 200, ""));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(5), Duration.ofSeconds(5))) {
+            assertThat(client.get(baseOf(server), "token", "/api/tokens"))
+                    .isEqualTo(new ControlResponse.Success(200, null));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void malformedJsonBodyIsReturnedAsUnreachable() throws Exception {
+        HttpServer server = server(exchange -> answer(exchange, 200, "not-json"));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            assertThat(client.get(baseOf(server), "token", "/api/tokens"))
+                    .isEqualTo(new ControlResponse.Unreachable());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void rejectionWithoutAStableCodeUsesTheGenericControlContract() throws Exception {
+        HttpServer server = server(exchange -> answer(exchange, 503, "{}"));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            ControlResponse response = client.get(baseOf(server), "token", "/api/tokens");
+
+            assertThat(response).isEqualTo(new ControlResponse.Rejected(
+                    503, "", "The server refused the request.", Map.of()));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void connectionFailureIsAStableUnreachableOutcome() throws Exception {
         int closedPort;
         try (ServerSocket socket = new ServerSocket(0)) {
@@ -88,11 +134,12 @@ class HttpControlClientTest {
         });
         try (HttpControlClient client = new HttpControlClient(
                 Duration.ofMillis(250), Duration.ofMillis(250))) {
-            CompletableFuture<ControlResponse> response = CompletableFuture.supplyAsync(() ->
-                    client.get(baseOf(server), "token", "/api/tokens"));
+            CompletableFuture<ControlResponse> response = new CompletableFuture<>();
+            Thread.ofVirtual().start(() -> response.complete(
+                    client.get(baseOf(server), "token", "/api/tokens")));
 
-            assertThat(received.await(2, TimeUnit.SECONDS)).isTrue();
-            assertThat(response.get(2, TimeUnit.SECONDS))
+            assertThat(received.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(response.get(5, TimeUnit.SECONDS))
                     .isInstanceOf(ControlResponse.Unreachable.class);
         } finally {
             release.countDown();
@@ -115,13 +162,14 @@ class HttpControlClientTest {
         });
         HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(30));
         try {
-            CompletableFuture<ControlResponse> response = CompletableFuture.supplyAsync(() -> client.post(
-                    baseOf(server), "token", "/api/artifacts:apply", Map.of(), RequestBudget.HEAVY));
+            CompletableFuture<ControlResponse> response = new CompletableFuture<>();
+            Thread.ofVirtual().start(() -> response.complete(client.post(
+                    baseOf(server), "token", "/api/artifacts:apply", Map.of(), RequestBudget.HEAVY)));
 
-            assertThat(received.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(received.await(5, TimeUnit.SECONDS)).isTrue();
             client.close();
 
-            assertThat(response.get(2, TimeUnit.SECONDS))
+            assertThat(response.get(5, TimeUnit.SECONDS))
                     .isInstanceOf(ControlResponse.Unreachable.class);
         } finally {
             release.countDown();
@@ -132,6 +180,7 @@ class HttpControlClientTest {
 
     private static HttpServer server(Handler handler) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(command -> Thread.ofVirtual().name("http-control-test").start(command));
         server.createContext("/", exchange -> handler.handle(exchange));
         server.start();
         return server;

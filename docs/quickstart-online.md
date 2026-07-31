@@ -138,9 +138,12 @@ The source build also produces the MCP sidecar used by `tapstate mcp`; the
 relocatable bundle keeps the launcher and sidecar together when installed.
 
 The CLI drives both the offline authoring loop and the online verbs below. It runs
-on the host and talks to the server over HTTP; put it on your `PATH`, or keep it
-here as `./tapstate-cli/bin/tapstate` as above. The sibling `libexec` artifact is
-loaded only by `tapstate mcp`; every other CLI command stays independent of Spring.
+on the host and talks to the server over HTTP; put the bundle's `bin/tapstate` on
+your `PATH`, or keep it here as `./tapstate-cli/bin/tapstate` as above. The sibling
+`libexec` artifact is loaded only by `tapstate mcp`; every other CLI command stays
+independent of Spring. Do not expose `cli/target/tapstate` directly when MCP is
+needed: a global symlink must point at the bundle's `bin/tapstate`, or the launcher
+cannot find the sidecar.
 
 ## 4. Get the connector jars
 
