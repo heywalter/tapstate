@@ -102,6 +102,7 @@ class ConnectorApiTest {
         context.getBean(FakeTokenStore.class).clear();
         context.getBean(SeedableConnectorCatalogStore.class).clear();
         context.getBean(SeedableConnectorSpecStore.class).clear();
+        context.getBean(SeedableConnectorRegistry.class).clear();
     }
 
     private RestClient client() {
@@ -275,6 +276,66 @@ class ConnectorApiTest {
         assertThat(spec.get("text")).isNull();
         assertThat(spec.get("unavailable")).isEqualTo("not-stored");
         assertThat(spec.get("contentHash")).isEqualTo("h");
+    }
+
+    @Test
+    void getsARegisteredConnectorWhoseArtifactIsPresentAsRuntimeAvailable() {
+        // The only state in which runtime availability is true: a row, a registration, and the bytes
+        // still under the hash it was filed at. Without a case here an implementation that answered a
+        // flat false would satisfy every other read in this suite.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+        String source = "{\"properties\":{\"id\":\"orders\"},\"zz\":1,\"a\":2}";
+        context.getBean(SeedableConnectorSpecStore.class).put("h", source.getBytes(StandardCharsets.UTF_8));
+        SeedableConnectorRegistry registry = context.getBean(SeedableConnectorRegistry.class);
+        registry.register("orders", "artifact-hash");
+        registry.withArtifactBytes("artifact-hash");
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(true);
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("text")).isEqualTo(source);
+        assertThat(detail.get("origin")).isEqualTo("registered");
+        assertThat((List<?>) detail.get("config")).hasSize(2);
+    }
+
+    @Test
+    void getsARegisteredConnectorWhoseArtifactBytesAreGoneAsNotRuntimeAvailable() {
+        // Registered, and the registration is right there in the registry - but its bytes are not. This
+        // is the case that separates runtime availability from origin and from mere registration: an
+        // implementation reading either one would answer true here, and only this seeding catches it.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+        context.getBean(SeedableConnectorRegistry.class).register("orders", "artifact-hash");
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("origin")).isEqualTo("registered");
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(false);
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("text")).isNull();
+        assertThat(spec.get("unavailable")).isEqualTo("not-stored");
+    }
+
+    @Test
+    void getsABundledConnectorAsNotRuntimeAvailableWithItsSpecSourceStatedAbsent() {
+        // Nothing seeded: this row comes from the bundled snapshot, which is catalog metadata and no
+        // artifact at all. Its provenance still names a spec hash, so the response carries the pointer
+        // while saying plainly that nothing resolves under it - the shape a consumer must not read as
+        // "make something up from the config".
+        Map<?, ?> detail = client().get().uri("/api/connectors/mysql")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("origin")).isEqualTo("bundled");
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(false);
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("contentHash")).isNotNull();
+        assertThat(spec.get("text")).isNull();
+        assertThat(spec.get("unavailable")).isEqualTo("not-stored");
     }
 
     @Test
@@ -452,29 +513,8 @@ class ConnectorApiTest {
         }
 
         @Bean
-        ConnectorRegistry connectorRegistry() {
-            return new ConnectorRegistry() {
-                @Override
-                public RegistrationOutcome register(
-                        String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
-                    throw new UnsupportedOperationException("this suite drives the read face, not registration");
-                }
-
-                @Override
-                public List<ConnectorRegistration> list() {
-                    return List.of();
-                }
-
-                @Override
-                public java.util.Optional<byte[]> artifact(String contentHash) {
-                    return java.util.Optional.empty();
-                }
-
-                @Override
-                public boolean hasArtifact(String contentHash) {
-                    return false;
-                }
-            };
+        SeedableConnectorRegistry connectorRegistry() {
+            return new SeedableConnectorRegistry();
         }
 
         @Bean
@@ -669,6 +709,59 @@ class ConnectorApiTest {
         @Override
         public java.util.Optional<byte[]> get(String contentHash) {
             return java.util.Optional.ofNullable(specs.get(contentHash)).map(byte[]::clone);
+        }
+    }
+
+    /**
+     * A registry a test can seed with registrations and, separately, with the hashes whose bytes are
+     * actually there. The two are separate on purpose: a registration whose bytes are gone is the state
+     * that tells runtime availability apart from origin, and a registry that could not express it would
+     * let an implementation conflating the two pass.
+     *
+     * <p>{@link #artifact} throws rather than answering: reading the catalog must never pull a whole jar
+     * back to decide a boolean, so an implementation that did would fail here instead of quietly costing
+     * tens of megabytes per read.
+     */
+    static final class SeedableConnectorRegistry implements ConnectorRegistry {
+
+        private final List<ConnectorRegistration> registrations = new ArrayList<>();
+        private final Set<String> present = new java.util.LinkedHashSet<>();
+
+        void clear() {
+            registrations.clear();
+            present.clear();
+        }
+
+        /** Files a registration for {@code connectorId} under {@code contentHash}, bytes not implied. */
+        void register(String connectorId, String contentHash) {
+            registrations.add(
+                    new ConnectorRegistration(connectorId, contentHash, "1.3.5", RegistrationSource.REGISTER));
+        }
+
+        /** Declares that the bytes under {@code contentHash} are present. */
+        void withArtifactBytes(String contentHash) {
+            present.add(contentHash);
+        }
+
+        @Override
+        public RegistrationOutcome register(
+                String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+            throw new UnsupportedOperationException("this suite drives the read face, not registration");
+        }
+
+        @Override
+        public List<ConnectorRegistration> list() {
+            return List.copyOf(registrations);
+        }
+
+        @Override
+        public java.util.Optional<byte[]> artifact(String contentHash) {
+            throw new UnsupportedOperationException("the read face must answer without fetching artifact bytes");
+        }
+
+        @Override
+        public boolean hasArtifact(String contentHash) {
+            return present.contains(contentHash);
         }
     }
 }
