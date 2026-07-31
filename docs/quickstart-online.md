@@ -50,10 +50,9 @@ online verbs the script drives, or to point the pipeline at your own databases.
   together, on the loopback interface only.
 - **The system version named in the release notes** — a macOS version on a Mac, a glibc
   version on Linux. A recommendation, not a gate; see the note at the top of this page.
-- **JDK 21** — a GraalVM or plain JDK 21 (`java -version`). Preview-only: used to
-  build the CLI, and — until the server image is published — to build the server jar
-  the stack's image is assembled from. A published image and a CLI installer remove
-  both; Docker is the only lasting prerequisite.
+- **JDK 21** (`java -version`) — only for the dev overlay below, which builds the
+  server image from this checkout. The CLI needs no toolchain at all: it is installed
+  as a native binary in step 3, and GraalVM is only for building it from source.
 
 ## 1. Get the stack
 
@@ -115,12 +114,16 @@ docker compose ps          # the "server" row should read "healthy"
 
 ## 3. Get the CLI
 
-> **Preview.** Build the native CLI from the source tree; a CLI installer replaces
-> this step.
-> ```sh
-> ( cd ../.. && mvn -Pnative -pl cli -am -DskipTests package )    # -> cli/target/tapstate
-> cp ../../cli/target/tapstate ./tapstate
-> ```
+Install it right here in the demo directory — the same installer as a permanent
+install, pointed at `.` so that deleting the directory later removes everything:
+
+```sh
+curl -sSL https://install.tapstate.dev | TAPSTATE_INSTALL_DIR=. sh
+```
+
+(Building from source still works — `mvn -Pnative -pl cli -am -DskipTests package`
+in the repository, needs GraalVM for JDK 21 — but nothing in this walkthrough
+requires it.)
 
 The CLI drives both the offline authoring loop and the online verbs below. It runs
 on the host and talks to the server over HTTP; put it on your `PATH`, or keep it

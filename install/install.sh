@@ -226,14 +226,32 @@ main() {
     install_binary
 
     printf 'tapstate %s installed to %s/tapstate\n' "$version" "$install_dir"
+    on_path=yes
     case ":${PATH}:" in
         *":${install_dir}:"*) : ;;
         *)
-            # $PATH is meant to stay literal here — the user pastes this line into their own shell.
-            # shellcheck disable=SC2016
-            printf 'not on PATH; run it directly, or:  export PATH="%s:$PATH"\n' "$install_dir"
+            on_path=no
+            # The hint matches the user's shell: fish spells PATH additions its own way, and a pasted
+            # line that errors teaches a user the installer is careless. Everything else POSIX-ish
+            # shares the export form. $PATH stays literal — the user pastes this into their own shell.
+            case "$(basename "${SHELL:-sh}")" in
+                fish) printf 'not on PATH; run it directly, or:  fish_add_path %s\n' "$install_dir" ;;
+                # shellcheck disable=SC2016
+                *) printf 'not on PATH; run it directly, or:  export PATH="%s:$PATH"\n' "$install_dir" ;;
+            esac
             ;;
     esac
+
+    # Next steps, so the install ends at the start of something rather than at a file on disk. The
+    # authoring loop below is offline and complete as installed; running a real pipeline needs the
+    # server, which is the quickstart's business, so the pointer goes there instead of overpromising.
+    if [ "$on_path" = yes ]; then run_as=tapstate; else run_as="$install_dir/tapstate"; fi
+    printf '\nnext:\n'
+    printf '  %s --version\n' "$run_as"
+    printf '  %s new --kind source --id my_db --connector mysql   # scaffold, then validate:\n' "$run_as"
+    printf '  %s validate\n' "$run_as"
+    printf 'to run a real pipeline (server + databases): see docs/quickstart-online.md in the repository\n'
+    printf 'to uninstall: rm -rf ~/.tapstate  (and drop the PATH line if you added one)\n'
 }
 
 main "$@"
