@@ -124,7 +124,7 @@ Install it right here in the demo directory — the same installer as a permanen
 install, pointed at `.` so that deleting the directory later removes everything:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/install/install.sh | TAPSTATE_INSTALL_DIR=. sh
+curl -sSL https://install.tapstate.dev | TAPSTATE_INSTALL_DIR=. sh
 ```
 
 (Building from source still works — `mvn -Pnative -pl cli -am -DskipTests package`

@@ -1,7 +1,7 @@
 # Installer end-to-end lane: the CLI-only install path, on every supported platform.
 #
 # Proves the promise on the README: pipe the published install.sh into sh on a clean machine and end
-# with a CLI that answers and authors offline. It dials the raw URL the README names, not the file in
+# with a CLI that answers and authors offline. It dials the live domain the README names, not the file in
 # this checkout - the published copy being stale or broken is exactly the failure this lane exists to
 # catch, and reading the checkout cannot see it.
 #
@@ -51,7 +51,7 @@ jobs:
       - name: Install from the published script
         run: |
           set -eu
-          curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/install/install.sh | sh
+          curl -sSL https://install.tapstate.dev | sh
           bin="$HOME/.tapstate/bin/tapstate"
           test -x "$bin"
           version="$("$bin" --version)"
@@ -69,7 +69,7 @@ jobs:
       - name: Re-run is an in-place upgrade, not an accretion
         run: |
           set -eu
-          curl -sSL https://raw.githubusercontent.com/tapstate/tapstate/main/install/install.sh | sh
+          curl -sSL https://install.tapstate.dev | sh
           count="$(find "$HOME/.tapstate/bin" -type f | wc -l | tr -d ' ')"
           test "$count" = "1" || { echo "a re-run left $count files behind" >&2; exit 1; }
       - name: Negative paths against the checked-in fixtures
