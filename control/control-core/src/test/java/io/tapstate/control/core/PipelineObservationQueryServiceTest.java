@@ -83,6 +83,35 @@ class PipelineObservationQueryServiceTest {
         });
     }
 
+    /** An artifact query over an in-memory store holding one non-pipeline (source) resource. */
+    private static ArtifactQueryService artifactsWithASource(String sourceId) {
+        Map<String, Resource> byId = new HashMap<>();
+        byId.put(sourceId, new DslParser().parse("""
+                version: tapstate/v1
+                kind: source
+                id: %s
+                connector: mysql
+                mode: cdc
+                tables: [ orders ]
+                """.formatted(sourceId)));
+        return new ArtifactQueryService(new ArtifactStore() {
+            @Override
+            public void saveAll(List<Resource> artifacts) {
+                artifacts.forEach(r -> byId.put(r.id(), r));
+            }
+
+            @Override
+            public Optional<Resource> get(String id) {
+                return Optional.ofNullable(byId.get(id));
+            }
+
+            @Override
+            public List<Resource> list() {
+                return List.copyOf(byId.values());
+            }
+        });
+    }
+
     private static Observation running() {
         return new Observation("orders_sync", PipelineState.RUNNING,
                 Map.of("recordCount", 5L), Map.of("orders", new TableSnapshot(10L, 20L, 50)));
@@ -180,6 +209,20 @@ class PipelineObservationQueryServiceTest {
 
         assertThat(thrown.code()).isEqualTo(LifecycleError.UNKNOWN_PIPELINE);
         assertThat(thrown.args()).containsEntry("pipeline", "ghost");
+    }
+
+    @Test
+    void statusOfANonPipelineArtifactIsUnknownPipelineCoded() {
+        // The id resolves to something, but not to a pipeline: a lifecycle verb has nothing to converge
+        // and never will, exactly like an id that resolves to nothing at all. Answering the transient
+        // no-observation code here would send a caller waiting out its bound on a source id.
+        var service = new PipelineObservationQueryService(artifactsWithASource("src_orders"), storeWith());
+
+        TapstateException thrown = catchThrowableOfType(
+                () -> service.status("src_orders"), TapstateException.class);
+
+        assertThat(thrown.code()).isEqualTo(LifecycleError.UNKNOWN_PIPELINE);
+        assertThat(thrown.args()).containsEntry("pipeline", "src_orders");
     }
 
     @Test

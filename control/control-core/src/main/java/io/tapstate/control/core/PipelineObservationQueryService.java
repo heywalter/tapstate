@@ -25,6 +25,9 @@ import java.util.Objects;
  */
 public final class PipelineObservationQueryService {
 
+    /** The stored-artifact kind a lifecycle verb can observe; any other kind is not a pipeline at all. */
+    private static final String PIPELINE_KIND = "pipeline";
+
     private final ArtifactQueryService artifacts;
     private final ObservationStore observations;
 
@@ -57,11 +60,18 @@ public final class PipelineObservationQueryService {
     }
 
     /**
-     * Why the pipeline has no observation: it does not exist at all, or it exists and has not converged yet.
-     * The artifact is consulted only on this path, so a normal read costs one store call as before.
+     * Why the pipeline has no observation: no such pipeline was ever applied, or it was and has not
+     * converged yet. "No such pipeline" covers two cases the same way: the id resolves to nothing at all,
+     * and the id resolves to some other kind of resource (a source, a view, ...) — a lifecycle verb never
+     * had a pipeline to converge either way, so both answer the permanent code rather than the transient
+     * one a real pipeline mid-convergence gets. The artifact is consulted only on this path, so a normal
+     * read costs one store call as before.
      */
     private TapstateException unobserved(String pipelineId) {
-        if (artifacts.get(pipelineId).isEmpty()) {
+        boolean isPipeline = artifacts.get(pipelineId)
+                .map(artifact -> PIPELINE_KIND.equals(artifact.kind()))
+                .orElse(false);
+        if (!isPipeline) {
             return new TapstateException(
                     LifecycleError.UNKNOWN_PIPELINE, Map.of("pipeline", pipelineId), null);
         }
