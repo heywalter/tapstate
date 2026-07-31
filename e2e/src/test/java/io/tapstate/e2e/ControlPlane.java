@@ -103,6 +103,39 @@ final class ControlPlane {
         expect(send(authed("/api/connectors:register", body)), 200, "register the " + connectorId + " connector");
     }
 
+    /** The refusal a rejected verb answered with: the HTTP status, and the code the product named. */
+    record Refusal(int status, String code) {}
+
+    /**
+     * Posts an artifact the product is expected to refuse, and returns the refusal it answered with.
+     *
+     * <p>A separate verb rather than a flag on {@link #registerConnector}: a caller that meant to
+     * register and was refused has failed, and a caller that meant to witness a refusal and got a
+     * registration has failed too. One return value cannot mean both.
+     */
+    Refusal registerConnectorExpectingRefusal(byte[] jar) {
+        String body = JsonWriter.write(Map.of("artifact", Base64.getEncoder().encodeToString(jar)));
+        HttpResponse<String> response = send(authed("/api/connectors:register", body));
+        if (response.statusCode() == 200) {
+            throw new AssertionError("expected the artifact to be refused, but it registered: " + response.body());
+        }
+        return new Refusal(response.statusCode(), codeOf(response.body()));
+    }
+
+    /** Every connector id the online catalog answers with, registered rows and bundled ones alike. */
+    List<String> connectorIds() {
+        HttpResponse<String> response = send(authedGet("/api/connectors"));
+        expect(response, 200, "list the online connector catalog");
+        if (!(JsonReader.parse(response.body()) instanceof Map<?, ?> map)
+                || !(map.get("connectors") instanceof List<?> connectors)) {
+            throw new AssertionError("the catalog listing carried no connectors: " + response.body());
+        }
+        return connectors.stream()
+                .map(each -> each instanceof Map<?, ?> row ? row.get("id") : null)
+                .map(String::valueOf)
+                .toList();
+    }
+
     /** Discovers a source's model, which is what a target table is later derived from. */
     void discoverSchema(String resourceId, String connectorId, Map<String, Object> settings) {
         String body = JsonWriter.write(
