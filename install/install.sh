@@ -235,9 +235,9 @@ main() {
             # The hint matches the user's shell: fish spells PATH additions its own way, and a pasted
             # line that errors teaches a user the installer is careless. Everything else POSIX-ish
             # shares the export form. $PATH stays literal — the user pastes this into their own shell.
+            # shellcheck disable=SC2016
             case "$(basename "${SHELL:-sh}")" in
                 fish) printf 'not on PATH; run it directly, or:  fish_add_path %s\n' "$install_dir" ;;
-                # shellcheck disable=SC2016
                 *) printf 'not on PATH; run it directly, or:  export PATH="%s:$PATH"\n' "$install_dir" ;;
             esac
             ;;
