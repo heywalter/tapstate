@@ -128,6 +128,9 @@ io.store-unauthorized:
 io.document-unreadable:
   message: "A stored document with id '{id}' could not be read back."
   solution: "The stored document is corrupt or was written by a newer version; inspect or restore it."
+connector.not-official:
+  message: "Runtime registration supports these connectors today: {official}. '{connector}' is not among them yet."
+  solution: "Register one of the connectors listed above. The supported set grows as connectors complete certification, so an artifact refused here is not necessarily faulty."
 connector.not-registered:
   message: "No connector '{connector}' is registered."
   solution: "Register the connector's artifact — or place it in the connector seed directory — before using it."

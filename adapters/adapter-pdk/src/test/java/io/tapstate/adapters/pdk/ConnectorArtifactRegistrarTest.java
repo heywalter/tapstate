@@ -91,7 +91,7 @@ class ConnectorArtifactRegistrarTest {
     void registersFromArtifactBytesJustLikeFromAPath(@TempDir Path dir) throws Exception {
         // The runtime register operation hands the registrar bytes off the wire, not a server path; the
         // bytes entry must land the same registration the on-disk seed path does — same id, same hash.
-        Path jar = Synthetic.seedableOrdersConnector(dir);
+        Path jar = Synthetic.seedableMysqlConnector(dir);
         byte[] bytes = Files.readAllBytes(jar);
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
 
@@ -99,7 +99,7 @@ class ConnectorArtifactRegistrarTest {
 
         assertThat(outcome.newlyRegistered()).isTrue();
         ConnectorRegistration registration = outcome.registration();
-        assertThat(registration.connectorId()).isEqualTo("orders");
+        assertThat(registration.connectorId()).isEqualTo("mysql");
         assertThat(registration.pdkApiVersion()).isEqualTo("1.3.5");
         assertThat(registration.source()).isEqualTo(RegistrationSource.REGISTER);
         assertThat(registry.artifact(registration.contentHash())).contains(bytes);
@@ -113,16 +113,16 @@ class ConnectorArtifactRegistrarTest {
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
         ConnectorArtifactRegistrar registrar = registrarOver(registry);
         RegistrationOutcome first = registrar.register(
-                Synthetic.seedableOrdersConnector(dir), RegistrationSource.SEED);
+                Synthetic.seedableMysqlConnector(dir), RegistrationSource.SEED);
 
         assertThatThrownBy(() -> registrar.register(
-                        Synthetic.conflictingOrdersConnector(dir), RegistrationSource.REGISTER))
+                        Synthetic.conflictingMysqlConnector(dir), RegistrationSource.REGISTER))
                 .isInstanceOf(TapstateException.class)
                 .satisfies(e -> {
                     TapstateException coded = (TapstateException) e;
                     assertThat(coded.code()).isEqualTo(ConnectorError.REGISTRATION_CONFLICT);
                     assertThat(coded.args()).containsKeys("connector", "existing", "incoming");
-                    assertThat(coded.args().get("connector")).isEqualTo("orders");
+                    assertThat(coded.args().get("connector")).isEqualTo("mysql");
                     assertThat(coded.args().get("existing")).isEqualTo(first.registration().contentHash());
                 });
         // The conflicting artifact is not stored: the store still holds exactly the first registration.
@@ -130,10 +130,37 @@ class ConnectorArtifactRegistrarTest {
     }
 
     @Test
+    void refusesRuntimeRegistrationOfAConnectorOutsideTheOfficialSet(@TempDir Path dir) {
+        // Only officially supported connectors may be registered at runtime. One outside that set is
+        // refused with a coded error BEFORE any byte reaches the store: a refused register must not
+        // leave the id wedged by stored bytes that no catalog row will ever describe.
+        Path jar = Synthetic.seedableOrdersConnector(dir);
+        InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
+        InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
+        ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
+                registry, new ConnectorIntrospector(),
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows);
+
+        assertThatThrownBy(() -> registrar.register(jar, RegistrationSource.REGISTER))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(e -> {
+                    TapstateException coded = (TapstateException) e;
+                    assertThat(coded.code()).isEqualTo(ConnectorError.NOT_OFFICIAL);
+                    assertThat(coded.args()).containsEntry("connector", "orders");
+                    // The set is named in the error itself, so the message reads as a boundary that
+                    // moves ("these are supported today") rather than as a defect in the artifact.
+                    assertThat(String.valueOf(coded.args().get("official")))
+                            .contains("mysql").contains("mongodb");
+                });
+        assertThat(registry.list()).isEmpty();
+        assertThat(rows.get("orders")).isEmpty();
+    }
+
+    @Test
     void registerDerivesAndPersistsTheConnectorCatalogRow(@TempDir Path dir) {
         // After a connector's bytes are registered, its normalized catalog row is derived and stored so
         // the online catalog view can see it: batch_read_function derives the snapshot source mode.
-        Path jar = Synthetic.seedableOrdersConnector(dir);
+        Path jar = Synthetic.seedableMysqlConnector(dir);
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
                 new InMemoryConnectorRegistry(), new ConnectorIntrospector(),
@@ -141,8 +168,8 @@ class ConnectorArtifactRegistrarTest {
 
         registrar.register(jar, RegistrationSource.REGISTER);
 
-        ConnectorCatalogEntry row = rows.get("orders").orElseThrow();
-        assertThat(row.id()).isEqualTo("orders");
+        ConnectorCatalogEntry row = rows.get("mysql").orElseThrow();
+        assertThat(row.id()).isEqualTo("mysql");
         assertThat(row.modes()).contains(SourceMode.SNAPSHOT);
     }
 
@@ -192,7 +219,7 @@ class ConnectorArtifactRegistrarTest {
         // succeeds — rather than reporting failure over already-stored bytes and wedging the id. The catalog
         // row is simply absent until derivation succeeds on a re-register. A coded connector/derive failure
         // is contained; a programmer bug (a bare RuntimeException) still crashes.
-        Path jar = Synthetic.seedableOrdersConnector(dir);
+        Path jar = Synthetic.seedableMysqlConnector(dir);
         CapabilityDeriver failing = id -> {
             throw new TapstateException(ConnectorError.LOAD_FAILED, java.util.Map.of("connector", id), null);
         };
@@ -203,7 +230,7 @@ class ConnectorArtifactRegistrarTest {
         RegistrationOutcome outcome = registrar.register(jar, RegistrationSource.REGISTER);
 
         assertThat(outcome.newlyRegistered()).isTrue();
-        assertThat(rows.get("orders")).isEmpty();
+        assertThat(rows.get("mysql")).isEmpty();
     }
 
     @Test

@@ -46,6 +46,14 @@ import java.util.Objects;
  */
 public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
 
+    /**
+     * The connectors this release officially supports, in the order the refusal message names them.
+     * A list rather than a set so that order — and therefore the message — is fixed; the membership
+     * test over two entries costs nothing. Deliberately a constant, not a collaborator: which
+     * connectors are supported is a property of the release, not something a deployment configures.
+     */
+    private static final List<String> OFFICIAL_CONNECTOR_IDS = List.of("mysql", "mongodb");
+
     private final ConnectorRegistry registry;
     private final ConnectorIntrospector introspector;
     private final CapabilityDeriver capabilityDeriver;
@@ -66,6 +74,7 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         IntrospectedConnector introspected = introspector.introspect(List.of(artifact));
         Object specTree = parseSpecTree(introspected, artifact);
         String connectorId = declaredId(specTree, introspected, artifact);
+        rejectUnofficialConnector(connectorId, source);
         byte[] bytes = bytesOf(artifact);
         rejectConflictingArtifact(connectorId, ContentHash.of(bytes));
         RegistrationOutcome outcome = registry.register(connectorId, introspected.pdkApiVersion(), source, bytes);
@@ -99,6 +108,25 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         } finally {
             deleteStaged(staged);
         }
+    }
+
+    /**
+     * Refuses a runtime register naming a connector outside the officially supported set, before any
+     * byte is stored — so a refused register leaves no half-registration wedging the id.
+     *
+     * <p>Only the runtime register path is gated. A seed sweep registers what the release itself
+     * ships from its own seed directory: gating that would let a packaging change fail silently at
+     * startup (the sweep contains a per-jar failure and carries on) while doing nothing about the
+     * surface this guard exists for, which is an artifact arriving over the wire from a client.
+     */
+    private static void rejectUnofficialConnector(String connectorId, RegistrationSource source) {
+        if (source != RegistrationSource.REGISTER || OFFICIAL_CONNECTOR_IDS.contains(connectorId)) {
+            return;
+        }
+        throw new TapstateException(ConnectorError.NOT_OFFICIAL,
+                Map.of("connector", connectorId,
+                        "official", String.join(", ", OFFICIAL_CONNECTOR_IDS)),
+                null);
     }
 
     /** Refuses a different artifact under a connector id that already has one — no silent overwrite. */
