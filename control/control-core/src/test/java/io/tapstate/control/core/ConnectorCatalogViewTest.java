@@ -76,6 +76,23 @@ class ConnectorCatalogViewTest {
     }
 
     @Test
+    void detailStatesTheAbsenceForARowWhoseProvenanceNamesNoSpecHashAtAll() {
+        // A row can carry no hash to dereference, not merely a hash nothing is stored under. Both are
+        // absences and both must be stated, but they arrive by different routes - and the one with no
+        // pointer at all is the route where returning a bare null would be easiest to write.
+        InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
+        store.upsert(CatalogEntryReader.read(ACME_ROW.replace("\"specContentHash\": \"h\"", "\"specContentHash\": null")));
+        ConnectorCatalogView view =
+                new ConnectorCatalogView(BUNDLED, store, new InMemoryConnectorSpecStore(), emptyRegistry());
+
+        ConnectorDetail detail = view.detail("acme");
+
+        assertThat(detail.spec().contentHash()).isNull();
+        assertThat(detail.spec().text()).isNull();
+        assertThat(detail.spec().unavailable()).isEqualTo("not-stored");
+    }
+
+    @Test
     void runtimeAvailableIsTrueOnlyWhenTheArtifactBytesAreActuallyThere() {
         InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
         store.upsert(CatalogEntryReader.read(ACME_ROW));
