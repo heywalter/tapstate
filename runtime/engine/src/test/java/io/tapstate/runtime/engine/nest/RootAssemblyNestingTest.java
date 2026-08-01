@@ -194,6 +194,25 @@ class RootAssemblyNestingTest {
     }
 
     @Test
+    void detachingAnElementThatIsNotThereStillLeavesATombstone() {
+        RootAssembly assembly = customerWithOnePolicy();
+        ElementRef claim = element(List.of("policies", "claims"), "P1", "CL1", null);
+
+        // The old root of a cross-root move is told to detach an element it may never have received --
+        // the child row could still be in flight, or a replay may deliver it again. Without a tombstone
+        // here, that arrival would attach an element the source has already moved away.
+        assertThat(assembly.deleteElement(claim, at(10))).isTrue();
+        assertThat(assembly.applyElement(claim, row("claim_no", "CL1"), at(9))).isFalse();
+        assertThat(listAt(assembly.render(POLICIES_CLAIMS_DOCUMENTS).orElseThrow(), "policies", "claims"))
+                .isEmpty();
+
+        // And a genuine rebuild above the tombstone still revives it.
+        assertThat(assembly.applyElement(claim, row("claim_no", "CL1"), at(11))).isTrue();
+        assertThat(listAt(assembly.render(POLICIES_CLAIMS_DOCUMENTS).orElseThrow(), "policies", "claims"))
+                .containsExactly(claim("CL1"));
+    }
+
+    @Test
     void aWaitingChildSurvivesSerialization() throws Exception {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("customer_id", "C1"), at(1));
