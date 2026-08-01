@@ -129,6 +129,22 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
         update(miningChainId, new Document("$push", new Document("schemaHistory", schemaToDocument(version))));
     }
 
+    @Override
+    public void markSnapshotComplete(String miningChainId, String table) {
+        update(miningChainId, snapshotCompleteUpdate(table));
+    }
+
+    /**
+     * The update that marks one table's snapshot drained: an {@code $addToSet} on
+     * {@code snapshotCompletedTables}. A set add, not a push — the mark answers "has this table drained?",
+     * so re-marking a table (a replay, a re-run of the snapshot) must be a no-op rather than a duplicate
+     * entry.
+     */
+    static Document snapshotCompleteUpdate(String table) {
+        Objects.requireNonNull(table, "table");
+        return new Document("$addToSet", new Document("snapshotCompletedTables", table));
+    }
+
     /**
      * Applies an atomic update to a seeded chain. A zero matched count means no document carried the id:
      * the chain was never seeded, a caller ordering error surfaced bare (not laundered into an io code).
@@ -169,7 +185,8 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
         // appended only when set, so a seed reads back as a seed rather than as corruption.
         Document document = new Document("_id", meta.miningChainId())
                 .append("consumerOffsets", consumers)
-                .append("schemaHistory", schemaHistory);
+                .append("schemaHistory", schemaHistory)
+                .append("snapshotCompletedTables", List.copyOf(meta.snapshotCompletedTables()));
         if (meta.sourceReadOffset() != null) {
             document.append("sourceReadOffset", meta.sourceReadOffset());
         }
@@ -200,8 +217,19 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
         for (Object entry : entries) {
             schemaHistory.add(schemaFromDocument(asDocument(entry, id), id));
         }
+        // Absent snapshotCompletedTables is not corruption, unlike the two structural fields above: the
+        // meta field set is append-only and this field is newer than the collection, so a document written
+        // by an older build simply has no table marked.
+        Object completedRaw = document.get("snapshotCompletedTables");
+        List<String> snapshotCompletedTables = new ArrayList<>();
+        if (completedRaw instanceof List<?> completedEntries) {
+            for (Object entry : completedEntries) {
+                snapshotCompletedTables.add(String.valueOf(entry));
+            }
+        }
         return new SrsMeta(id, document.getString("sourceReadOffset"), consumers,
-                document.getString("cdcStartPosition"), schemaHistory, document.getString("retention"));
+                document.getString("cdcStartPosition"), schemaHistory, document.getString("retention"),
+                snapshotCompletedTables);
     }
 
     /** Reconstructs one consumer cursor from its stored sub-document, keyed by the pipeline id. */
