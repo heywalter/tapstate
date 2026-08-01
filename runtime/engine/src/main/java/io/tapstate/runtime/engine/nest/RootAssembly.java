@@ -151,7 +151,7 @@ public final class RootAssembly implements Serializable {
         Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
         Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
         ElementNode moved = slot == null ? null : slot.get(from.elementKey());
-        if (moved == null || moved.deleted()) {
+        if (slot == null || moved == null || moved.deleted()) {
             return mutate(to, copyOf(fields), order);
         }
         if (!wins(order, moved.order())) {
@@ -222,7 +222,11 @@ public final class RootAssembly implements Serializable {
                 mutate(pending.ref(), pending.fields(), pending.order());
             } else {
                 ElementRef ref = pending.ref();
-                containerFor(ref).computeIfAbsent(ref.field(), field -> new LinkedHashMap<>())
+                // Released only from the parent that just arrived, so its embed is there by construction;
+                // if it were not, attaching would lose the node and its subtree with no error anywhere.
+                Map<String, Map<List<Object>, ElementNode>> parent = Objects.requireNonNull(
+                        containerFor(ref), "a held child is released only once its parent is present");
+                parent.computeIfAbsent(ref.field(), field -> new LinkedHashMap<>())
                         .put(ref.elementKey(), pending.node());
             }
         }
