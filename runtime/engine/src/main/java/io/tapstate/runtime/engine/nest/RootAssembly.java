@@ -130,6 +130,46 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
+     * Moves one element from the parent {@code from} names to the parent {@code to} names, within this
+     * root. **The whole node travels, children and all** — moving only the row would strand the subtree
+     * beneath it, and nothing will ever resend those descendants. Returns whether the assembly changed.
+     *
+     * <p>When the new parent has not arrived yet the element is held rather than left where it was:
+     * the source has already said it belongs elsewhere, so showing the old placement states a
+     * relationship that is no longer true, and if the new parent never arrives that stays wrong for good
+     * with nothing to signal it. Held, it sits in the pending bucket where an unresolvable parent is
+     * already accounted for. An element that was never at {@code from} is simply placed at {@code to}.
+     */
+    public boolean reparentElement(ElementRef from, ElementRef to, Map<String, Object> fields, SourceOrder order) {
+        Objects.requireNonNull(from, "from");
+        Objects.requireNonNull(to, "to");
+        Objects.requireNonNull(fields, "fields");
+        Objects.requireNonNull(order, "order");
+        if (!from.pathId().equals(to.pathId()) || !from.elementKey().equals(to.elementKey())) {
+            throw new IllegalArgumentException("a move names one element: " + from + " -> " + to);
+        }
+        Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
+        Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
+        ElementNode moved = slot == null ? null : slot.get(from.elementKey());
+        if (moved == null || moved.deleted()) {
+            return mutate(to, copyOf(fields), order);
+        }
+        if (!wins(order, moved.order())) {
+            return false;
+        }
+        slot.remove(from.elementKey());
+        moved.set(copyOf(fields), order);
+        Map<String, Map<List<Object>, ElementNode>> target = containerFor(to);
+        if (target == null) {
+            waiting.computeIfAbsent(new WaitingOn(to.parentPathId(), to.parentIdentity()), on -> new ArrayList<>())
+                    .add(Pending.of(to, moved, order));
+            return true;
+        }
+        target.computeIfAbsent(to.field(), field -> new LinkedHashMap<>()).put(to.elementKey(), moved);
+        return true;
+    }
+
+    /**
      * The document as it now stands, or empty while the root is absent. {@code slots} is the declared
      * shape of the embeds under the root, each carrying its own: it decides which field every embed
      * occupies and whether an absent one renders as an empty array or not at all.
@@ -150,7 +190,7 @@ public final class RootAssembly implements Serializable {
         Map<String, Map<List<Object>, ElementNode>> container = containerFor(ref);
         if (container == null) {
             waiting.computeIfAbsent(new WaitingOn(ref.parentPathId(), ref.parentIdentity()), on -> new ArrayList<>())
-                    .add(new Pending(ref, fields, order));
+                    .add(Pending.of(ref, fields, order));
             return true;
         }
         Map<List<Object>, ElementNode> slot = container.computeIfAbsent(ref.field(), field -> new LinkedHashMap<>());
@@ -178,7 +218,13 @@ public final class RootAssembly implements Serializable {
             return;
         }
         for (Pending pending : held) {
-            mutate(pending.ref(), pending.fields(), pending.order());
+            if (pending.node() == null) {
+                mutate(pending.ref(), pending.fields(), pending.order());
+            } else {
+                ElementRef ref = pending.ref();
+                containerFor(ref).computeIfAbsent(ref.field(), field -> new LinkedHashMap<>())
+                        .put(ref.elementKey(), pending.node());
+            }
         }
     }
 
@@ -279,6 +325,20 @@ public final class RootAssembly implements Serializable {
     /** The parent an element is waiting for: the embed the parent belongs to, and the value it answers to. */
     private record WaitingOn(List<String> pathId, Object identity) implements Serializable { }
 
-    /** An element event held until the row it hangs under arrives. */
-    private record Pending(ElementRef ref, Map<String, Object> fields, SourceOrder order) implements Serializable { }
+    /**
+     * Held until the row it hangs under arrives: either an element event to apply ({@code node} null,
+     * a null {@code fields} meaning a deletion), or a whole node being moved, which is attached as it
+     * stands so its subtree travels with it.
+     */
+    private record Pending(ElementRef ref, Map<String, Object> fields, SourceOrder order, ElementNode node)
+            implements Serializable {
+
+        private static Pending of(ElementRef ref, Map<String, Object> fields, SourceOrder order) {
+            return new Pending(ref, fields, order, null);
+        }
+
+        private static Pending of(ElementRef ref, ElementNode node, SourceOrder order) {
+            return new Pending(ref, null, order, node);
+        }
+    }
 }
