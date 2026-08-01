@@ -15,6 +15,16 @@ here. If a product change genuinely cannot carry one, say why and ask a maintain
 See CONTRIBUTING.md, "End-to-end cases".
 -->
 
+## Documentation impact
+
+<!--
+Does this change need follow-up in tapstate/docs? If yes, add the `docs-needed`
+label to this PR. On merge, an issue is opened in tapstate/docs, assigned to the
+docs owner, with a link back to this PR.
+-->
+
+- [ ] This change needs documentation follow-up (add the `docs-needed` label)
+
 ## Checks
 
 - [ ] `mvn verify` is green locally
