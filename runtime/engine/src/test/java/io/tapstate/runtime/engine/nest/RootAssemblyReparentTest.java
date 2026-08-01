@@ -1,13 +1,15 @@
 package io.tapstate.runtime.engine.nest;
 
-import io.tapstate.core.event.SourceOrder;
 import io.tapstate.core.model.EmbedAs;
 import org.junit.jupiter.api.Test;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static io.tapstate.runtime.engine.nest.NestFixtures.at;
+import static io.tapstate.runtime.engine.nest.NestFixtures.element;
+import static io.tapstate.runtime.engine.nest.NestFixtures.listAt;
+import static io.tapstate.runtime.engine.nest.NestFixtures.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
@@ -19,22 +21,6 @@ class RootAssemblyReparentTest {
                     new EmbedSlot("claims", EmbedAs.ARRAY, List.of(
                             new EmbedSlot("documents", EmbedAs.ARRAY, List.of()))))));
 
-    private static SourceOrder at(long seq) {
-        return new SourceOrder(1L, seq);
-    }
-
-    private static Map<String, Object> row(Object... pairs) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        for (int i = 0; i < pairs.length; i += 2) {
-            row.put((String) pairs[i], pairs[i + 1]);
-        }
-        return row;
-    }
-
-    private static ElementRef element(List<String> pathId, Object parent, Object key, Object identity) {
-        return new ElementRef(pathId, parent, List.of(key), identity);
-    }
-
     private static ElementRef policy(String id) {
         return element(List.of("policies"), null, id, id);
     }
@@ -42,18 +28,6 @@ class RootAssemblyReparentTest {
     /** The claim CL1, hung under whichever policy {@code parent} names. */
     private static ElementRef claimUnder(String parent) {
         return element(List.of("policies", "claims"), parent, "CL1", "CL1");
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> listAt(Map<String, Object> document, String... path) {
-        Object node = document;
-        for (int i = 0; i < path.length; i++) {
-            node = ((Map<String, Object>) node).get(path[i]);
-            if (i < path.length - 1) {
-                node = ((List<Map<String, Object>>) node).get(0);
-            }
-        }
-        return (List<Map<String, Object>>) node;
     }
 
     /** One customer, two policies, and a claim with a document of its own hanging under the first policy. */
