@@ -1,6 +1,5 @@
 package io.tapstate.runtime.engine.nest;
 
-import io.tapstate.core.event.SourceOrder;
 import io.tapstate.core.model.EmbedAs;
 import org.junit.jupiter.api.Test;
 
@@ -8,10 +7,13 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static io.tapstate.runtime.engine.nest.NestFixtures.at;
+import static io.tapstate.runtime.engine.nest.NestFixtures.element;
+import static io.tapstate.runtime.engine.nest.NestFixtures.listAt;
+import static io.tapstate.runtime.engine.nest.NestFixtures.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
@@ -21,36 +23,6 @@ class RootAssemblyNestingTest {
             new EmbedSlot("policies", EmbedAs.ARRAY, List.of(
                     new EmbedSlot("claims", EmbedAs.ARRAY, List.of(
                             new EmbedSlot("documents", EmbedAs.ARRAY, List.of()))))));
-
-    private static SourceOrder at(long seq) {
-        return new SourceOrder(1L, seq);
-    }
-
-    private static Map<String, Object> row(Object... pairs) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        for (int i = 0; i < pairs.length; i += 2) {
-            row.put((String) pairs[i], pairs[i + 1]);
-        }
-        return row;
-    }
-
-    /** An element of the embed at {@code pathId}, hung under the parent row that answers to {@code parent}. */
-    private static ElementRef element(List<String> pathId, Object parent, Object key, Object identity) {
-        return new ElementRef(pathId, parent, List.of(key), identity);
-    }
-
-    /** The array an embed occupies in the rendered document, reached through the first element of each level. */
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> listAt(Map<String, Object> document, String... path) {
-        Object node = document;
-        for (int i = 0; i < path.length; i++) {
-            node = ((Map<String, Object>) node).get(path[i]);
-            if (i < path.length - 1) {
-                node = ((List<Map<String, Object>>) node).get(0);
-            }
-        }
-        return (List<Map<String, Object>>) node;
-    }
 
     /** A claims element as the four-level shape renders it: its own row, plus the empty documents array. */
     private static Map<String, Object> claim(String number) {

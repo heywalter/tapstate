@@ -1,33 +1,21 @@
 package io.tapstate.runtime.engine.nest;
 
 import io.tapstate.core.event.ChainPosition;
-import io.tapstate.core.event.SourceOrder;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static io.tapstate.runtime.engine.nest.NestFixtures.at;
+import static io.tapstate.runtime.engine.nest.NestFixtures.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 class ResolverStateTest {
-
-    private static SourceOrder at(long seq) {
-        return new SourceOrder(1L, seq);
-    }
-
-    private static Map<String, Object> row(Object... pairs) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        for (int i = 0; i < pairs.length; i += 2) {
-            row.put((String) pairs[i], pairs[i + 1]);
-        }
-        return row;
-    }
 
     /** One child event waiting on this key, carrying the position the frontier must not pass. */
     private static PendingChild child(String chain, long seq, String token, Object... pairs) {

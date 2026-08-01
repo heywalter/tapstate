@@ -1,6 +1,5 @@
 package io.tapstate.runtime.engine.nest;
 
-import io.tapstate.core.event.SourceOrder;
 import io.tapstate.core.model.EmbedAs;
 import org.junit.jupiter.api.Test;
 
@@ -8,11 +7,12 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.tapstate.runtime.engine.nest.NestFixtures.at;
+import static io.tapstate.runtime.engine.nest.NestFixtures.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
@@ -22,21 +22,9 @@ class RootAssemblyTest {
     private static final List<EmbedSlot> ITEMS_ARRAY = List.of(new EmbedSlot(ITEMS, EmbedAs.ARRAY, List.of()));
     private static final List<EmbedSlot> ITEMS_OBJECT = List.of(new EmbedSlot(ITEMS, EmbedAs.OBJECT, List.of()));
 
-    private static SourceOrder at(long seq) {
-        return new SourceOrder(1L, seq);
-    }
-
     /** One element of the single array embed under the root, identified by {@code value}. */
     private static ElementRef item(Object value) {
         return new ElementRef(List.of(ITEMS), null, List.of(value), null);
-    }
-
-    private static Map<String, Object> row(Object... pairs) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        for (int i = 0; i < pairs.length; i += 2) {
-            row.put((String) pairs[i], pairs[i + 1]);
-        }
-        return row;
     }
 
     @SuppressWarnings("unchecked")
