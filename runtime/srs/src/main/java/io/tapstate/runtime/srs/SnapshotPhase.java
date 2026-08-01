@@ -22,13 +22,19 @@ public final class SnapshotPhase {
     }
 
     /**
-     * Runs the snapshot phase: records the cdc-start position for the chain, then drains the bounded
-     * snapshot read straight to {@code sink}, returning the number of events passed through.
+     * Runs the snapshot phase for one {@code table}: records the cdc-start position for the chain, drains
+     * the bounded snapshot read straight to {@code sink}, then marks the table's snapshot complete.
+     * Returns the number of events passed through.
      *
-     * <p>The cdc-start position — the source log position sampled at snapshot start — is recorded before
-     * the batch drains, so the cdc tail that follows resumes from before the snapshot and the idempotent
-     * sink absorbs the overlap; no change made while the snapshot runs is missed. Events are passed
-     * through one by one, never buffered in the change ring, and the batch is always closed.
+     * <p>The two marks bracket the drain and answer different questions. The cdc-start position — the
+     * source log position sampled at snapshot start — is recorded before the batch drains, so the cdc tail
+     * that follows resumes from before the snapshot and the idempotent sink absorbs the overlap; no change
+     * made while the snapshot runs is missed. Its presence therefore means the snapshot has <em>started</em>.
+     * The completion mark is written only after the drain returns, so its presence means the table has been
+     * read to exhaustion. A drain that fails partway marks nothing: an aborted snapshot is not a completed
+     * one, and a reader treating a partial drain as exhausted would conclude rows are absent from the source
+     * that were merely never read. Events are passed through one by one, never buffered in the change ring,
+     * and the batch is always closed.
      *
      * <p>Seeding the chain's meta record is a separate lifecycle step; recording the cdc-start position on
      * an unseeded chain is a caller ordering error surfaced by the store.
@@ -37,18 +43,22 @@ public final class SnapshotPhase {
             CapturePort port,
             CaptureConfig config,
             String miningChainId,
+            String table,
             SourcePosition cdcStart,
             SrsMetaStore meta,
             Consumer<Envelope> sink) {
         Objects.requireNonNull(port, "port");
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(miningChainId, "miningChainId");
+        Objects.requireNonNull(table, "table");
         Objects.requireNonNull(cdcStart, "cdcStart");
         Objects.requireNonNull(meta, "meta");
         Objects.requireNonNull(sink, "sink");
 
         meta.setCdcStartPosition(miningChainId, cdcStart.token());
-        return drain(port, config, sink);
+        long count = drain(port, config, sink);
+        meta.markSnapshotComplete(miningChainId, table);
+        return count;
     }
 
     /**

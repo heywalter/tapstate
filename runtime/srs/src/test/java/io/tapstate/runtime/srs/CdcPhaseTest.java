@@ -348,6 +348,11 @@ class CdcPhaseTest {
         }
 
         @Override
+        public void markSnapshotComplete(String miningChainId, String table) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void appendSchemaVersion(String miningChainId, SchemaVersion version) {
             throw new UnsupportedOperationException();
         }

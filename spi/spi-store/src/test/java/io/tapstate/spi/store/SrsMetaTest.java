@@ -22,13 +22,32 @@ class SrsMetaTest {
     @Test
     void holdsTheMiningChainMetaFields() {
         SrsMeta meta = new SrsMeta("chain-1", "gtid:aaa-1:120",
-                List.of(consumer()), "gtid:aaa-1:0", List.of(schema()), "7d");
+                List.of(consumer()), "gtid:aaa-1:0", List.of(schema()), "7d", List.of("orders"));
         assertThat(meta.miningChainId()).isEqualTo("chain-1");
         assertThat(meta.sourceReadOffset()).isEqualTo("gtid:aaa-1:120");
         assertThat(meta.consumerOffsets()).containsExactly(consumer());
         assertThat(meta.cdcStartPosition()).isEqualTo("gtid:aaa-1:0");
         assertThat(meta.schemaHistory()).containsExactly(schema());
         assertThat(meta.retention()).isEqualTo("7d");
+        assertThat(meta.snapshotCompletedTables()).containsExactly("orders");
+    }
+
+    @Test
+    void tracksSnapshotCompletionPerTableBecauseOneChainCarriesManyTables() {
+        // A mining chain is keyed by the physical source coordinate and deliberately excludes the table
+        // subset, so two sources reading different tables of one database share this record. The cdc tail
+        // is one log read and its offset is a chain-level scalar, but each table is snapshotted by its own
+        // capture run -- so completion is per table, and a chain-level flag could not say which table it
+        // meant. A table is listed only once its own snapshot drained.
+        SrsMeta meta = new SrsMeta("chain-1", null, List.of(), null, List.of(), null,
+                List.of("orders", "order_items"));
+        assertThat(meta.snapshotCompletedTables()).containsExactly("orders", "order_items");
+    }
+
+    @Test
+    void theSixArgConstructorLeavesNoTableMarkedSnapshotComplete() {
+        SrsMeta meta = new SrsMeta("chain-1", null, List.of(), null, List.of(), null);
+        assertThat(meta.snapshotCompletedTables()).isEmpty();
     }
 
     @Test
@@ -62,11 +81,22 @@ class SrsMetaTest {
     }
 
     @Test
+    void copiesTheSnapshotCompletedTablesSoALaterMutationDoesNotLeakIn() {
+        List<String> live = new ArrayList<>();
+        live.add("orders");
+        SrsMeta meta = new SrsMeta("chain-1", null, List.of(), null, List.of(), null, live);
+        live.clear();
+        assertThat(meta.snapshotCompletedTables()).containsExactly("orders");
+    }
+
+    @Test
     void rejectsMutationOfTheReturnedLists() {
         SrsMeta meta = new SrsMeta("chain-1", null, List.of(), null, List.of(), null);
         assertThatThrownBy(() -> meta.consumerOffsets().add(consumer()))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> meta.schemaHistory().add(schema()))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> meta.snapshotCompletedTables().add("orders"))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 
@@ -81,6 +111,8 @@ class SrsMetaTest {
         assertThatThrownBy(() -> new SrsMeta("chain-1", null, null, null, List.of(), null))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new SrsMeta("chain-1", null, List.of(), null, null, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SrsMeta("chain-1", null, List.of(), null, List.of(), null, null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

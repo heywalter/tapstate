@@ -42,7 +42,8 @@ class MongoSrsMetaStoreTest {
                 List.of(
                         new SchemaVersion(0, Map.of("id", "int"), 0),
                         new SchemaVersion(1, new LinkedHashMap<>(Map.of("id", "int", "name", "string")), 12)),
-                "7d");
+                "7d",
+                List.of("orders"));
 
         Document document = MongoSrsMetaStore.toDocument(meta);
 
@@ -52,7 +53,33 @@ class MongoSrsMetaStoreTest {
         assertThat(document.getString("retention")).isEqualTo("7d");
         // consumer cursors keyed by pipeline id, so a per-consumer set targets one path
         assertThat(document.get("consumerOffsets", Document.class)).containsOnlyKeys("p1", "p2");
+        // snapshot completion is per table: this chain has drained orders but not items
+        assertThat(document.getList("snapshotCompletedTables", String.class)).containsExactly("orders");
         assertThat(MongoSrsMetaStore.toMeta(document)).isEqualTo(meta);
+    }
+
+    @Test
+    void snapshotCompleteAddsToSetSoARepeatedMarkDoesNotDuplicateTheTable() {
+        Document update = MongoSrsMetaStore.snapshotCompleteUpdate("orders");
+
+        // $addToSet, not $push: a re-run of a table's snapshot (a restart mid-backfill, a replay) marks the
+        // same table again, and the mark is a set membership question -- "has this table drained?" -- so a
+        // second mark must be a no-op rather than a second entry.
+        assertThat(update).isEqualTo(new Document("$addToSet", new Document("snapshotCompletedTables", "orders")));
+    }
+
+    @Test
+    void toMetaOnADocumentWrittenBeforeSnapshotCompletionExistedReadsBackAsNoTableCompleted() {
+        // The meta field set is append-only and a newer reader must stay compatible with a document written
+        // before the field existed. Absence is not corruption here: it reads as "no table has been marked",
+        // which is exactly what a chain snapshotted by an older build had recorded.
+        Document old = new Document("_id", "chain")
+                .append("consumerOffsets", new Document())
+                .append("schemaHistory", List.of());
+
+        SrsMeta meta = MongoSrsMetaStore.toMeta(old);
+
+        assertThat(meta.snapshotCompletedTables()).isEmpty();
     }
 
     @Test

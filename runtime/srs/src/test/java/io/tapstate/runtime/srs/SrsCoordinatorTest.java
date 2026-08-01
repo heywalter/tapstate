@@ -236,6 +236,11 @@ class SrsCoordinatorTest {
         }
 
         @Override
+        public void markSnapshotComplete(String miningChainId, String table) {
+            mutations.add("snapshotComplete:" + miningChainId + "/" + table);
+        }
+
+        @Override
         public void appendSchemaVersion(String miningChainId, SchemaVersion version) {
             mutations.add("schema:" + miningChainId);
         }

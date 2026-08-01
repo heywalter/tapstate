@@ -340,7 +340,7 @@ class CaptureRunUnitJetSmokeTest {
             SrsMeta m = require(miningChainId);
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), sourceReadOffset, m.consumerOffsets(), m.cdcStartPosition(),
-                    m.schemaHistory(), m.retention()));
+                    m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
         }
 
         @Override
@@ -351,7 +351,7 @@ class CaptureRunUnitJetSmokeTest {
             next.add(offset);
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
-                    m.schemaHistory(), m.retention()));
+                    m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
         }
 
         @Override
@@ -372,7 +372,7 @@ class CaptureRunUnitJetSmokeTest {
             next.add(new ConsumerOffset(pipelineId, perTable, ack));
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
-                    m.schemaHistory(), m.retention()));
+                    m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
         }
 
         @Override
@@ -391,7 +391,7 @@ class CaptureRunUnitJetSmokeTest {
             next.add(new ConsumerOffset(pipelineId, perTable, srcpos));
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
-                    m.schemaHistory(), m.retention()));
+                    m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
         }
 
         @Override
@@ -399,7 +399,7 @@ class CaptureRunUnitJetSmokeTest {
             SrsMeta m = require(miningChainId);
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), m.consumerOffsets(), cdcStartPosition,
-                    m.schemaHistory(), m.retention()));
+                    m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
         }
 
         @Override
@@ -409,7 +409,20 @@ class CaptureRunUnitJetSmokeTest {
             next.add(version);
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), m.consumerOffsets(), m.cdcStartPosition(),
-                    next, m.retention()));
+                    next, m.retention(), m.snapshotCompletedTables()));
+        }
+
+        @Override
+        public synchronized void markSnapshotComplete(String miningChainId, String table) {
+            SrsMeta m = require(miningChainId);
+            if (m.snapshotCompletedTables().contains(table)) {
+                return;
+            }
+            List<String> next = new ArrayList<>(m.snapshotCompletedTables());
+            next.add(table);
+            records.put(miningChainId, new SrsMeta(
+                    m.miningChainId(), m.sourceReadOffset(), m.consumerOffsets(), m.cdcStartPosition(),
+                    m.schemaHistory(), m.retention(), next));
         }
 
         private SrsMeta require(String miningChainId) {
