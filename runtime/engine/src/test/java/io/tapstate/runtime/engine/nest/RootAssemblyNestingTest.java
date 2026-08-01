@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 class RootAssemblyNestingTest {
 
@@ -184,6 +185,12 @@ class RootAssemblyNestingTest {
         assembly.applyElement(policy, row("policy_no", "P1"), at(5));
         Map<String, Object> document = assembly.render(POLICIES_CLAIMS_DOCUMENTS).orElseThrow();
         assertThat(listAt(document, "policies", "claims")).containsExactly(claim("CL1"));
+    }
+
+    @Test
+    void anElementAlwaysNamesTheEmbedItBelongsTo() {
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> new ElementRef(List.of(), null, List.of("CL1"), null));
     }
 
     @Test
