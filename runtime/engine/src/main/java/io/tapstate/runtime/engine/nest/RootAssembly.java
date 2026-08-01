@@ -12,36 +12,47 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * One nested document under assembly: the root row, every element attached to it, and the tombstones
- * that keep a replay from undoing a deletion. It is the state a stateful nest node holds per root key,
- * mutated in place as events arrive and rendered into the document that goes downstream.
+ * One nested document under assembly: the root row, the tree of elements attached beneath it, and the
+ * tombstones that keep a replay from undoing a deletion. It is the state a stateful nest node holds per
+ * root key, mutated in place as events arrive and rendered into the document that goes downstream.
  *
  * <p><b>Every mutation carries an order and the higher order wins.</b> A mutation whose order is not
- * strictly greater than what the slot already holds is refused and reported as no change, so a replay,
- * a re-delivered snapshot row and an out-of-order arrival all converge on the same document. A tie
- * keeps what is already there: two events that compare equal are never two versions of one row.
+ * strictly greater than what the element already holds is refused and reported as no change, so a
+ * replay, a re-delivered snapshot row and an out-of-order arrival all converge on the same document. A
+ * tie keeps what is already there: two events that compare equal are never two versions of one row.
  *
- * <p><b>A delete leaves a versioned tombstone; it never drops the slot.</b> The element disappears
- * from the document but its order stays behind, so an insert replayed from beneath it stays deleted
- * while a genuine rebuild above it brings the element back. Dropping the entry instead would let any
- * replay resurrect deleted data, and the deletion would be lost with no error anywhere.
+ * <p><b>A delete leaves a versioned tombstone; it never drops the element.</b> The element disappears
+ * from the document but its order — and the subtree hanging beneath it — stay behind, so an insert
+ * replayed from beneath it stays deleted while a genuine rebuild above it brings the element back with
+ * everything that had been attached to it. Dropping the entry instead would let any replay resurrect
+ * deleted data, and would lose a subtree that no later event will resend.
  *
- * <p><b>Deleting the root keeps its elements attached.</b> A root tombstone is this assembly with the
- * root marked absent, not a small object that replaces it: a root that comes back finds everything
- * that had been attached to it, and a subtree still being moved out is still here to move. Reclaiming
- * the whole key is a memory optimisation performed elsewhere, under its own conditions, and is never
- * what makes the deletion correct.
+ * <p><b>Deleting the root keeps its elements attached</b>, for the same reason and by the same means: a
+ * root tombstone is this assembly with the root marked absent, not a small object that replaces it.
+ * Reclaiming the whole key is a memory optimisation performed elsewhere, under its own conditions, and
+ * is never what makes the deletion correct.
  *
- * <p><b>A document is rendered only while the root is present.</b> Elements that arrive first are held
- * and rendered once their root does; until then there is no document at all, whatever triggered the
- * render — a child arriving, an emit window closing, a move finishing. A rootless skeleton would
- * become a permanent ghost document downstream. The deletion of the root is not an assembled document
- * and is not governed by this: emitting it is the caller's business.
+ * <p><b>An element hangs under the row its join key points at, not under a level.</b> Elements are
+ * placed by the path of field names from the root, so two embeds side by side stay apart even when
+ * their rows carry the same key value — a policy 77 and an order 77 are different parents. A child
+ * whose parent row has not arrived is held until it does and then attached, which is what lets a deep
+ * row travel with nothing but its own parent's key. Held children are state like any other: they
+ * survive being stored and restored, and a delete held that way still wins over an insert replayed
+ * from beneath it.
+ *
+ * <p><b>A document is rendered only while the root is present.</b> Until the root arrives, and again
+ * once it is deleted, there is no document at all, whatever triggered the render — a child arriving, an
+ * emit window closing, a move finishing. A rootless skeleton would become a permanent ghost document
+ * downstream. The deletion of the root is not an assembled document and is not governed by this:
+ * emitting it is the caller's business.
  *
  * <p>An array embed with no live element renders an empty array; an object embed with none omits its
  * field rather than rendering null, so two correct implementations cannot differ in the shape they
  * produce for the same input. An object embed that ends up holding several rows — a one-to-one the
  * source contradicted — shows the one with the highest order.
+ *
+ * <p>An element's identity is taken when it first appears. A row whose identity value changes later is
+ * a structural key change, which this state does not track: its existing children stay where they are.
  *
  * <p>Field maps handed in are copied and the rendered document is built fresh each time, so neither
  * side can mutate the other's data. {@link Serializable} because this state outlives a single run.
@@ -54,7 +65,15 @@ public final class RootAssembly implements Serializable {
     private Map<String, Object> rootFields;
     private SourceOrder rootOrder;
     private boolean rootPresent;
-    private final Map<String, Map<List<Object>, Element>> elements = new LinkedHashMap<>();
+
+    /** The embeds directly under the root: field name, then element key. */
+    private final Map<String, Map<List<Object>, ElementNode>> children = new LinkedHashMap<>();
+
+    /** Which element each identity value names, per embed — how a child finds the row it hangs under. */
+    private final Map<List<String>, Map<Object, ElementNode>> byIdentity = new LinkedHashMap<>();
+
+    /** Children whose parent row has not arrived yet, by the parent they are waiting for. */
+    private final Map<WaitingOn, List<Pending>> waiting = new LinkedHashMap<>();
 
     /** Whether the root row is currently in the document — false before it arrives and after it is deleted. */
     public boolean rootPresent() {
@@ -93,26 +112,27 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
-     * Applies one element of the embed at {@code path}, identified by {@code elementKey} — an update of
-     * an element already there keeps its place in the array. Returns whether the assembly changed.
+     * Applies one element's row — an update of an element already there keeps its place in the array and
+     * the children beneath it. Returns whether the assembly changed; a child held for a parent that has
+     * not arrived has changed it.
      */
-    public boolean applyElement(String path, List<Object> elementKey, Map<String, Object> fields, SourceOrder order) {
+    public boolean applyElement(ElementRef ref, Map<String, Object> fields, SourceOrder order) {
         Objects.requireNonNull(fields, "fields");
-        return mutate(path, elementKey, copyOf(fields), order);
+        return mutate(ref, copyOf(fields), order);
     }
 
     /**
-     * Deletes one element of the embed at {@code path}, leaving a tombstone at {@code order} in its
-     * place. Returns whether the assembly changed.
+     * Deletes one element, leaving a tombstone at {@code order} and its subtree in place. Returns
+     * whether the assembly changed.
      */
-    public boolean deleteElement(String path, List<Object> elementKey, SourceOrder order) {
-        return mutate(path, elementKey, null, order);
+    public boolean deleteElement(ElementRef ref, SourceOrder order) {
+        return mutate(ref, null, order);
     }
 
     /**
      * The document as it now stands, or empty while the root is absent. {@code slots} is the declared
-     * shape of the embeds directly under the root: it decides which field each one occupies and whether
-     * an absent embed renders as an empty array or not at all.
+     * shape of the embeds under the root, each carrying its own: it decides which field every embed
+     * occupies and whether an absent one renders as an empty array or not at all.
      */
     public Optional<Map<String, Object>> render(List<EmbedSlot> slots) {
         Objects.requireNonNull(slots, "slots");
@@ -120,71 +140,145 @@ public final class RootAssembly implements Serializable {
             return Optional.empty();
         }
         Map<String, Object> document = new LinkedHashMap<>(rootFields);
-        for (EmbedSlot slot : slots) {
-            Map<List<Object>, Element> held = elements.get(slot.path());
-            switch (slot.as()) {
-                case ARRAY -> document.put(slot.path(), liveOf(held));
-                case OBJECT -> latestOf(held).ifPresent(element -> document.put(slot.path(), element));
-            }
-        }
+        renderInto(document, children, slots);
         return Optional.of(document);
     }
 
-    private boolean mutate(String path, List<Object> elementKey, Map<String, Object> fields, SourceOrder order) {
-        Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(elementKey, "elementKey");
+    private boolean mutate(ElementRef ref, Map<String, Object> fields, SourceOrder order) {
+        Objects.requireNonNull(ref, "ref");
         Objects.requireNonNull(order, "order");
-        Map<List<Object>, Element> slot = elements.computeIfAbsent(path, ignored -> new LinkedHashMap<>());
-        List<Object> identity = copyOf(elementKey);
-        Element current = slot.get(identity);
-        if (current != null && !wins(order, current.order())) {
-            return false;
+        Map<String, Map<List<Object>, ElementNode>> container = containerFor(ref);
+        if (container == null) {
+            waiting.computeIfAbsent(new WaitingOn(ref.parentPathId(), ref.parentIdentity()), on -> new ArrayList<>())
+                    .add(new Pending(ref, fields, order));
+            return true;
         }
-        slot.put(identity, new Element(fields, order));
+        Map<List<Object>, ElementNode> slot = container.computeIfAbsent(ref.field(), field -> new LinkedHashMap<>());
+        ElementNode held = slot.get(ref.elementKey());
+        if (held != null) {
+            if (!wins(order, held.order())) {
+                return false;
+            }
+            held.set(fields, order);
+            return true;
+        }
+        ElementNode element = new ElementNode(fields, order);
+        slot.put(ref.elementKey(), element);
+        if (ref.identity() != null) {
+            byIdentity.computeIfAbsent(ref.pathId(), path -> new LinkedHashMap<>()).put(ref.identity(), element);
+            release(ref.pathId(), ref.identity());
+        }
         return true;
     }
 
-    private static boolean wins(SourceOrder candidate, SourceOrder held) {
-        return held == null || candidate.compareTo(held) > 0;
+    /** Applies whatever was waiting for the element just added, which may in turn release its own children. */
+    private void release(List<String> pathId, Object identity) {
+        List<Pending> held = waiting.remove(new WaitingOn(pathId, identity));
+        if (held == null) {
+            return;
+        }
+        for (Pending pending : held) {
+            mutate(pending.ref(), pending.fields(), pending.order());
+        }
     }
 
-    private static List<Map<String, Object>> liveOf(Map<List<Object>, Element> held) {
+    /** Where {@code ref}'s embed lives, or null while the parent row it names has not arrived. */
+    private Map<String, Map<List<Object>, ElementNode>> containerFor(ElementRef ref) {
+        List<String> parentPath = ref.parentPathId();
+        if (parentPath.isEmpty()) {
+            return children;
+        }
+        ElementNode parent = byIdentity.getOrDefault(parentPath, Map.of()).get(ref.parentIdentity());
+        return parent == null ? null : parent.children();
+    }
+
+    private static void renderInto(Map<String, Object> document,
+            Map<String, Map<List<Object>, ElementNode>> held, List<EmbedSlot> slots) {
+        for (EmbedSlot slot : slots) {
+            Map<List<Object>, ElementNode> elements = held.get(slot.path());
+            switch (slot.as()) {
+                case ARRAY -> document.put(slot.path(), liveOf(elements, slot));
+                case OBJECT -> latestOf(elements)
+                        .ifPresent(element -> document.put(slot.path(), renderOne(element, slot)));
+            }
+        }
+    }
+
+    private static Map<String, Object> renderOne(ElementNode element, EmbedSlot slot) {
+        Map<String, Object> rendered = new LinkedHashMap<>(element.fields());
+        renderInto(rendered, element.children(), slot.children());
+        return rendered;
+    }
+
+    private static List<Map<String, Object>> liveOf(Map<List<Object>, ElementNode> elements, EmbedSlot slot) {
         List<Map<String, Object>> live = new ArrayList<>();
-        if (held != null) {
-            for (Element element : held.values()) {
+        if (elements != null) {
+            for (ElementNode element : elements.values()) {
                 if (!element.deleted()) {
-                    live.add(element.fields());
+                    live.add(renderOne(element, slot));
                 }
             }
         }
         return live;
     }
 
-    private static Optional<Map<String, Object>> latestOf(Map<List<Object>, Element> held) {
-        Element latest = null;
-        if (held != null) {
-            for (Element element : held.values()) {
+    private static Optional<ElementNode> latestOf(Map<List<Object>, ElementNode> elements) {
+        ElementNode latest = null;
+        if (elements != null) {
+            for (ElementNode element : elements.values()) {
                 if (!element.deleted() && (latest == null || element.order().compareTo(latest.order()) > 0)) {
                     latest = element;
                 }
             }
         }
-        return latest == null ? Optional.empty() : Optional.of(latest.fields());
+        return Optional.ofNullable(latest);
+    }
+
+    private static boolean wins(SourceOrder candidate, SourceOrder held) {
+        return held == null || candidate.compareTo(held) > 0;
     }
 
     private static Map<String, Object> copyOf(Map<String, Object> fields) {
         return Collections.unmodifiableMap(new LinkedHashMap<>(fields));
     }
 
-    private static List<Object> copyOf(List<Object> elementKey) {
-        return Collections.unmodifiableList(new ArrayList<>(elementKey));
-    }
+    /** One element as last applied: its row, or null once deleted, the order that put it there, and its own embeds. */
+    private static final class ElementNode implements Serializable {
 
-    /** One element as last applied: its row, or null once deleted, and the order that put it there. */
-    private record Element(Map<String, Object> fields, SourceOrder order) implements Serializable {
+        private Map<String, Object> fields;
+        private SourceOrder order;
+        private final Map<String, Map<List<Object>, ElementNode>> children = new LinkedHashMap<>();
 
-        boolean deleted() {
+        private ElementNode(Map<String, Object> fields, SourceOrder order) {
+            this.fields = fields;
+            this.order = order;
+        }
+
+        private void set(Map<String, Object> newFields, SourceOrder newOrder) {
+            fields = newFields;
+            order = newOrder;
+        }
+
+        private Map<String, Object> fields() {
+            return fields;
+        }
+
+        private SourceOrder order() {
+            return order;
+        }
+
+        private Map<String, Map<List<Object>, ElementNode>> children() {
+            return children;
+        }
+
+        private boolean deleted() {
             return fields == null;
         }
     }
+
+    /** The parent an element is waiting for: the embed the parent belongs to, and the value it answers to. */
+    private record WaitingOn(List<String> pathId, Object identity) implements Serializable { }
+
+    /** An element event held until the row it hangs under arrives. */
+    private record Pending(ElementRef ref, Map<String, Object> fields, SourceOrder order) implements Serializable { }
 }
