@@ -11,16 +11,19 @@ import java.util.List;
 import java.util.Map;
 
 import static io.tapstate.runtime.engine.nest.NestFixtures.at;
+import static io.tapstate.runtime.engine.nest.NestFixtures.element;
 import static io.tapstate.runtime.engine.nest.NestFixtures.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 class ResolverStateTest {
 
-    /** One child event waiting on this key, carrying the position the frontier must not pass. */
-    private static PendingChild child(String chain, long seq, String token, Object... pairs) {
-        return new PendingChild(
-                Map.of(chain, new ChainPosition(at(seq), token)), row(pairs), false);
+    /** One child element waiting on this key, carrying the position the frontier must not pass. */
+    private static NestElement child(String chain, long seq, String token, Object... pairs) {
+        return new NestElement(
+                element(List.of("items"), "P1", pairs[1], null),
+                row(pairs), at(seq),
+                Map.of(chain, new ChainPosition(at(seq), token)));
     }
 
     @Test
@@ -35,7 +38,7 @@ class ResolverStateTest {
     @Test
     void aChildThatOutrunsTheMappingIsHeldAndReleasedWhenItArrives() {
         ResolverState state = new ResolverState();
-        PendingChild early = child("items", 2, "t2", "sku", "a");
+        NestElement early = child("items", 2, "t2", "sku", "a");
 
         assertThat(state.resolve(early)).isEqualTo(Resolution.HELD);
         assertThat(state.waiting()).containsExactly(early);
@@ -99,7 +102,7 @@ class ResolverStateTest {
     @Test
     void deletingTheRowDrainsWhatWasWaitingImmediately() {
         ResolverState state = new ResolverState();
-        PendingChild orphaned = child("items", 2, "t2", "sku", "a");
+        NestElement orphaned = child("items", 2, "t2", "sku", "a");
         state.resolve(orphaned);
 
         // The parent is known deleted, so the bucket empties now rather than waiting for a timeout: those
@@ -152,7 +155,7 @@ class ResolverStateTest {
     @Test
     void theStateRoundTripsWithItsTombstoneAndItsWaitingChildren() throws Exception {
         ResolverState state = new ResolverState();
-        PendingChild waiting = child("items", 2, "t2", "sku", "a");
+        NestElement waiting = child("items", 2, "t2", "sku", "a");
         state.resolve(waiting);
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -173,7 +176,7 @@ class ResolverStateTest {
         ResolverState state = new ResolverState();
         state.resolve(child("items", 2, "binlog.000042:1024", "sku", "a"));
 
-        List<PendingChild> released = state.declare("C1", at(3));
+        List<NestElement> released = state.declare("C1", at(3));
         assertThat(released).hasSize(1);
         assertThat(released.get(0).positions().get("items").token()).isEqualTo("binlog.000042:1024");
     }

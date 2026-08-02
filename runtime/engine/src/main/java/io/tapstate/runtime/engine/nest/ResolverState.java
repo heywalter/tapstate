@@ -47,7 +47,7 @@ public final class ResolverState implements Serializable {
     private Object parentKey;
     private SourceOrder order;
     private boolean deleted;
-    private final List<PendingChild> waiting = new ArrayList<>();
+    private final List<NestElement> waiting = new ArrayList<>();
 
     /** The parent row these children hang from, or null before it is known and after it is deleted. */
     public Object parentKey() {
@@ -60,7 +60,7 @@ public final class ResolverState implements Serializable {
     }
 
     /** The children held here, in the order they arrived. */
-    public List<PendingChild> waiting() {
+    public List<NestElement> waiting() {
         return List.copyOf(waiting);
     }
 
@@ -69,7 +69,7 @@ public final class ResolverState implements Serializable {
      * for it. Returns the released children — empty when the declaration is refused as already
      * superseded, or when nothing was waiting.
      */
-    public List<PendingChild> declare(Object parentKey, SourceOrder order) {
+    public List<NestElement> declare(Object parentKey, SourceOrder order) {
         Objects.requireNonNull(order, "order");
         if (!wins(order)) {
             return List.of();
@@ -85,7 +85,7 @@ public final class ResolverState implements Serializable {
      * Returns the children that were waiting: they can never resolve now, and the caller must route
      * them rather than drop them.
      */
-    public List<PendingChild> deleteMapping(SourceOrder order) {
+    public List<NestElement> deleteMapping(SourceOrder order) {
         Objects.requireNonNull(order, "order");
         if (!wins(order)) {
             return List.of();
@@ -100,7 +100,7 @@ public final class ResolverState implements Serializable {
      * Offers one child event to this key: resolved when the parent row is known, absent when it is known
      * deleted, held otherwise — and a held child is kept until a declaration or a deletion releases it.
      */
-    public Resolution resolve(PendingChild child) {
+    public Resolution resolve(NestElement child) {
         Objects.requireNonNull(child, "child");
         if (deleted) {
             return Resolution.PARENT_ABSENT;
@@ -118,7 +118,7 @@ public final class ResolverState implements Serializable {
      */
     public Map<String, ChainPosition> lowestPendingByChain() {
         Map<String, ChainPosition> lowest = new LinkedHashMap<>();
-        for (PendingChild child : waiting) {
+        for (NestElement child : waiting) {
             child.positions().forEach((chain, position) -> lowest.merge(chain, position,
                     (held, candidate) -> candidate.order().compareTo(held.order()) < 0 ? candidate : held));
         }
@@ -129,11 +129,11 @@ public final class ResolverState implements Serializable {
         return order == null || candidate.compareTo(order) > 0;
     }
 
-    private List<PendingChild> drain() {
+    private List<NestElement> drain() {
         if (waiting.isEmpty()) {
             return List.of();
         }
-        List<PendingChild> released = List.copyOf(waiting);
+        List<NestElement> released = List.copyOf(waiting);
         waiting.clear();
         return released;
     }

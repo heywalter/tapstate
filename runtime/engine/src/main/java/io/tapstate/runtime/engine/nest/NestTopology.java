@@ -160,7 +160,7 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         String assemblerName = vertexName(nodeId, List.of());
         vertices.add(new NestVertex(List.of(), assemblerName,
                 mapName(pipelineId, nodeId, List.of()), rootIdentity, List.of(),
-                edgesOf(root.from(), List.of(), rootIdentity, top)));
+                edgesOf(root.from(), List.of(), List.of(), rootIdentity, top)));
 
         streams.add(new NestStream(root.from(), List.of(), 0, assemblerName, null));
         for (Node node : all) {
@@ -179,7 +179,7 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         return new NestVertex(node.pathId(), vertexName(nodeId, node.pathId()),
                 mapName(pipelineId, nodeId, node.pathId()), node.identity(),
                 joinFields(node.embed(), parentIdentity),
-                edgesOf(node.embed().from(), node.pathId(), node.identity(), node.children()));
+                edgesOf(node.embed().from(), node.pathId(), node.arrayKey(), node.identity(), node.children()));
     }
 
     /**
@@ -188,15 +188,15 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
      * from its own vertex, already stamped. The count is one plus the number of children - two only when
      * there happens to be exactly one child.
      */
-    private static List<NestInbound> edgesOf(String ownAlias, List<String> ownPathId, List<String> identity,
-            List<Node> children) {
+    private static List<NestInbound> edgesOf(String ownAlias, List<String> ownPathId, List<String> ownElementKey,
+            List<String> identity, List<Node> children) {
         List<NestInbound> edges = new ArrayList<>();
-        edges.add(new NestInbound(0, ownAlias, ownPathId, identity));
+        edges.add(new NestInbound(0, ownAlias, ownPathId, identity, ownElementKey));
         for (Node child : children) {
             edges.add(child.children().isEmpty()
                     ? new NestInbound(edges.size(), child.embed().from(), child.pathId(),
-                            joinFields(child.embed(), identity))
-                    : new NestInbound(edges.size(), null, child.pathId(), List.of()));
+                            joinFields(child.embed(), identity), child.arrayKey())
+                    : new NestInbound(edges.size(), null, child.pathId(), List.of(), List.of()));
         }
         return edges;
     }

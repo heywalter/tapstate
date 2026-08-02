@@ -11,17 +11,19 @@ import java.util.Objects;
  * looking at, so nothing has to be inferred from the row.
  *
  * <p>{@code keyFields} names the fields the key is read off, positionally matched to the vertex's
- * partition key. A cascading edge carries rows that an upstream vertex already stamped with the parent
- * key, so it names no fields and no alias: those two absences are the same fact, and {@link #isCascade()}
- * is the one way to ask it.
+ * partition key, and {@code elementKey} the fields that identify one element of this stream inside the
+ * document it lands in. A cascading edge carries changes an upstream vertex already routed and whose
+ * place in the document it already settled, so it names neither, nor an alias: those absences are the
+ * same fact, and {@link #isCascade()} is the one way to ask it.
  */
-public record NestInbound(int ordinal, String alias, List<String> pathId, List<String> keyFields)
-        implements Serializable {
+public record NestInbound(int ordinal, String alias, List<String> pathId, List<String> keyFields,
+        List<String> elementKey) implements Serializable {
 
     public NestInbound {
         Objects.requireNonNull(pathId, "pathId");
         pathId = List.copyOf(pathId);
         keyFields = keyFields == null ? List.of() : List.copyOf(keyFields);
+        elementKey = elementKey == null ? List.of() : List.copyOf(elementKey);
         if ((alias == null) != keyFields.isEmpty()) {
             throw new IllegalArgumentException(
                     "an edge either names the stream it carries and the fields keying it, or neither");
