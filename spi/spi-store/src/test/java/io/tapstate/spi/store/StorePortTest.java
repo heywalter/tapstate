@@ -519,6 +519,25 @@ class StorePortTest {
     }
 
     @Test
+    void metaGenerationsSurviveALaterUnrelatedMutation() {
+        SrsMetaStore meta = new InMemoryStore().meta();
+        meta.create("chain", null);
+        long running = meta.openEpoch("chain");
+        meta.setCdcStart("chain", "binlog.000042:1024", running);
+
+        meta.markSnapshotComplete("chain", "orders");
+        meta.advanceSourceReadOffset("chain", "gtid:aaa-1:900");
+        meta.appendSchemaVersion("chain", new SchemaVersion(0, Map.of("id", "int"), 0));
+
+        // Each facet is an independent writer of one record. A mutator that rebuilt the record without
+        // carrying the generations through would reset them to "none opened" without failing anything of
+        // its own, and every change after it would compare against a generation the chain has left behind.
+        SrsMeta record = meta.read("chain").orElseThrow();
+        assertThat(record.epoch()).isEqualTo(running);
+        assertThat(record.snapshotEpoch()).isEqualTo(running);
+    }
+
+    @Test
     void metaOpenEpochLeavesTheSnapshotsPinnedGenerationAlone() {
         SrsMetaStore meta = new InMemoryStore().meta();
         meta.create("chain", null);

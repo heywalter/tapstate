@@ -194,7 +194,7 @@ class SrsSourceProcessorTest {
         // A static resolution check: a total-parallelism-one supplier hands the real supplier to one member and
         // a no-op to the rest, so resolving over several members yields more than one distinct supplier.
         ProcessorMetaSupplier meta = SrsSourceProcessor.metaSupplier(
-                "srs.chain.pins", "orders", StartFrom.earliest(), SrsReadCursorPublisherFactory.NONE);
+                "srs.chain.pins", "orders", StartFrom.earliest(), 1L, SrsReadCursorPublisherFactory.NONE);
         List<Address> addresses = List.of(
                 Address.createUnresolvedAddress("10.0.0.1", 5701),
                 Address.createUnresolvedAddress("10.0.0.2", 5702),
@@ -228,7 +228,7 @@ class SrsSourceProcessorTest {
             SrsReadCursorPublisherFactory publisherFactory) {
         DAG dag = new DAG();
         Vertex source = dag.newVertex("source",
-                SrsSourceProcessor.metaSupplier(ringName, src, StartFrom.earliest(), publisherFactory));
+                SrsSourceProcessor.metaSupplier(ringName, src, StartFrom.earliest(), 1L, publisherFactory));
         Vertex project = dag.newVertex("project", Processors.mapP(SrsSourceProcessorTest::describe))
                 .localParallelism(1);
         Vertex sink = dag.newVertex("sink", SinkProcessors.writeListP(sinkName)).localParallelism(1);

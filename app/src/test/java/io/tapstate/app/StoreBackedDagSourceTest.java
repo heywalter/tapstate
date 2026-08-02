@@ -56,6 +56,7 @@ class StoreBackedDagSourceTest {
                 null,
                 serve(FromRef.literal("keep_even"), sync("sync_1", "orders_dest")),
                 null, null));
+        OpenRingGenerations.forSources(store, "orders_src");
 
         DAG dag = new StoreBackedDagSource(store).dagFor("p");
 
@@ -64,6 +65,29 @@ class StoreBackedDagSourceTest {
         assertThat(edges(dag)).containsExactlyInAnyOrder(
                 edge("orders_src", "keep_even"),
                 edge("keep_even", "serve.sync_1"));
+    }
+
+    @Test
+    void refuses_a_pipeline_whose_chain_has_no_ring_generation_open() {
+        FakeStorePort store = new FakeStorePort();
+        store.artifacts().save(cdcSource("orders_src", "orders"));
+        store.artifacts().save(connectionSupplier("orders_dest"));
+        store.artifacts().save(new PipelineResource(
+                "p", null,
+                List.of("orders_src"),
+                null,
+                null,
+                serve(FromRef.literal("orders_src"), sync("sync_1", "orders_dest")),
+                null, null));
+
+        // Starting a pipeline runs its capture before it builds the job, so a chain with no generation open
+        // means the two have been wired the other way round. It crashes bare naming the step -- a wiring
+        // error, not something an author can fix -- because the alternative is handing every change of the
+        // job a generation of zero to be compared on, which no test of the data would ever notice.
+        assertThatThrownBy(() -> new StoreBackedDagSource(store).dagFor("p"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("orders_src")
+                .hasMessageContaining("no ring generation open");
     }
 
     @Test
@@ -215,9 +239,11 @@ class StoreBackedDagSourceTest {
             throw new UnsupportedOperationException();
         }
 
+        private final SrsMetaStore meta = new InMemorySrsMetaStore();
+
         @Override
         public SrsMetaStore meta() {
-            throw new UnsupportedOperationException();
+            return meta;
         }
     }
 }

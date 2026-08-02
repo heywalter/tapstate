@@ -178,7 +178,7 @@ class SrsDagRunTest {
         SupplierEx<SinkWriter> intoSink = () -> new CapturingSinkWriter(sinkName);
         return new DagBindings(
                 sourceId -> SrsSourceProcessor.metaSupplier(
-                        ringName, src, StartFrom.earliest(), SrsReadCursorPublisherFactory.NONE),
+                        ringName, src, StartFrom.earliest(), 1L, SrsReadCursorPublisherFactory.NONE),
                 step -> transformPort,
                 syncElement -> intoSink,
                 ref -> Map.of(

@@ -502,7 +502,7 @@ class CaptureRunUnitTest {
             next.add(table);
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), m.consumerOffsets(), m.cdcStartPosition(),
-                    m.schemaHistory(), m.retention(), next));
+                    m.schemaHistory(), m.retention(), next, m.epoch(), m.snapshotEpoch()));
         }
 
         private SrsMeta require(String miningChainId) {

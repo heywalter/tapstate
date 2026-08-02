@@ -1,12 +1,20 @@
 package io.tapstate.runtime.srs;
 
 import io.tapstate.core.event.Envelope;
+import io.tapstate.core.event.SourceOrder;
 
 /**
  * Projects a cdc change out of the per-table change ring into the transform-facing envelope currency.
- * This is the one place the source position enters that currency: the item's opaque position token
- * becomes the envelope's {@code srcPos}, which the transform chain carries through and the sink acks back
- * so the durable source-read frontier never passes an unacked change.
+ * This is the one place a cdc change's position and order enter that currency: the item's opaque position
+ * token becomes the envelope's {@code srcPos}, which the transform chain carries through and the sink acks
+ * back so the durable source-read frontier never passes an unacked change, and the ring's sequence within
+ * the running generation becomes its {@code order}.
+ *
+ * <p>The two are separate answers to separate questions and are stamped together here so that they always
+ * belong to the same change. The token is a connector value the engine never parses — only equality is
+ * defined on it — so it can resume a read but can never say which of two changes came first. The order is
+ * the engine's own and is what every stateful node compares. The sequence comes from the reader rather
+ * than the item because the ring assigns it on append and keeps it.
  *
  * <p>The stream name is injected, not read from the item — the ring is per-table, so the item does not
  * carry one; the reader is bound to a source vertex that knows the logical stream it feeds. Schema stays
@@ -18,9 +26,12 @@ final class SrsProjection {
     private SrsProjection() {
     }
 
-    /** The envelope for one ring item on the stream {@code src}, carrying the item's source position. */
-    static Envelope toEnvelope(SrsItem item, String src) {
+    /**
+     * The envelope for one ring item on the stream {@code src}, carrying the item's source position and
+     * the {@code order} the engine assigns it.
+     */
+    static Envelope toEnvelope(SrsItem item, String src, SourceOrder order) {
         return new Envelope(
-                item.op(), item.ts(), src, item.before(), item.after(), null, item.srcPos().token());
+                item.op(), item.ts(), src, item.before(), item.after(), null, item.srcPos().token(), order);
     }
 }

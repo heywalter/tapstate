@@ -7,6 +7,7 @@ import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.ringbuffer.Ringbuffer;
 import io.tapstate.core.event.Envelope;
+import io.tapstate.core.event.SourceOrder;
 import java.util.ArrayDeque;
 import java.util.Objects;
 
@@ -37,15 +38,17 @@ public final class SrsSourceProcessor extends AbstractProcessor {
     private final String ringName;
     private final String src;
     private final StartFrom start;
+    private final long epoch;
     private final SrsReadCursorPublisherFactory publisherFactory;
     private final ArrayDeque<Envelope> pending = new ArrayDeque<>();
     private SrsRingReader reader;
 
-    private SrsSourceProcessor(String ringName, String src, StartFrom start,
+    private SrsSourceProcessor(String ringName, String src, StartFrom start, long epoch,
             SrsReadCursorPublisherFactory publisherFactory) {
         this.ringName = ringName;
         this.src = src;
         this.start = start;
+        this.epoch = epoch;
         this.publisherFactory = publisherFactory;
     }
 
@@ -81,7 +84,12 @@ public final class SrsSourceProcessor extends AbstractProcessor {
         if (!emitPending()) {
             return false;
         }
-        reader.fill(item -> pending.add(SrsProjection.toEnvelope(item, src)), FILL_BATCH);
+        // The ring's sequence pairs with the generation this reader runs under to give each change its
+        // order. The sequence alone is not comparable across generations: a rebuilt ring numbers from zero
+        // again, so a change of the new ring would otherwise read as older than one of the ring before it.
+        reader.fill(
+                (item, seq) -> pending.add(SrsProjection.toEnvelope(item, src, new SourceOrder(epoch, seq))),
+                FILL_BATCH);
         emitPending();
         // A streaming source never completes: on an empty ring it returns having emitted nothing and, being
         // non-cooperative, its worker backs off before the next call rather than spinning.
@@ -101,16 +109,24 @@ public final class SrsSourceProcessor extends AbstractProcessor {
 
     /**
      * A meta-supplier for a source vertex tailing {@code ringName} from {@code start}, tagging every change
-     * with the logical stream name {@code src} and reporting its read cursor through {@code publisherFactory}.
-     * The vertex is pinned to total parallelism one: one reader per ring keeps the change stream in order.
+     * with the logical stream name {@code src} and the generation {@code epoch} the ring was opened under,
+     * and reporting its read cursor through {@code publisherFactory}. The vertex is pinned to total
+     * parallelism one: one reader per ring keeps the change stream in order.
+     *
+     * <p>The generation is resolved when the job is assembled, not read per change: the ring is opened
+     * before the job is submitted and does not change generation while it runs, so carrying it here keeps
+     * the durable store off the per-change path entirely.
      */
-    public static ProcessorMetaSupplier metaSupplier(String ringName, String src, StartFrom start,
+    public static ProcessorMetaSupplier metaSupplier(String ringName, String src, StartFrom start, long epoch,
             SrsReadCursorPublisherFactory publisherFactory) {
         Objects.requireNonNull(ringName, "ringName");
         Objects.requireNonNull(src, "src");
         Objects.requireNonNull(start, "start");
         Objects.requireNonNull(publisherFactory, "publisherFactory");
-        SupplierEx<Processor> supplier = () -> new SrsSourceProcessor(ringName, src, start, publisherFactory);
+        if (epoch < 1) {
+            throw new IllegalArgumentException("a ring is read under a generation, got " + epoch);
+        }
+        SupplierEx<Processor> supplier = () -> new SrsSourceProcessor(ringName, src, start, epoch, publisherFactory);
         return ProcessorMetaSupplier.forceTotalParallelismOne(ProcessorSupplier.of(supplier));
     }
 }

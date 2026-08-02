@@ -109,6 +109,7 @@ class ValidatedPipelineBuildsTest {
         Workspace.of(resources);
         InMemoryStorePort store = new InMemoryStorePort();
         resources.forEach(store.artifacts()::save);
+        OpenRingGenerations.forSources(store, "orders_src");
         return store;
     }
 
