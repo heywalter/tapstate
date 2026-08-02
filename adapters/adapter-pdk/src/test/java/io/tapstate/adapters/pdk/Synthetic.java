@@ -569,6 +569,20 @@ final class Synthetic {
                 Map.of("PDK-API-Version", "1.3.5"));
     }
 
+    /**
+     * A second registrable connector declaring an officially supported id, whose manifest declares no
+     * PDK API version — the pair to {@link #seedableMysqlConnector} wherever two accepted connectors
+     * are needed at once.
+     */
+    static Path seedableMongodbConnector(Path dir) {
+        String src = SELF_SCAN_IMPORTS
+                + "@TapConnectorClass(\"mongodb-spec.json\")"
+                + "public class SeedMongodb implements TapConnector {" + INERT_CONNECTOR_BODY + "}";
+        return SyntheticJar.compileToJar(dir, "synthetic.SeedMongodb", src,
+                Map.of("mongodb-spec.json", "{\"properties\":{\"id\":\"mongodb\"}}"),
+                Map.of());
+    }
+
     /** A second registrable connector under a distinct id, whose manifest declares no PDK API version. */
     static Path seedablePaymentsConnector(Path dir) {
         String src = SELF_SCAN_IMPORTS

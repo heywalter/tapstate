@@ -12,7 +12,6 @@ import io.tapstate.core.catalog.ConnectorCatalogEntry;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectorCatalogStore;
-import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.ConnectorSpecStore;
 
@@ -65,14 +64,15 @@ public final class ConnectorCatalogView {
      * still in the store. Not the same question as {@code origin} — a bundled row is catalog metadata
      * that says nothing about a jar being present, and a registration whose bytes went missing is
      * registered but unrunnable. Answered without fetching the artifact.
+     *
+     * <p>Scoped to the connector being asked about. Deciding this from the whole registry listing would
+     * make every read of every connector — bundled ones included, which have no registration at all —
+     * fail on a single entry that cannot be reconstructed.
      */
     private boolean runnable(String connectorId) {
-        for (ConnectorRegistration registration : registry.list()) {
-            if (registration.connectorId().equals(connectorId) && registry.hasArtifact(registration.contentHash())) {
-                return true;
-            }
-        }
-        return false;
+        return registry.find(connectorId)
+                .map(registration -> registry.hasArtifact(registration.contentHash()))
+                .orElse(false);
     }
 
     /**

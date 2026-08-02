@@ -29,8 +29,8 @@ import org.junit.jupiter.api.Test;
  * (save / get / list of canonical resources), a state store whose only write path is the
  * epoch-fencing compare-and-swap, a plain-upsert desired-intent store, a connection catalog store, a
  * discovered source-schema store, a connector distribution registry, the derived connector catalog
- * store, the latest connection-test result store, a plain-upsert per-pipeline observation store, and
- * the SRS meta store.
+ * store, the content-addressed connector spec source store, the latest connection-test result store, a
+ * plain-upsert per-pipeline observation store, and the SRS meta store.
  */
 class StorePortTest {
 
@@ -44,7 +44,7 @@ class StorePortTest {
     // --- facade ---
 
     @Test
-    void facadeExposesTheTenStores() {
+    void facadeExposesTheElevenStores() {
         StorePort store = new InMemoryStore();
 
         assertThat(store.artifacts()).isNotNull();
@@ -54,6 +54,7 @@ class StorePortTest {
         assertThat(store.schemas()).isNotNull();
         assertThat(store.connectors()).isNotNull();
         assertThat(store.connectorCatalog()).isNotNull();
+        assertThat(store.connectorSpecs()).isNotNull();
         assertThat(store.connectionTestResults()).isNotNull();
         assertThat(store.observations()).isNotNull();
         assertThat(store.meta()).isNotNull();
@@ -317,6 +318,40 @@ class StorePortTest {
 
         assertThat(rows.get("mysql")).contains(reDerived);
         assertThat(rows.list()).hasSize(1);
+    }
+
+    // --- connector spec sources (content-addressed, byte-exact) ---
+
+    @Test
+    void connectorSpecPutThenGetRoundTripsTheBytesExactly() {
+        // The source is kept because the derived row is a lossy projection of it. A store that returned
+        // an equivalent re-encoding would defeat the point, so the contract is the bytes themselves.
+        ConnectorSpecStore specs = new InMemoryStore().connectorSpecs();
+        byte[] source = "{\"properties\":{\"id\":\"mysql\"},\"zz\":1,\"a\":2}".getBytes(StandardCharsets.UTF_8);
+
+        specs.put("sha256:2f1a", source);
+
+        assertThat(specs.get("sha256:2f1a")).contains(source);
+    }
+
+    @Test
+    void connectorSpecGetAbsentIsEmpty() {
+        // Distinct from a stored-but-unreadable source: nothing filed under the hash is a plain absence,
+        // which the read face states as such rather than treating as a failure.
+        assertThat(new InMemoryStore().connectorSpecs().get("sha256:never-stored")).isEmpty();
+    }
+
+    @Test
+    void connectorSpecPutIsIdempotentUnderItsContentHash() {
+        // Content-addressed: a second write under a hash carries the same bytes by construction, so
+        // re-registering the same connector replaces in place instead of accumulating copies.
+        ConnectorSpecStore specs = new InMemoryStore().connectorSpecs();
+        byte[] source = "{\"properties\":{\"id\":\"mysql\"}}".getBytes(StandardCharsets.UTF_8);
+
+        specs.put("sha256:2f1a", source);
+        specs.put("sha256:2f1a", source);
+
+        assertThat(specs.get("sha256:2f1a")).contains(source);
     }
 
     // --- connection test results (latest-only per connection) ---

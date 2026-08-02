@@ -98,21 +98,11 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         IntrospectedConnector introspected = introspector.introspect(List.of(artifact));
         Object specTree = parseSpecTree(introspected, artifact);
         String connectorId = declaredId(specTree, introspected, artifact);
-        rejectUnofficialConnector(connectorId, source);
+        rejectUnofficialConnector(connectorId);
         byte[] bytes = bytesOf(artifact);
         rejectConflictingArtifact(connectorId, ContentHash.of(bytes));
         RegistrationOutcome outcome = registry.register(connectorId, introspected.pdkApiVersion(), source, bytes);
-        try {
-            persistCatalogRow(connectorId, introspected, specTree, outcome);
-        } catch (TapstateException containedDerivationFailure) {
-            // The catalog row is best-effort: the artifact is registered whether or not its capabilities can
-            // be derived. A connector that introspects (entry class + spec id) but will not load in this
-            // deployment (an incompatible PDK level, or a construct-time failure) fails derivation; that coded
-            // failure is contained so the register never reports failure over already-stored bytes and wedges
-            // the id. The row stays absent — so the connector is out of the online catalog — until a
-            // re-register derives it (the missing-row backfill re-runs derivation). A programmer bug (a bare
-            // RuntimeException, not a coded one) still crashes rather than being swallowed.
-        }
+        persistCatalogRow(connectorId, introspected, specTree, outcome);
         return outcome;
     }
 
@@ -135,16 +125,19 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
     }
 
     /**
-     * Refuses a runtime register naming a connector outside the officially supported set, before any
-     * byte is stored — so a refused register leaves no half-registration wedging the id.
+     * Refuses a register naming a connector outside the accepted set, before any byte enters the
+     * distribution store — so a refused register leaves no half-registration wedging the id. Staging
+     * and self-scan run first, because the id being checked is the one the artifact's own spec
+     * declares and reading it means opening the artifact.
      *
-     * <p>Only the runtime register path is gated. A seed sweep registers what the release itself
-     * ships from its own seed directory: gating that would let a packaging change fail silently at
-     * startup (the sweep contains a per-jar failure and carries on) while doing nothing about the
-     * surface this guard exists for, which is an artifact arriving over the wire from a client.
+     * <p>Every registration source is gated, the seed sweep included. A seed directory is not
+     * release-controlled: a deployment mounts its own directory as the seed directory and stages jars
+     * there, so an ungated sweep would register anything left in it and the accepted set would bound
+     * only the artifacts that happened to arrive over the wire. A refused seed jar is one contained
+     * per-jar failure the sweep reports and carries on from, exactly like any other defective artifact.
      */
-    private void rejectUnofficialConnector(String connectorId, RegistrationSource source) {
-        if (source != RegistrationSource.REGISTER || acceptedConnectorIds.contains(connectorId)) {
+    private void rejectUnofficialConnector(String connectorId) {
+        if (acceptedConnectorIds.contains(connectorId)) {
             return;
         }
         // The message names what would actually be accepted here, not the release default: a caller
@@ -235,7 +228,24 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         // is read straight off the artifact and does not depend on the connector loading, so there is no
         // reason to lose it when the capability row cannot be built.
         specStore.put(specHash, specSource);
-        ConnectorCapabilities capabilities = capabilityDeriver.derive(connectorId);
+        ConnectorCapabilities capabilities;
+        try {
+            capabilities = capabilityDeriver.derive(connectorId);
+        } catch (TapstateException containedDerivationFailure) {
+            // The catalog row is best-effort in exactly one respect: whether the connector's capabilities
+            // can be derived. A connector that introspects (entry class + spec id) but will not load in
+            // this deployment (an incompatible PDK level, or a construct-time failure) fails here, and that
+            // coded failure is contained so the register never reports failure over already-stored bytes and
+            // wedges the id. The row stays absent — so the connector is out of the online catalog — until a
+            // re-register derives it (the missing-row backfill re-runs derivation).
+            //
+            // The containment is this one call and no more. A store failure writing the spec source or the
+            // row is also a coded exception, and swallowing one would report a registration that succeeded
+            // while the connector stayed invisible in the online catalog, with nothing reported anywhere. A
+            // programmer bug (a bare RuntimeException, not a coded one) still crashes rather than being
+            // swallowed.
+            return;
+        }
         NormalizedSpec normalized = SpecNormalizer.normalize(asSpecObject(specTree));
         ConnectorCatalogEntry row = CatalogEntryAssembler.assemble(
                 normalized, capabilities.capabilityIds(), null, introspected.specPath(), specHash);

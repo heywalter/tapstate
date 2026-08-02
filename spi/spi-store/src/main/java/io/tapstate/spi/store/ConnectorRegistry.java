@@ -24,6 +24,20 @@ public interface ConnectorRegistry {
     /** Every registered connector. */
     List<ConnectorRegistration> list();
 
+    /**
+     * The registration filed under a connector id, or empty if none is. Asking about one connector must
+     * not depend on every other one being readable: a caller answering a question about a single id
+     * through {@link #list()} fails whenever any one stored registration cannot be reconstructed, which
+     * turns one corrupt entry into an outage across every connector. The default scans {@code list()}
+     * because a registry that cannot look up by id has no better answer; a store that can query by id
+     * overrides this and stays scoped to the entry asked about.
+     */
+    default Optional<ConnectorRegistration> find(String connectorId) {
+        return list().stream()
+                .filter(registration -> registration.connectorId().equals(connectorId))
+                .findFirst();
+    }
+
     /** The artifact bytes stored under a content hash, or empty if none is stored. */
     Optional<byte[]> artifact(String contentHash);
 

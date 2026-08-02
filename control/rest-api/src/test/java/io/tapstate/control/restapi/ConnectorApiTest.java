@@ -339,6 +339,27 @@ class ConnectorApiTest {
     }
 
     @Test
+    void getsABundledRowWhoseConnectorIsRegisteredAndLoadableAsRuntimeAvailable() {
+        // The combination the other four leave out, and the one the product itself produces: registering a
+        // connector whose capabilities cannot be derived here stores the bytes and contains the derivation
+        // failure, so the derived row stays absent and the id keeps answering from the bundled snapshot.
+        // origin then reads "bundled" while the connector is registered and loadable.
+        //
+        // Pinned rather than smoothed over: origin answers "where does this row come from", not "is
+        // anything installed under this id" - a consumer that reads it as the latter is reading the wrong
+        // field, and runtimeAvailable is the one that says the id is in fact taken and loadable here.
+        context.getBean(SeedableConnectorRegistry.class).register("mysql", "artifact-hash");
+        context.getBean(SeedableConnectorRegistry.class).withArtifactBytes("artifact-hash");
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/mysql")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("origin")).isEqualTo("bundled");
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(true);
+    }
+
+    @Test
     void gettingAnUnknownConnectorReturnsACodedNotFound() {
         ApiError body = client().get().uri("/api/connectors/missing")
                 .header("Authorization", "Bearer " + token(Scope.READ))

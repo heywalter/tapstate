@@ -77,6 +77,20 @@ public final class MongoConnectorRegistry implements ConnectorRegistry {
     }
 
     @Override
+    public Optional<ConnectorRegistration> find(String connectorId) {
+        Objects.requireNonNull(connectorId, "connectorId");
+        return StoreIo.call(() -> {
+            // Queried on the identity carried in the file's metadata, so the answer costs one lookup and
+            // depends on no other stored artifact: a registration that cannot be reconstructed fails the
+            // question about that connector alone, never every connector at once.
+            GridFSFile file = artifacts.find(Filters.eq("metadata.connectorId", connectorId)).first();
+            return file == null
+                    ? Optional.<ConnectorRegistration>empty()
+                    : Optional.of(toRegistration(file.getFilename(), file.getMetadata()));
+        });
+    }
+
+    @Override
     public Optional<byte[]> artifact(String contentHash) {
         Objects.requireNonNull(contentHash, "contentHash");
         return StoreIo.call(() -> {

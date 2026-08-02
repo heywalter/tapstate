@@ -29,8 +29,8 @@ class SeedConnectorSweepTest {
 
     @Test
     void registersEveryConnectorJarInTheSeedDirectory(@TempDir Path work, @TempDir Path seedDir) throws Exception {
-        Files.copy(Synthetic.seedableOrdersConnector(work), seedDir.resolve("orders.jar"));
-        Files.copy(Synthetic.seedablePaymentsConnector(work), seedDir.resolve("payments.jar"));
+        Files.copy(Synthetic.seedableMongodbConnector(work), seedDir.resolve("mongodb.jar"));
+        Files.copy(Synthetic.seedableMysqlConnector(work), seedDir.resolve("mysql.jar"));
         Files.writeString(seedDir.resolve("README.txt"), "not a connector");
         Files.createDirectory(seedDir.resolve("nested.jar"));
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
@@ -40,19 +40,44 @@ class SeedConnectorSweepTest {
         assertThat(outcomes).hasSize(2);
         assertThat(outcomes).allSatisfy(outcome -> assertThat(outcome).isInstanceOf(SeedOutcome.Seeded.class));
         // Deterministic reporting: artifacts are swept sorted by file name.
-        assertThat(outcomes.get(0).artifact().getFileName().toString()).isEqualTo("orders.jar");
-        assertThat(outcomes.get(1).artifact().getFileName().toString()).isEqualTo("payments.jar");
+        assertThat(outcomes.get(0).artifact().getFileName().toString()).isEqualTo("mongodb.jar");
+        assertThat(outcomes.get(1).artifact().getFileName().toString()).isEqualTo("mysql.jar");
         assertThat(registry.list())
                 .extracting(ConnectorRegistration::connectorId, ConnectorRegistration::pdkApiVersion,
                         ConnectorRegistration::source)
                 .containsExactlyInAnyOrder(
-                        tuple("orders", "1.3.5", RegistrationSource.SEED),
-                        tuple("payments", null, RegistrationSource.SEED));
+                        tuple("mongodb", null, RegistrationSource.SEED),
+                        tuple("mysql", "1.3.5", RegistrationSource.SEED));
+    }
+
+    @Test
+    void refusesAConnectorOutsideTheAcceptedSetAndKeepsSweepingTheRest(@TempDir Path work, @TempDir Path seedDir)
+            throws Exception {
+        // A seed directory is the deployment's, not the release's: the shipped stack mounts a directory
+        // the user owns and stages jars there. So the accepted set has to bound this route too, or it
+        // bounds only the artifacts that happen to arrive over the wire. The refusal is one contained
+        // per-jar failure — a jar the deployment may not register must not stop the ones it may.
+        Files.copy(Synthetic.seedableOrdersConnector(work), seedDir.resolve("orders.jar"));
+        Files.copy(Synthetic.seedableMysqlConnector(work), seedDir.resolve("zz-mysql.jar"));
+        InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
+
+        List<SeedOutcome> outcomes = sweepOver(registry).sweep(seedDir);
+
+        assertThat(outcomes).hasSize(2);
+        SeedOutcome.Failed refused = (SeedOutcome.Failed) outcomes.get(0);
+        assertThat(refused.artifact().getFileName().toString()).isEqualTo("orders.jar");
+        assertThat(refused.cause()).isInstanceOf(TapstateException.class);
+        assertThat(((TapstateException) refused.cause()).code()).isEqualTo(ConnectorError.NOT_OFFICIAL);
+        assertThat(outcomes.get(1)).isInstanceOf(SeedOutcome.Seeded.class);
+        // Refused means refused: nothing of it is stored, and the accepted jar behind it still registered.
+        assertThat(registry.list())
+                .extracting(ConnectorRegistration::connectorId)
+                .containsExactly("mysql");
     }
 
     @Test
     void reSweepingTheSameDirectoryIsIdempotent(@TempDir Path work, @TempDir Path seedDir) throws Exception {
-        Files.copy(Synthetic.seedableOrdersConnector(work), seedDir.resolve("orders.jar"));
+        Files.copy(Synthetic.seedableMysqlConnector(work), seedDir.resolve("mysql.jar"));
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
         SeedConnectorSweep sweep = sweepOver(registry);
 
@@ -69,7 +94,7 @@ class SeedConnectorSweepTest {
     void aDefectiveArtifactIsReportedAndDoesNotStopTheSweep(@TempDir Path work, @TempDir Path seedDir)
             throws Exception {
         Files.copy(Synthetic.jarWithoutConnectorClass(work), seedDir.resolve("a-defective.jar"));
-        Files.copy(Synthetic.seedableOrdersConnector(work), seedDir.resolve("orders.jar"));
+        Files.copy(Synthetic.seedableMysqlConnector(work), seedDir.resolve("mysql.jar"));
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
 
         List<SeedOutcome> outcomes = sweepOver(registry).sweep(seedDir);
@@ -79,14 +104,14 @@ class SeedConnectorSweepTest {
         assertThat(failed.cause()).isInstanceOf(TapstateException.class);
         assertThat(((TapstateException) failed.cause()).code()).isEqualTo(ConnectorError.NO_CONNECTOR_CLASS);
         assertThat(outcomes.get(1)).isInstanceOf(SeedOutcome.Seeded.class);
-        assertThat(registry.list()).extracting(ConnectorRegistration::connectorId).containsExactly("orders");
+        assertThat(registry.list()).extracting(ConnectorRegistration::connectorId).containsExactly("mysql");
     }
 
     @Test
     void anUnreadableArtifactIsReportedAndDoesNotStopTheSweep(@TempDir Path work, @TempDir Path seedDir)
             throws Exception {
         Files.write(seedDir.resolve("a-garbage.jar"), new byte[] {0x13, 0x37});
-        Files.copy(Synthetic.seedableOrdersConnector(work), seedDir.resolve("orders.jar"));
+        Files.copy(Synthetic.seedableMysqlConnector(work), seedDir.resolve("mysql.jar"));
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
 
         List<SeedOutcome> outcomes = sweepOver(registry).sweep(seedDir);
@@ -94,19 +119,19 @@ class SeedConnectorSweepTest {
         assertThat(outcomes).hasSize(2);
         SeedOutcome.Failed failed = (SeedOutcome.Failed) outcomes.get(0);
         assertThat(failed.cause()).isInstanceOf(UncheckedIOException.class);
-        assertThat(registry.list()).extracting(ConnectorRegistration::connectorId).containsExactly("orders");
+        assertThat(registry.list()).extracting(ConnectorRegistration::connectorId).containsExactly("mysql");
     }
 
     @Test
     void sweepsJarExtensionsCaseInsensitively(@TempDir Path work, @TempDir Path seedDir) throws Exception {
-        Files.copy(Synthetic.seedableOrdersConnector(work), seedDir.resolve("ORDERS.JAR"));
+        Files.copy(Synthetic.seedableMysqlConnector(work), seedDir.resolve("MYSQL.JAR"));
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
 
         List<SeedOutcome> outcomes = sweepOver(registry).sweep(seedDir);
 
         assertThat(outcomes).hasSize(1);
         assertThat(outcomes.get(0)).isInstanceOf(SeedOutcome.Seeded.class);
-        assertThat(registry.list()).extracting(ConnectorRegistration::connectorId).containsExactly("orders");
+        assertThat(registry.list()).extracting(ConnectorRegistration::connectorId).containsExactly("mysql");
     }
 
     @Test

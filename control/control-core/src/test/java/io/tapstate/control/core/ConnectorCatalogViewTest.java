@@ -217,6 +217,47 @@ class ConnectorCatalogViewTest {
                         error -> assertThat(error.code().code()).isEqualTo("connector.not-found"));
     }
 
+    @Test
+    void readsAConnectorWhileAnotherStoredRegistrationCannotBeReconstructed() {
+        // Registry corruption is scoped to the connector it belongs to. A registry that cannot produce a
+        // full listing — one entry written by a newer build, one file left behind by a partial restore —
+        // must still answer about the connector being read, or a single bad entry takes down every
+        // connection form in the product, including bundled connectors that were never registered.
+        ConnectorRegistry unlistable = new ConnectorRegistry() {
+            @Override
+            public RegistrationOutcome register(String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+                throw new UnsupportedOperationException("the detail read never registers");
+            }
+
+            @Override
+            public List<ConnectorRegistration> list() {
+                throw new IllegalStateException("one stored registration cannot be reconstructed");
+            }
+
+            @Override
+            public Optional<ConnectorRegistration> find(String connectorId) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<byte[]> artifact(String hash) {
+                throw new UnsupportedOperationException("a detail read must not pull artifact bytes");
+            }
+
+            @Override
+            public boolean hasArtifact(String hash) {
+                return false;
+            }
+        };
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore(), unlistable);
+
+        ConnectorDetail detail = view.detail(BUNDLED.ids().get(0));
+
+        assertThat(detail.origin()).isEqualTo("bundled");
+        assertThat(detail.runtimeAvailable()).isFalse();
+    }
+
     private static ConnectorRegistry emptyRegistry() {
         return registryHolding(null, null, false);
     }

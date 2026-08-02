@@ -15,6 +15,7 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -30,10 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * script, not a code change. No module test can make that claim: a module sees its own classes, while
  * this would be opened in a file no module compiles.
  *
- * <p>A proof of absence fails by passing vacuously — a scan that reached nothing reports the same
- * green as a scan that found nothing. So two of the tests here police the scan rather than the
- * product: it must have read the artifacts that could open the hatch, and the single file allowed to
- * name the setting must still be naming it.
+ * <p>A proof of absence fails by passing vacuously — a scan that reached nothing, or that looked for a
+ * spelling nobody uses, reports the same green as a scan that found nothing. So most of the tests here
+ * police the scan rather than the product: it must recognise every spelling that would really open the
+ * setting, it must have read the artifacts that could open it, and the single file allowed to name the
+ * setting must still be naming it.
  */
 class ConnectorAcceptanceGatesTest {
 
@@ -41,12 +43,18 @@ class ConnectorAcceptanceGatesTest {
     private static final Path REPOSITORY = Path.of("..");
 
     /**
-     * How the setting can be spelled: the property, the field it binds to, and the environment-variable
-     * form a container hands the process. All three are searched, because they are interchangeable ways
-     * to say the same thing and a gate that knew only one would be trivially side-stepped.
+     * The setting's name with everything the binder treats as noise removed — case, dashes and
+     * underscores. Every interchangeable spelling collapses onto this one needle: the property
+     * {@code tapstate.connectors.also-accept-ids}, the field {@code alsoAcceptIds} it binds to, and both
+     * environment-variable forms a container can hand the process — the one that drops the dashes
+     * ({@code TAPSTATE_CONNECTORS_ALSOACCEPTIDS}, which is the canonical mapping) and the one that turns
+     * them into underscores. Matching literal spellings instead would leave whichever ones nobody
+     * thought of as a way straight past this gate.
      */
-    private static final List<String> WIDENING_SPELLINGS =
-            List.of("also-accept-ids", "alsoAcceptIds", "ALSO_ACCEPT_IDS");
+    private static final String SETTING = "alsoacceptids";
+
+    /** Characters between a setting's name and its value that carry no meaning: quoting and spacing. */
+    private static final String PADDING = " \t\"'`";
 
     /** The one shipped file that must name the setting: the class that declares it. */
     private static final String DECLARATION =
@@ -74,17 +82,44 @@ class ConnectorAcceptanceGatesTest {
             if (relative.equals(DECLARATION)) {
                 continue;
             }
-            String text = read(file);
-            WIDENING_SPELLINGS.stream()
-                    .filter(text::contains)
-                    .forEach(spelling -> offenders.add(relative + " names " + spelling));
+            if (assignsTheSetting(read(file))) {
+                offenders.add(relative);
+            }
         }
 
         assertThat(offenders)
                 .as("the accepted set is widenable per deployment and ships empty everywhere - a release "
-                        + "artifact, script or document that names the setting hands users a way past the "
-                        + "guard, and turns a supported-connector boundary into a suggestion")
+                        + "artifact, script or document that gives the setting a value hands users a way "
+                        + "past the guard, and turns a supported-connector boundary into a suggestion")
                 .isEmpty();
+    }
+
+    @Test
+    @DisplayName("the scan recognises every spelling that would really open it")
+    void theScanRecognisesEverySpellingThatWouldOpenIt() {
+        // The gate is only as wide as its recogniser, and a spelling it does not know is a way straight
+        // past it that stays green. Relaxed binding accepts all of these for one setting: the property in
+        // kebab and camel case, and the environment variable both with the dashes dropped - the canonical
+        // mapping, which is the one a hand-written literal list is likeliest to miss - and with them
+        // turned into underscores.
+        assertThat(List.of(
+                "      tapstate.connectors.also-accept-ids: acme",
+                "      tapstate.connectors.alsoAcceptIds: acme",
+                "      TAPSTATE_CONNECTORS_ALSOACCEPTIDS: acme",
+                "      - TAPSTATE_CONNECTORS_ALSO_ACCEPT_IDS=acme",
+                "exec java -Dtapstate.connectors.also-accept-ids=acme -jar app.jar",
+                "{\"tapstate.connectors.also-accept-ids\": \"acme\"}"))
+                .as("a spelling the binder honours but this scan does not is a hole, not a nicety")
+                .allMatch(ConnectorAcceptanceGatesTest::assignsTheSetting);
+
+        // And what must NOT redden the build: reading the value, and writing about it. Both are how the
+        // setting comes to be understood; neither gives it one.
+        assertThat(List.of(
+                "        properties.getAlsoAcceptIds());",
+                "Set `tapstate.connectors.also-accept-ids` only if you accept leaving the supported set.",
+                "the also-accept-ids setting is empty in every shipped artifact"))
+                .as("a gate that reddens on reading or documenting a setting is accusing the wrong file")
+                .noneMatch(ConnectorAcceptanceGatesTest::assignsTheSetting);
     }
 
     @Test
@@ -122,6 +157,29 @@ class ConnectorAcceptanceGatesTest {
                 .as("the default is what every deployment gets that does not say otherwise, so it is the "
                         + "value that decides whether the guard is on by default")
                 .isEmpty();
+    }
+
+    /**
+     * Whether a file gives the setting a value, as opposed to merely mentioning it. What opens the guard
+     * is an assignment — a compose environment entry, a property line, an exported variable, a command
+     * flag — so that is what is banned. Banning the name itself would redden the build for the code that
+     * reads the value and for any page that documents it, which is an accusation neither one has earned,
+     * and a gate that punishes describing a setting teaches people to stop describing it.
+     */
+    private static boolean assignsTheSetting(String text) {
+        String flattened = text.toLowerCase(Locale.ROOT).replace("-", "").replace("_", "");
+        int at = flattened.indexOf(SETTING);
+        while (at >= 0) {
+            int after = at + SETTING.length();
+            while (after < flattened.length() && PADDING.indexOf(flattened.charAt(after)) >= 0) {
+                after++;
+            }
+            if (after < flattened.length() && (flattened.charAt(after) == '=' || flattened.charAt(after) == ':')) {
+                return true;
+            }
+            at = flattened.indexOf(SETTING, at + 1);
+        }
+        return false;
     }
 
     /** Everything a release carries or a user reads: shipped sources, deployment assets, documentation. */

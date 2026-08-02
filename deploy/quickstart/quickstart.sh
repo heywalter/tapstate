@@ -171,8 +171,8 @@ main() {
         esac
     fi
 
-    # The demo connector jars. Any PDK jar registers the same way; these two are fetched so the demo runs
-    # without the user choosing. They sit outside connectors/ so the seed dir stays empty.
+    # The demo connector jars. These two are what this release registers, and they are fetched so the
+    # demo runs without the user choosing. They sit outside connectors/ so the seed dir stays empty.
     cbase="${TAPSTATE_CONNECTORS_URL:-${TAPSTATE_BASE_URL:-https://github.com/tapstate/tapstate/releases}/download/connectors-preview}"
     [ -f ./mysql-connector.jar ]   || fetch "${cbase}/mysql-connector.jar" ./mysql-connector.jar
     [ -f ./mongodb-connector.jar ] || fetch "${cbase}/mongodb-connector.jar" ./mongodb-connector.jar

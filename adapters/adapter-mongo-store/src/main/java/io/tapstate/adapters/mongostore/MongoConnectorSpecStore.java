@@ -2,10 +2,12 @@ package io.tapstate.adapters.mongostore;
 
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.ReplaceOptions;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectorSpecStore;
 import org.bson.Document;
 import org.bson.types.Binary;
 
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -18,7 +20,8 @@ import java.util.Optional;
  *
  * <p>Specs are small documents extracted from an artifact, so they live in a plain collection rather
  * than GridFS, which is where whole artifacts go. No driver type escapes this module (rule R3): the
- * binary wrapper is unwrapped to {@code byte[]} on the way out.
+ * binary wrapper is unwrapped to {@code byte[]} on the way out, and a stored document the unwrapping
+ * cannot read is surfaced as a coded {@code io.document-unreadable} diagnostic rather than a bare crash.
  */
 public final class MongoConnectorSpecStore implements ConnectorSpecStore {
 
@@ -39,8 +42,13 @@ public final class MongoConnectorSpecStore implements ConnectorSpecStore {
         // of something different.
         StoreIo.run(() -> collection.replaceOne(
                 new Document("_id", contentHash),
-                new Document("_id", contentHash).append(SPEC, new Binary(spec)),
+                toDocument(contentHash, spec),
                 new ReplaceOptions().upsert(true)));
+    }
+
+    /** Maps spec source to its stored document: the content hash as {@code _id}, the bytes as binary. */
+    static Document toDocument(String contentHash, byte[] spec) {
+        return new Document("_id", contentHash).append(SPEC, new Binary(spec));
     }
 
     @Override
@@ -50,6 +58,20 @@ public final class MongoConnectorSpecStore implements ConnectorSpecStore {
         if (document == null) {
             return Optional.empty();
         }
-        return Optional.of(document.get(SPEC, Binary.class).getData());
+        return Optional.of(toSpec(document, contentHash));
+    }
+
+    /** Reads the stored bytes out of a spec document, or fails coded when the document cannot be read. */
+    static byte[] toSpec(Document document, String contentHash) {
+        // A document filed under the hash but carrying no readable binary under its field is store
+        // corruption — an out-of-band write, an interrupted migration. Dereferencing it blind would throw
+        // a bare null or cast failure out of a module whose contract is that no unreadable document
+        // escapes uncoded, and the read face above would answer a bodyless 500 instead of stating that
+        // the source is not available.
+        if (document.get(SPEC) instanceof Binary binary && binary.getData() != null) {
+            return binary.getData();
+        }
+        throw new TapstateException(
+                IoError.DOCUMENT_UNREADABLE, Map.of("id", String.valueOf(contentHash)), null);
     }
 }

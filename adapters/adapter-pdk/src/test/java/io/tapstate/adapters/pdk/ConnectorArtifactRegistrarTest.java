@@ -5,19 +5,27 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.tapstate.core.catalog.ConnectorCatalogEntry;
+import io.tapstate.core.common.Severity;
+import io.tapstate.core.common.TapstateErrorCode;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.model.SourceMode;
 import io.tapstate.spi.store.CapabilityDeriver;
 import io.tapstate.spi.store.ConnectorCapabilities;
+import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Registration by introspection: {@link ConnectorArtifactRegistrar} turns a connector artifact on
@@ -30,14 +38,14 @@ class ConnectorArtifactRegistrarTest {
 
     @Test
     void registersAConnectorArtifactUnderItsSpecDeclaredId(@TempDir Path dir) throws Exception {
-        Path jar = Synthetic.seedableOrdersConnector(dir);
+        Path jar = Synthetic.seedableMysqlConnector(dir);
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
 
         RegistrationOutcome outcome = registrarOver(registry).register(jar, RegistrationSource.SEED);
 
         assertThat(outcome.newlyRegistered()).isTrue();
         ConnectorRegistration registration = outcome.registration();
-        assertThat(registration.connectorId()).isEqualTo("orders");
+        assertThat(registration.connectorId()).isEqualTo("mysql");
         assertThat(registration.pdkApiVersion()).isEqualTo("1.3.5");
         assertThat(registration.source()).isEqualTo(RegistrationSource.SEED);
         assertThat(registry.artifact(registration.contentHash())).contains(Files.readAllBytes(jar));
@@ -45,7 +53,7 @@ class ConnectorArtifactRegistrarTest {
 
     @Test
     void reRegisteringTheSameArtifactBytesIsANoOp(@TempDir Path dir) {
-        Path jar = Synthetic.seedableOrdersConnector(dir);
+        Path jar = Synthetic.seedableMysqlConnector(dir);
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
         ConnectorArtifactRegistrar registrar = registrarOver(registry);
 
@@ -130,11 +138,18 @@ class ConnectorArtifactRegistrarTest {
         assertThat(registry.list()).hasSize(1);
     }
 
-    @Test
-    void refusesRuntimeRegistrationOfAConnectorOutsideTheOfficialSet(@TempDir Path dir) {
-        // Only officially supported connectors may be registered at runtime. One outside that set is
-        // refused with a coded error BEFORE any byte reaches the store: a refused register must not
-        // leave the id wedged by stored bytes that no catalog row will ever describe.
+    @ParameterizedTest
+    @EnumSource(RegistrationSource.class)
+    void refusesAConnectorOutsideTheOfficialSetWhicheverWayItArrives(
+            RegistrationSource source, @TempDir Path dir) {
+        // Only officially supported connectors may be registered. One outside that set is refused with a
+        // coded error BEFORE any byte reaches the store: a refused register must not leave the id wedged
+        // by stored bytes that no catalog row will ever describe.
+        //
+        // Every source is gated, seed included, and the enum drives this so a source added later is
+        // gated by default rather than opening a hole nobody tested. A seed directory is a deployment's
+        // own directory, not something a release controls: exempting it would bound the accepted set
+        // only for artifacts that happened to arrive over the wire.
         Path jar = Synthetic.seedableOrdersConnector(dir);
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
@@ -142,7 +157,7 @@ class ConnectorArtifactRegistrarTest {
                 registry, new ConnectorIntrospector(),
                 id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows, new InMemoryConnectorSpecStore());
 
-        assertThatThrownBy(() -> registrar.register(jar, RegistrationSource.REGISTER))
+        assertThatThrownBy(() -> registrar.register(jar, source))
                 .isInstanceOf(TapstateException.class)
                 .satisfies(e -> {
                     TapstateException coded = (TapstateException) e;
@@ -252,7 +267,7 @@ class ConnectorArtifactRegistrarTest {
     void reRegisteringDoesNotReDeriveWhenTheRowIsAlreadyStored(@TempDir Path dir) {
         // An idempotent re-register (same bytes, already registered and already rowed) must not pay the
         // classload-derive cost again — the stored row is reused.
-        Path jar = Synthetic.seedableOrdersConnector(dir);
+        Path jar = Synthetic.seedableMysqlConnector(dir);
         int[] derivations = {0};
         CapabilityDeriver counting = id -> {
             derivations[0]++;
@@ -273,10 +288,10 @@ class ConnectorArtifactRegistrarTest {
         // The bytes were registered by a prior run but no catalog row was derived (a crash between the
         // two, or a pre-feature registration): a re-register backfills the missing row even though the
         // bytes are not newly registered.
-        Path jar = Synthetic.seedableOrdersConnector(dir);
+        Path jar = Synthetic.seedableMysqlConnector(dir);
         byte[] bytes = Files.readAllBytes(jar);
         InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
-        registry.register("orders", "1.3.5", RegistrationSource.SEED, bytes);
+        registry.register("mysql", "1.3.5", RegistrationSource.SEED, bytes);
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
                 registry, new ConnectorIntrospector(),
@@ -285,7 +300,7 @@ class ConnectorArtifactRegistrarTest {
         RegistrationOutcome outcome = registrar.register(jar, RegistrationSource.SEED);
 
         assertThat(outcome.newlyRegistered()).isFalse();
-        assertThat(rows.get("orders")).isPresent();
+        assertThat(rows.get("mysql")).isPresent();
     }
 
     @Test
@@ -297,7 +312,7 @@ class ConnectorArtifactRegistrarTest {
         // is contained; a programmer bug (a bare RuntimeException) still crashes.
         Path jar = Synthetic.seedableMysqlConnector(dir);
         CapabilityDeriver failing = id -> {
-            throw new TapstateException(ConnectorError.LOAD_FAILED, java.util.Map.of("connector", id), null);
+            throw new TapstateException(ConnectorError.LOAD_FAILED, Map.of("connector", id), null);
         };
         InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
         ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
@@ -308,6 +323,95 @@ class ConnectorArtifactRegistrarTest {
 
         assertThat(outcome.newlyRegistered()).isTrue();
         assertThat(rows.get("mysql")).isEmpty();
+    }
+
+    @Test
+    void doesNotContainAStoreFailureWritingTheSpecSource(@TempDir Path dir) {
+        // The containment above is for derivation and nothing else. A store failure is coded too, so a
+        // catch wide enough to hold the whole persist step would swallow it: the spec source write would
+        // fail, the derivation and the catalog row after it would never run, and the caller would be told
+        // the connector registered while it stayed invisible in the online catalog with nothing reported
+        // anywhere. It must surface.
+        Path jar = Synthetic.seedableMysqlConnector(dir);
+        InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
+        ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
+                new InMemoryConnectorRegistry(), new ConnectorIntrospector(),
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows,
+                new ConnectorSpecStore() {
+                    @Override
+                    public void put(String contentHash, byte[] spec) {
+                        throw storeUnavailable();
+                    }
+
+                    @Override
+                    public Optional<byte[]> get(String contentHash) {
+                        return Optional.empty();
+                    }
+                });
+
+        assertThatThrownBy(() -> registrar.register(jar, RegistrationSource.REGISTER))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(e -> assertThat(((TapstateException) e).code()).isEqualTo(StoreFailure.UNAVAILABLE));
+        assertThat(rows.get("mysql")).isEmpty();
+    }
+
+    @Test
+    void doesNotContainAStoreFailureWritingTheCatalogRow(@TempDir Path dir) {
+        // The same, one step later: the row write is the whole point of deriving, so losing its failure
+        // would report a registration whose connector never reaches the online catalog.
+        Path jar = Synthetic.seedableMysqlConnector(dir);
+        ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
+                new InMemoryConnectorRegistry(), new ConnectorIntrospector(),
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")),
+                new ConnectorCatalogStore() {
+                    @Override
+                    public void upsert(ConnectorCatalogEntry entry) {
+                        throw storeUnavailable();
+                    }
+
+                    @Override
+                    public Optional<ConnectorCatalogEntry> get(String connectorId) {
+                        return Optional.empty();
+                    }
+
+                    @Override
+                    public List<ConnectorCatalogEntry> list() {
+                        return List.of();
+                    }
+                },
+                new InMemoryConnectorSpecStore());
+
+        assertThatThrownBy(() -> registrar.register(jar, RegistrationSource.REGISTER))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(e -> assertThat(((TapstateException) e).code()).isEqualTo(StoreFailure.UNAVAILABLE));
+    }
+
+    private static TapstateException storeUnavailable() {
+        return new TapstateException(StoreFailure.UNAVAILABLE, Map.of(), null);
+    }
+
+    /**
+     * Stands in for the coded diagnostic a store adapter raises when its driver fails. The real one
+     * belongs to the store adapter and is not on this module's path; what these tests need is only that
+     * it is coded, because being coded is exactly what a containment catch would swallow.
+     */
+    private enum StoreFailure implements TapstateErrorCode {
+        UNAVAILABLE;
+
+        @Override
+        public String code() {
+            return "test.store-unavailable";
+        }
+
+        @Override
+        public Severity severity() {
+            return Severity.ERROR;
+        }
+
+        @Override
+        public Set<String> placeholders() {
+            return Set.of();
+        }
     }
 
     @Test
