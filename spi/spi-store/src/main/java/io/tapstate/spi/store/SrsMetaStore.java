@@ -78,15 +78,4 @@ public interface SrsMetaStore {
      * caller ordering error.
      */
     void appendSchemaVersion(String miningChainId, SchemaVersion version);
-
-    /**
-     * Marks one table's bounded snapshot read as drained to completion on the chain. The caller marks a
-     * table only once that table's snapshot has finished, so a reader may take the mark as "every row of
-     * this table has been through" — a distinct question from the one {@link #setCdcStartPosition}
-     * answers, which is where the tail resumes and is written before the snapshot begins. Completion is
-     * per table because one chain carries many, each snapshotted by its own capture run. Marking is
-     * idempotent (set membership): a table already marked stays marked once, so a re-run or replay of a
-     * table's snapshot is safe. A mutate on an unseeded chain is a caller ordering error.
-     */
-    void markSnapshotComplete(String miningChainId, String table);
 }

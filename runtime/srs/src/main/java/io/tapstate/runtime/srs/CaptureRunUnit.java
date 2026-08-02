@@ -60,8 +60,7 @@ public final class CaptureRunUnit {
      *   <li>a shared-ring tail provisions the mining chain first, seeding its meta — the precondition for
      *       recording the cdc-start position;</li>
      *   <li>the snapshot phase drains to the pass-through sink: on a shared-ring run it records the cdc-start
-     *       position at the seam and marks the table's snapshot complete once drained, otherwise it is a
-     *       pure drain with no chain to position or mark;</li>
+     *       position at the seam, otherwise it is a pure drain with no chain to position;</li>
      *   <li>a shared-ring tail then attaches the consumer, runs the cdc phase into the change ring, and
      *       exposes the Jet source; an srs-disabled tail instead streams straight to the pass-through sink.</li>
      * </ol>
@@ -87,8 +86,7 @@ public final class CaptureRunUnit {
         long snapshotCount = 0;
         if (plan.snapshot()) {
             snapshotCount = chainId != null
-                    ? SnapshotPhase.run(
-                            port, spec.config(), chainId.value(), table, spec.cdcStart(), meta, passthrough)
+                    ? SnapshotPhase.run(port, spec.config(), chainId.value(), spec.cdcStart(), meta, passthrough)
                     : SnapshotPhase.drain(port, spec.config(), passthrough);
         }
 

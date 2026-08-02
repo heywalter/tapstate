@@ -137,47 +137,6 @@ class EnvelopeTest {
     }
 
     @Test
-    void carriesNoOrderUntilOneIsStamped() {
-        assertThat(Envelope.insert(1L, "s", row("id", 1), null).order()).isNull();
-        assertThat(new Envelope(Op.INSERT, 1L, "s", null, row("id", 1), null, "p1").order()).isNull();
-    }
-
-    @Test
-    void withOrderStampsTheOrderAndLeavesEveryOtherSlotAlone() {
-        Envelope e = new Envelope(Op.INSERT, 42L, "orders", null, row("id", 1), null, "p1");
-
-        Envelope stamped = e.withOrder(new SourceOrder(2L, 500L));
-
-        assertThat(stamped.order()).isEqualTo(new SourceOrder(2L, 500L));
-        assertThat(stamped.srcPos()).isEqualTo("p1");
-        assertThat(stamped.op()).isEqualTo(Op.INSERT);
-        assertThat(stamped.ts()).isEqualTo(42L);
-        assertThat(stamped.src()).isEqualTo("orders");
-        assertThat(stamped.after()).containsEntry("id", 1);
-        assertThat(e.order()).isNull(); // the original is unchanged
-    }
-
-    @Test
-    void stampingAPositionKeepsAnOrderAlreadyStamped() {
-        Envelope ordered = Envelope.insert(1L, "s", row("id", 1), null).withOrder(new SourceOrder(1L, 7L));
-
-        assertThat(ordered.withSrcPos("p9").order())
-                .describedAs("the two travel together: one orders, the other resumes")
-                .isEqualTo(new SourceOrder(1L, 7L));
-    }
-
-    @Test
-    void orderParticipatesInValueEquality() {
-        Envelope a = Envelope.insert(5L, "s", row("id", 1), null).withOrder(new SourceOrder(1L, 1L));
-        Envelope b = Envelope.insert(5L, "s", row("id", 1), null).withOrder(new SourceOrder(1L, 1L));
-        Envelope other = Envelope.insert(5L, "s", row("id", 1), null).withOrder(new SourceOrder(1L, 2L));
-
-        assertThat(a).isEqualTo(b);
-        assertThat(a).hasSameHashCodeAs(b);
-        assertThat(a).isNotEqualTo(other);
-    }
-
-    @Test
     void sourcePositionParticipatesInValueEquality() {
         Envelope a = new Envelope(Op.INSERT, 5L, "s", null, row("id", 1), null, "p1");
         Envelope b = new Envelope(Op.INSERT, 5L, "s", null, row("id", 1), null, "p1");

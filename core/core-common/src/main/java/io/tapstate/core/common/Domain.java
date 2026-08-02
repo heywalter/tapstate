@@ -43,9 +43,6 @@ public enum Domain {
     // runtime execution: driving the Jet job that runs a pipeline (submit / suspend / resume /
     // cancel); diagnosable failures such as acting on a pipeline that has no running job (runtime)
     ENGINE,
-    // stateful assembly of nested documents: checking a nest tree, sizing its state, and the runtime
-    // limits and unresolvable references that stop or dead-letter part of it (runtime)
-    NEST,
     // observation read faces: reading a pipeline's store-backed status / metrics / snapshot;
     // diagnosable failures such as reading a pipeline that has published no observation (control)
     MONITOR,

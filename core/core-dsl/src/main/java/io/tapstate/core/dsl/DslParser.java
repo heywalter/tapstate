@@ -83,10 +83,9 @@ public final class DslParser {
     private static final Set<String> TABLE_SPEC_KEYS = Set.of("name", "filter", "pk", "options");
     private static final Set<String> STEP_BASE_KEYS = Set.of("id", "type", "from", "options", "experimental");
     private static final Set<String> STEP_USE_KEYS = Set.of("id", "use", "from", "options");
-    private static final Set<String> NEST_ROOT_KEYS =
-            Set.of("from", "key", "mode", "trackKeyChanges", "embed");
+    private static final Set<String> NEST_ROOT_KEYS = Set.of("from", "key", "mode", "embed");
     private static final Set<String> EMBED_KEYS = Set.of(
-            "from", "on", "as", "path", "arrayKey", "ignoreUpdates", "trackKeyChanges", "embed");
+            "from", "on", "as", "path", "arrayKey", "ignoreUpdates", "trackJoinKeyChanges", "embed");
     private static final Set<String> VIEW_INLINE_KEYS = Set.of("id", "from", "primary_key", "storage", "schema");
     private static final Set<String> VIEW_USE_KEYS = Set.of("id", "use", "from");
     private static final Set<String> STORAGE_KEYS = Set.of("hot", "warm", "cold");
@@ -331,12 +330,7 @@ public final class DslParser {
 
     private NestRoot nestRoot(YamlMap r) {
         r.requireOnly(NEST_ROOT_KEYS);
-        return new NestRoot(
-                r.string("from"),
-                scalarList(r.seq("key"), "key"),
-                r.string("mode"),
-                boolValue(r, "trackKeyChanges"),
-                embeds(r.seq("embed")));
+        return new NestRoot(r.string("from"), scalarList(r.seq("key"), "key"), r.string("mode"), embeds(r.seq("embed")));
     }
 
     private List<Embed> embeds(List<Node> items) {
@@ -354,7 +348,7 @@ public final class DslParser {
                     e.string("path"),
                     scalarList(e.seq("arrayKey"), "arrayKey"),
                     boolValue(e, "ignoreUpdates"),
-                    boolValue(e, "trackKeyChanges"),
+                    boolValue(e, "trackJoinKeyChanges"),
                     embeds(e.seq("embed"))));
         }
         return out;

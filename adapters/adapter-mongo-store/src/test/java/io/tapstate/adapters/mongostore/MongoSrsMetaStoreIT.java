@@ -172,23 +172,6 @@ class MongoSrsMetaStoreIT {
     }
 
     @Test
-    void markSnapshotCompleteIsPerTableAndIdempotentAgainstTheRealStore() {
-        withStore(store -> {
-            store.create(CHAIN, null);
-
-            store.markSnapshotComplete(CHAIN, "orders");
-            store.markSnapshotComplete(CHAIN, "order_items");
-            store.markSnapshotComplete(CHAIN, "orders");
-
-            // One chain carries many tables, each snapshotted by its own capture run, so the mark is per
-            // table. The re-mark exercises $addToSet against the real driver: set membership, so a replayed
-            // or re-run snapshot of a table that is already marked adds nothing.
-            assertThat(store.read(CHAIN).orElseThrow().snapshotCompletedTables())
-                    .containsExactly("orders", "order_items");
-        });
-    }
-
-    @Test
     void appendSchemaVersionAppendsInOrder() {
         withStore(store -> {
             store.create(CHAIN, null);
@@ -219,8 +202,6 @@ class MongoSrsMetaStoreIT {
             assertThatThrownBy(() -> store.setCdcStartPosition("nope", "x"))
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.appendSchemaVersion("nope", new SchemaVersion(0, Map.of(), 0)))
-                    .isInstanceOf(IllegalStateException.class);
-            assertThatThrownBy(() -> store.markSnapshotComplete("nope", "orders"))
                     .isInstanceOf(IllegalStateException.class);
         });
     }

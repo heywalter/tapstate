@@ -48,8 +48,7 @@ class SnapshotPhaseTest {
         List<Envelope> sink = new ArrayList<>();
 
         long count = SnapshotPhase.run(
-                port, config(), "chain", "orders", new SourcePosition("p0"),
-                new RecordingMeta(new ArrayList<>()), sink::add);
+                port, config(), "chain", new SourcePosition("p0"), new RecordingMeta(new ArrayList<>()), sink::add);
 
         assertThat(sink).containsExactlyElementsOf(rows);
         assertThat(count).isEqualTo(3);
@@ -84,7 +83,7 @@ class SnapshotPhaseTest {
         FakeBatch batch = new FakeBatch(List.of(row(1)));
 
         SnapshotPhase.run(
-                new FakePort(batch), config(), "chain", "orders", new SourcePosition("p0"),
+                new FakePort(batch), config(), "chain", new SourcePosition("p0"),
                 new RecordingMeta(new ArrayList<>()), e -> {});
 
         assertThat(batch.closed).isTrue();
@@ -97,57 +96,14 @@ class SnapshotPhaseTest {
         Consumer<Envelope> sink = e -> trace.add("event");
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain",
                 new SourcePosition("binlog.000042:1024"), meta, sink);
 
         // The cdc-start position is the source log position sampled at snapshot start: recorded before the
         // snapshot drains, so the cdc tail resumes from before the snapshot and the idempotent sink absorbs
         // the overlap -- a change made during the snapshot is never missed.
         assertThat(meta.cdcStart).isEqualTo("binlog.000042:1024");
-        assertThat(trace).startsWith("cdc-start", "event", "event");
-    }
-
-    @Test
-    void marksTheTableSnapshotCompleteOnlyAfterTheDrainHasFinished() {
-        List<String> trace = new ArrayList<>();
-        RecordingMeta meta = new RecordingMeta(trace);
-        Consumer<Envelope> sink = e -> trace.add("event");
-
-        SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", "orders",
-                new SourcePosition("binlog.000042:1024"), meta, sink);
-
-        // The two marks answer different questions and must not be conflated: the cdc-start position is
-        // written before the drain (it means the snapshot has started, and must precede it or a change made
-        // during the snapshot would be missed), while the completion mark is written after the drain
-        // returns. A reader asking "has this table's snapshot finished?" can only be answered by the
-        // second: the presence of a cdc-start position means started, never finished.
-        assertThat(trace).containsExactly("cdc-start", "event", "event", "snapshot-complete");
-        assertThat(meta.completed).containsExactly("chain/orders");
-    }
-
-    @Test
-    void doesNotMarkTheSnapshotCompleteWhenTheDrainFailsPartway() {
-        List<Envelope> drained = new ArrayList<>();
-        Consumer<Envelope> failingOnSecond = e -> {
-            if (!drained.isEmpty()) {
-                throw new IllegalStateException("sink down");
-            }
-            drained.add(e);
-        };
-        RecordingMeta meta = new RecordingMeta(new ArrayList<>());
-
-        assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", "orders",
-                new SourcePosition("p0"), meta, failingOnSecond))
-                .isInstanceOf(IllegalStateException.class);
-
-        // An aborted snapshot is not a completed one. The mark is what downstream reads as "every row of
-        // this table has been through", so marking a partial drain would assert the table is exhausted
-        // when rows are still missing -- and the cdc-start position, already written, would be the only
-        // trace left of a run that got half way.
-        assertThat(meta.completed).isEmpty();
-        assertThat(meta.cdcStart).isEqualTo("p0");
+        assertThat(trace).containsExactly("cdc-start", "event", "event");
     }
 
     @Test
@@ -158,7 +114,7 @@ class SnapshotPhaseTest {
         };
 
         assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(batch), config(), "chain", "orders", new SourcePosition("p0"),
+                new FakePort(batch), config(), "chain", new SourcePosition("p0"),
                 new RecordingMeta(new ArrayList<>()), failing))
                 .isInstanceOf(IllegalStateException.class);
 
@@ -171,7 +127,7 @@ class SnapshotPhaseTest {
         List<String> trace = new ArrayList<>();
 
         assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of())), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of())), config(), "chain",
                 new SourcePosition("p0"), new RecordingMeta(trace), null))
                 .isInstanceOf(NullPointerException.class);
 
@@ -233,13 +189,9 @@ class SnapshotPhaseTest {
         }
     }
 
-    /**
-     * A meta store that records the two marks the snapshot phase writes -- the cdc-start position and the
-     * per-table completion -- in call order; the other facets are unused in the snapshot phase.
-     */
+    /** A meta store that records only the cdc-start position; the other facets are unused in the snapshot phase. */
     private static final class RecordingMeta implements SrsMetaStore {
         private final List<String> trace;
-        final List<String> completed = new ArrayList<>();
         String cdcStart;
 
         RecordingMeta(List<String> trace) {
@@ -250,12 +202,6 @@ class SnapshotPhaseTest {
         public void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
             this.cdcStart = cdcStartPosition;
             trace.add("cdc-start");
-        }
-
-        @Override
-        public void markSnapshotComplete(String miningChainId, String table) {
-            completed.add(miningChainId + "/" + table);
-            trace.add("snapshot-complete");
         }
 
         @Override

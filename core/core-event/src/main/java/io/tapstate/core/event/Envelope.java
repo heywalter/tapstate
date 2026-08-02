@@ -9,10 +9,9 @@ import java.util.Objects;
  * The standard event envelope: one change event as every transform sees it, the common currency of
  * the capture, transform and sink ports. An immutable value.
  *
- * <p>Eight slots — {@code op} (the change kind), {@code ts} (event time as epoch milliseconds),
+ * <p>Seven slots — {@code op} (the change kind), {@code ts} (event time as epoch milliseconds),
  * {@code src} (the logical stream name the event came from), three data maps {@code before} /
- * {@code after} / {@code schema}, {@code srcPos} (the source position the event was captured at) and
- * {@code order} (where the engine itself puts this event in the stream).
+ * {@code after} / {@code schema}, and {@code srcPos} (the source position the event was captured at).
  * Which data maps are present follows the op: insert and read carry {@code after}, delete carries
  * {@code before}, update carries both, ddl carries {@code schema} and neither row. An absent map is
  * {@code null}; the {@link #insert} / {@link #update} / {@link #delete} / {@link #read} / {@link #ddl}
@@ -26,14 +25,6 @@ import java.util.Objects;
  * the runtime stamps the inbound position onto a port's outputs via {@link #withSrcPos}. The six-arg
  * factories and constructor leave it {@code null} by construction.
  *
- * <p>{@code order} is the separate question of <em>which of two events is later</em>, and the two slots
- * are deliberately not one. The position token is a connector value the engine never parses: equality is
- * all that is defined on it, so it can carry a read back to where it left off but can never say which
- * event came first. The order is the engine's own, assigned where events are admitted, and it is what
- * every stateful node compares. It is nullable for the same reason the position is - most producers have
- * no order to give - and a stateful node reached by an event without one is an engine invariant
- * violation that crashes bare rather than guessing.
- *
  * <p>The data maps are held as shallow-unmodifiable defensive copies: the map itself cannot be
  * mutated and a later mutation of the caller's map does not leak in, but nested values are shared.
  */
@@ -44,8 +35,7 @@ public record Envelope(
         Map<String, Object> before,
         Map<String, Object> after,
         Map<String, Object> schema,
-        String srcPos,
-        SourceOrder order) {
+        String srcPos) {
 
     public Envelope {
         Objects.requireNonNull(op, "op");
@@ -58,23 +48,12 @@ public record Envelope(
     /** An envelope with no source position — the shape every producer but the cdc projection builds. */
     public Envelope(Op op, long ts, String src,
             Map<String, Object> before, Map<String, Object> after, Map<String, Object> schema) {
-        this(op, ts, src, before, after, schema, null, null);
-    }
-
-    /** An envelope carrying a position but no order yet — the shape the cdc projection builds. */
-    public Envelope(Op op, long ts, String src,
-            Map<String, Object> before, Map<String, Object> after, Map<String, Object> schema, String srcPos) {
-        this(op, ts, src, before, after, schema, srcPos, null);
+        this(op, ts, src, before, after, schema, null);
     }
 
     /** A copy carrying {@code srcPos}, every other slot unchanged — how the runtime stamps a position. */
     public Envelope withSrcPos(String srcPos) {
-        return new Envelope(op, ts, src, before, after, schema, srcPos, order);
-    }
-
-    /** A copy carrying {@code order}, every other slot unchanged — how the runtime stamps an order. */
-    public Envelope withOrder(SourceOrder order) {
-        return new Envelope(op, ts, src, before, after, schema, srcPos, order);
+        return new Envelope(op, ts, src, before, after, schema, srcPos);
     }
 
     private static Map<String, Object> copyOrNull(Map<String, Object> map) {
