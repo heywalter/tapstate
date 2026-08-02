@@ -1,0 +1,62 @@
+name: docs-followup
+
+# When a PR labeled `docs-needed` is merged, open a follow-up issue in
+# tapstate/docs assigned to the docs owner, and (optionally) ping Feishu.
+#
+# Required repository secrets:
+#   DOCS_REPO_TOKEN - a token that can create issues in tapstate/docs
+#                     (fine-grained PAT, resource owner tapstate, repo docs,
+#                     Issues: Read and write). The default GITHUB_TOKEN cannot
+#                     write to another repository.
+#   FEISHU_WEBHOOK  - optional. Feishu custom-bot webhook URL. If unset, the
+#                     Feishu step is skipped.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'docs-needed')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open docs follow-up issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DOCS_REPO_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            const body = [
+              `Documentation follow-up for merged PR ${pr.html_url}`,
+              ``,
+              `**Title:** ${pr.title}`,
+              `**Author:** @${pr.user.login}`,
+              `**Merged at:** ${pr.merged_at}`,
+              ``,
+              `**Change summary:**`,
+              pr.body || '(no description provided)',
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: 'tapstate',
+              repo: 'docs',
+              title: `[docs] ${pr.title}`,
+              body,
+              assignees: ['heywalter'],
+            });
+
+      - name: Notify Feishu
+        if: ${{ env.FEISHU_WEBHOOK != '' }}
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          text="docs follow-up needed: ${PR_TITLE} (${PR_URL}) -> assigned to heywalter in tapstate/docs"
+          payload=$(jq -n --arg t "$text" '{msg_type:"text",content:{text:$t}}')
+          curl -sS -X POST -H 'Content-Type: application/json' -d "$payload" "$FEISHU_WEBHOOK"

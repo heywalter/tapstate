@@ -9,8 +9,7 @@
 #   sh install.sh
 #
 # Environment seams:
-#   TAPSTATE_VERSION       pin a version (e.g. 0.1.0); default is the latest release, found via the web
-#                          redirect on /releases/latest (no GitHub API call).
+#   TAPSTATE_VERSION       install a specific version (e.g. 0.1.0); default is the pinned release below.
 #   TAPSTATE_INSTALL_DIR   where to place the binary; default $HOME/.tapstate/bin. This is the seam the
 #                          demo bootstrap reuses to install in place (TAPSTATE_INSTALL_DIR=.), so the
 #                          binary never enters PATH and `rm -rf` of the demo directory removes it.
@@ -20,6 +19,13 @@
 # POSIX sh, no bashisms. All work is inside main(); the final line calls it, so a truncated download can
 # never execute a partial script.
 set -eu
+
+# The release this script installs by default. Discovering "the latest" sounds better but is not
+# available to promise: /releases/latest names only full releases, and while the CLI ships as a
+# prerelease that lookup finds nothing and a bare run would die on a clean machine. Pinning also makes
+# the promise reproducible -- the same script installs the same build. TAPSTATE_VERSION overrides for
+# a one-off; releases update this line, and the smoke fails the build if it drifts from pom.xml.
+PINNED_VERSION="0.1.0"
 
 die() {
     printf 'install: %s\n' "$1" >&2
@@ -75,17 +81,12 @@ fetch() {
     fi
 }
 
-# The version to install: the pinned one, or the latest, discovered from the /releases/latest redirect
-# (the effective URL ends /releases/tag/v<version>) rather than the GitHub API.
+# The version to install: the caller's override, or the pin above. The /releases/latest redirect is
+# deliberately not consulted -- it names only full releases, so it cannot see a prerelease at all,
+# and a default that works or dies depending on how the newest release was flagged is not a default.
 resolve_version() {
-    if [ -n "${TAPSTATE_VERSION:-}" ]; then
-        version="$TAPSTATE_VERSION"
-        return
-    fi
-    command -v curl >/dev/null 2>&1 || die "auto-detecting the latest version needs curl; set TAPSTATE_VERSION to pin one."
-    effective="$(curl -fsSL -o /dev/null -w '%{url_effective}' "${base_url}/latest")"
-    version="$(printf '%s' "$effective" | sed -n 's#.*/tag/v\([^/]*\)$#\1#p')"
-    [ -n "$version" ] || die "could not determine the latest version from ${base_url}/latest; set TAPSTATE_VERSION to pin one."
+    version="${TAPSTATE_VERSION:-$PINNED_VERSION}"
+    [ -n "$version" ] || die "no version to install; set TAPSTATE_VERSION or fix the PINNED_VERSION line."
 }
 
 # True when $1 is a dotted decimal version and nothing else, so the comparison below never feeds a word
@@ -226,14 +227,32 @@ main() {
     install_binary
 
     printf 'tapstate %s installed to %s/tapstate\n' "$version" "$install_dir"
+    on_path=yes
     case ":${PATH}:" in
         *":${install_dir}:"*) : ;;
         *)
-            # $PATH is meant to stay literal here — the user pastes this line into their own shell.
+            on_path=no
+            # The hint matches the user's shell: fish spells PATH additions its own way, and a pasted
+            # line that errors teaches a user the installer is careless. Everything else POSIX-ish
+            # shares the export form. $PATH stays literal — the user pastes this into their own shell.
             # shellcheck disable=SC2016
-            printf 'not on PATH; run it directly, or:  export PATH="%s:$PATH"\n' "$install_dir"
+            case "$(basename "${SHELL:-sh}")" in
+                fish) printf 'not on PATH; run it directly, or:  fish_add_path %s\n' "$install_dir" ;;
+                *) printf 'not on PATH; run it directly, or:  export PATH="%s:$PATH"\n' "$install_dir" ;;
+            esac
             ;;
     esac
+
+    # Next steps, so the install ends at the start of something rather than at a file on disk. The
+    # authoring loop below is offline and complete as installed; running a real pipeline needs the
+    # server, which is the quickstart's business, so the pointer goes there instead of overpromising.
+    if [ "$on_path" = yes ]; then run_as=tapstate; else run_as="$install_dir/tapstate"; fi
+    printf '\nnext:\n'
+    printf '  %s --version\n' "$run_as"
+    printf '  %s new --kind source --id my_db --connector mysql   # scaffold, then validate:\n' "$run_as"
+    printf '  %s validate\n' "$run_as"
+    printf 'to run a real pipeline (server + databases): see docs/quickstart-online.md in the repository\n'
+    printf 'to uninstall: rm -rf ~/.tapstate  (and drop the PATH line if you added one)\n'
 }
 
 main "$@"

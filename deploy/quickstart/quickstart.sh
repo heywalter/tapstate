@@ -4,8 +4,15 @@
 # the platform's CLI, and the demo connector jars, generates a demo workspace and a .env with a random
 # admin password, then starts the stack and runs a real MySQL -> MongoDB pipeline. Nothing is built.
 #
-# Usage (download-then-run, never piped -- you already have a directory here, so a saved file can be
-# re-read, re-run, and its failures inspected):
+# Usage, either form:
+#
+#   curl -sSL <base>/quickstart.sh | sh
+#
+# Piped, the script takes a directory of its own (./tapstate-demo) so everything it adds stays inside
+# one removable directory. Download-then-run works the same and is the form to pick when you want to
+# read the script first, re-run it, or inspect a failure -- the saved file marks the directory to
+# work in, so nothing nests:
+#
 #   mkdir tapstate-demo && cd tapstate-demo
 #   curl -fLO <base>/quickstart.sh
 #   sh quickstart.sh
@@ -131,6 +138,27 @@ EOF
 }
 
 main() {
+    # The piped form has no saved file and no stack beside it, so it takes a directory of its own --
+    # everything this script adds must stay inside one removable directory. Either marker file says
+    # "work here": the saved script is the download-then-run form, the compose file is a re-run of an
+    # earlier one (piped re-runs land back in the same directory rather than nesting a second).
+    if [ ! -f ./quickstart.sh ] && [ ! -f ./docker-compose.yml ]; then
+        mkdir -p tapstate-demo
+        cd tapstate-demo
+        printf 'quickstart: working in %s\n' "$PWD"
+    fi
+
+    # The whole product runs as a compose stack, so a machine without Docker is refused here, before
+    # anything is downloaded -- an actionable sentence beats "docker: command not found" three
+    # downloads later. The prepare-only test seam deliberately skips this: it exists to stop before
+    # Docker, so it must not require it. The CLI alone needs neither; say where to get it.
+    if [ -z "${TAPSTATE_QUICKSTART_PREPARE_ONLY:-}" ]; then
+        command -v docker >/dev/null 2>&1 \
+            || die "Docker is required to run the stack. Install Docker with the Compose v2 plugin, or install only the offline CLI:  curl -sSL https://install.tapstate.dev/cli | sh"
+        docker compose version >/dev/null 2>&1 \
+            || die "Docker is present but the Compose v2 plugin is not ('docker compose version' failed). Update Docker, or install only the offline CLI:  curl -sSL https://install.tapstate.dev/cli | sh"
+    fi
+
     # Where the stack's assets come from: the same release the CLI is pinned to, derived from that pin
     # rather than named separately. A branch would keep moving after the release, handing a later user a
     # CLI frozen at one version beside a compose file from another -- a mismatch that shows up only on

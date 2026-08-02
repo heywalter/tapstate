@@ -1,0 +1,96 @@
+# Installer end-to-end lane: the CLI-only install path, on every supported platform.
+#
+# Proves the promise on the README: pipe the published install.sh into sh on a clean machine and end
+# with a CLI that answers and authors offline. It dials the live domain the README names, not the file in
+# this checkout - the published copy being stale or broken is exactly the failure this lane exists to
+# catch, and reading the checkout cannot see it.
+#
+# This lane is the CLI half only. The full-stack promise - the compose quickstart that is the
+# product's actual one-liner - has its own literal-from-the-docs witness in quickstart-live.yml;
+# macOS runners have no Docker, so this four-platform lane is exactly the half that can run
+# everywhere.
+#
+# Three parts:
+#   - the real install: pipe the published script into sh, then `tapstate --version` (which must not
+#     be a SNAPSHOT - the installer only serves releases) and the offline authoring loop (new +
+#     validate), with no JDK and no toolchain being asked for;
+#   - the negative paths: install-smoke.sh, the checked-in harness whose fixtures cover the
+#     tampered-checksum, truncated-script and unsupported-platform cases without touching the
+#     network - those must hold on every platform, not only where they were written;
+#   - musl (Linux x64 only): the installer inside an Alpine container must refuse loudly - nonzero
+#     exit, an actionable message, nothing half-installed.
+name: Installer e2e
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Off the hour, like every scheduled lane here: on-the-hour slots queue behind everyone else's.
+    - cron: "45 20 * * *"
+
+concurrency:
+  group: install-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      # Runner labels mirror release.yml, which learned the hard way that a removed label queues
+      # forever rather than failing: macos-13 is gone, macos-14 deprecated, and Intel now carries
+      # an explicit -intel label while the plain label is Apple Silicon.
+      matrix:
+        include:
+          - { runner: macos-15,         platform: darwin-arm64 }
+          - { runner: macos-15-intel,   platform: darwin-x64 }
+          - { runner: ubuntu-latest,    platform: linux-x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux-arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install from the published script
+        run: |
+          set -eu
+          curl -sSL https://install.tapstate.dev/cli | sh
+          bin="$HOME/.tapstate/bin/tapstate"
+          test -x "$bin"
+          version="$("$bin" --version)"
+          echo "installed: $version"
+          case "$version" in
+            *SNAPSHOT*) echo "the installer served a SNAPSHOT build" >&2; exit 1 ;;
+          esac
+      - name: Offline authoring loop on the installed binary
+        run: |
+          set -eu
+          bin="$HOME/.tapstate/bin/tapstate"
+          mkdir demo && cd demo
+          "$bin" new -y --kind source --id my_db --connector mysql
+          "$bin" validate
+      - name: Re-run is an in-place upgrade, not an accretion
+        run: |
+          set -eu
+          curl -sSL https://install.tapstate.dev/cli | sh
+          count="$(find "$HOME/.tapstate/bin" -type f | wc -l | tr -d ' ')"
+          test "$count" = "1" || { echo "a re-run left $count files behind" >&2; exit 1; }
+      - name: Negative paths against the checked-in fixtures
+        run: bash install/install-smoke.sh
+
+  musl-refuses-loudly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: The installer refuses Alpine with a usable message and no residue
+        # The script under test is the local file on purpose here: the case is the refusal logic,
+        # and the positive jobs above already hold the published copy to being this same file.
+        run: |
+          set -eu
+          docker run --rm -v "$PWD/install:/install:ro" alpine:3 sh -c '
+            set -eu
+            if sh /install/install.sh > /tmp/out 2>&1; then
+              echo "the installer succeeded on musl, which it must not" >&2
+              exit 1
+            fi
+            grep -qi musl /tmp/out || { echo "the refusal does not say why:"; cat /tmp/out; exit 1; } >&2
+            test ! -e /root/.tapstate || { echo "a refused install left residue" >&2; exit 1; }
+          '

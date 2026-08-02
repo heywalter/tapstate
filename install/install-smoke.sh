@@ -10,7 +10,15 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_SH="$HERE/install.sh"
-VERSION=0.1.0
+# The version under test is the script's own pin, so these fixtures can never drift from the default
+# a bare run installs; and the pin itself is held to pom.xml the same way the quickstart's is.
+VERSION="$(sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' "$INSTALL_SH")"
+[ -n "$VERSION" ] || { printf 'cannot read PINNED_VERSION from %s\n' "$INSTALL_SH" >&2; exit 1; }
+POM_VERSION="$(sed -n 's/.*<revision>\(.*\)<\/revision>.*/\1/p' "$HERE/../pom.xml" | head -1)"
+if [ "$VERSION" != "$POM_VERSION" ]; then
+  printf 'FAIL  pinned version %s does not match pom.xml revision %s -- bump install.sh\n' "$VERSION" "$POM_VERSION" >&2
+  exit 1
+fi
 
 PASS=0; FAIL=0
 ok()  { printf '  PASS  %s\n' "$1"; PASS=$((PASS + 1)); }
@@ -158,20 +166,21 @@ else
 fi
 make_asset darwin-arm64   # restore the good checksum
 
-# --- latest-version resolution over HTTP: no TAPSTATE_VERSION -> the /releases/latest 302 -----------
-# file:// cannot redirect, so this path needs a tiny HTTP stub: /releases/latest 302s to the tag URL,
-# /releases/tag/* answers 200 (so the redirect-following curl -f is happy), and /releases/download/*
-# serves the staged assets. The stub double-forks and publishes its port + pid (no startup sleep race).
+# --- the pinned default over HTTP: no TAPSTATE_VERSION -> PINNED_VERSION, end to end ----------------
+# A bare run must not consult /releases/latest at all: that redirect names only full releases, so it
+# cannot see a prerelease, and the pinned default is the whole point. The stub still answers the
+# redirect -- with a deliberately wrong version -- so a script that quietly went back to asking it
+# installs the wrong thing here and fails. The stub double-forks and publishes its port + pid.
 if command -v python3 >/dev/null 2>&1; then
   cat > "$STUB/httpstub.py" <<'PY'
 import http.server, os, socketserver, sys
-root, ver = sys.argv[1], sys.argv[2]
+root = sys.argv[1]
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         host, port = self.server.server_address
         if self.path == "/releases/latest":
             self.send_response(302)
-            self.send_header("Location", "http://%s:%d/releases/tag/v%s" % (host, port, ver))
+            self.send_header("Location", "http://%s:%d/releases/tag/v9999.0.0" % (host, port))
             self.end_headers(); return
         if self.path.startswith("/releases/tag/"):
             self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers(); return
@@ -206,12 +215,12 @@ PY
   if [ -f "$STUB/pid" ]; then kill "$(cat "$STUB/pid")" 2>/dev/null || true; fi
   rm -rf "$shim"
   if [ "$rc" -eq 0 ] && [ -x "$idir/tapstate" ] && printf '%s' "$out" | grep -q "tapstate $VERSION"; then
-    ok "resolves the latest version via the /releases/latest 302 (no version pinned) and installs over HTTP"
+    ok "a bare run installs the pinned version over HTTP, never asking /releases/latest"
   else
-    bad "latest-version resolution failed (rc=$rc): $out"
+    bad "pinned-default install failed (rc=$rc): $out"
   fi
 else
-  printf '  SKIP  latest-302 resolution (python3 not available)\n'
+  printf '  SKIP  pinned-default over HTTP (python3 not available)\n'
 fi
 
 # --- the recommended macOS version: said out loud, never enforced -----------------------------------

@@ -68,21 +68,30 @@ Tapstate serves continuously fresh operational state through standard query inte
 
 Run the live runtime locally as a Docker Compose stack — databases, server, and
 first-admin bootstrap brought up together — driving a real MySQL → MongoDB sync
-(snapshot, then live CDC). A one-command `quickstart.sh` wraps the whole flow:
+(snapshot, then live CDC). One command does the whole flow, in a `tapstate-demo`
+directory it makes for itself:
+
+```sh
+curl -sSL https://install.tapstate.dev | sh
+```
+
+Prefer to read it first? Download, read, then run — same script, and it works in
+the directory you saved it in:
 
 ```sh
 mkdir tapstate-demo && cd tapstate-demo
-curl -fLO https://raw.githubusercontent.com/tapstate/tapstate/main/deploy/quickstart/quickstart.sh
+curl -sSL https://install.tapstate.dev -o quickstart.sh
 sh quickstart.sh
 ```
 
+Everything it installs stays inside that one directory; tearing down is
+`docker compose down -v` in it, and `rm -rf` of the directory removes the rest.
 See [docs/quickstart-online.md](docs/quickstart-online.md) for the full walkthrough
 and the manual `docker compose` steps behind it.
 
 > **Preview.** The runtime is an early slice: single-node, in-memory, and a restart
 > replays from the source rather than resuming a persisted offset — not for
-> production. `quickstart.sh` downloads a released CLI and server image; until the
-> first preview release is cut, follow the walkthrough's build-from-source path. See
+> production. `quickstart.sh` downloads a released CLI and server image. See
 > [Limitations](docs/quickstart-online.md#limitations).
 >
 > **Recommended platform.** Docker with Compose v2, plus the system versions each
@@ -92,12 +101,33 @@ and the manual `docker compose` steps behind it.
 > say what a machine has. Nothing stops you from installing anyway: the installer names
 > what the build expects and carries on, and how it goes from there is yours.
 
-A one-line installer will collapse the CLI download to a single command:
+To install just the CLI — the offline authoring loop, one native binary, no Docker,
+no JDK:
 
 ```bash
-# Installer coming soon.
-curl -sSL https://install.tapstate.dev | sh
+curl -sSL https://install.tapstate.dev/cli | sh
 ```
+
+It installs a preview build to `~/.tapstate/bin`, verifies the download against its
+published checksum, and never asks for sudo or edits your shell configuration. Prefer
+to read before you run — or to skip the pipe entirely? Both are supported:
+
+```bash
+# Audit the script first, then run the copy you read:
+curl -sSL https://install.tapstate.dev/cli -o install.sh && less install.sh && sh install.sh
+
+# Or skip the installer: download a release asset and check it yourself.
+# Assets are tapstate-<version>-<os>-<arch>.tar.gz, each next to its .sha256
+# (and all of them listed in the release's checksums.txt):
+v=0.1.0 p=darwin-arm64   # your version, and your platform: darwin|linux, arm64|x64
+curl -sSLO "https://github.com/tapstate/tapstate/releases/download/v$v/tapstate-$v-$p.tar.gz"
+curl -sSLO "https://github.com/tapstate/tapstate/releases/download/v$v/tapstate-$v-$p.tar.gz.sha256"
+shasum -a 256 -c "tapstate-$v-$p.tar.gz.sha256"   # sha256sum -c on Linux
+tar -xzf "tapstate-$v-$p.tar.gz"
+```
+
+To uninstall: `rm -rf ~/.tapstate`, and drop the `PATH` line from your shell
+configuration if you added one.
 
 ```yaml
 # tapstate.yaml
@@ -266,7 +296,7 @@ verbs exit with code `3`.
 
 ## Roadmap
 
-- [ ] Public quickstart
+- [x] Public quickstart
 - [ ] Supported source and target matrix
 - [ ] Architecture guide
 - [ ] Local development environment
