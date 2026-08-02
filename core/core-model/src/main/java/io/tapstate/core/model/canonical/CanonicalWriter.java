@@ -250,6 +250,7 @@ public final class CanonicalWriter {
         b.scalar("from", root.from());
         b.scalarSeq("key", root.key());
         b.scalar("mode", root.mode());
+        b.scalar("trackKeyChanges", root.trackKeyChanges());
         b.put("embed", embeds(root.embed()));
         return b.build();
     }
@@ -267,7 +268,7 @@ public final class CanonicalWriter {
             b.scalar("path", e.path());
             b.scalarSeq("arrayKey", e.arrayKey());
             b.scalar("ignoreUpdates", e.ignoreUpdates());
-            b.scalar("trackJoinKeyChanges", e.trackJoinKeyChanges());
+            b.scalar("trackKeyChanges", e.trackKeyChanges());
             if (e.embed() != null) {
                 b.put("embed", embeds(e.embed()));
             }
