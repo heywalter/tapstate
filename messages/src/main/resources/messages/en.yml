@@ -245,6 +245,9 @@ nest.sibling-embeds-target-different-parent-keys:
 nest.embed-path-conflict:
   message: "Embeds {embedPathA} and {embedPathB} both target the path {path}."
   solution: "Give each embed a path of its own, or one silently overwrites the other in the document."
+nest.root-key-required:
+  message: "The nest rooted at {rootAlias} declares no key."
+  solution: "Declare root.key: it is the identity children are grouped under, and the assembled document has none without it."
 nest.array-key-unresolvable:
   message: "Embed {embedPath} declares no array key, and table {table} has no primary key to take one from."
   solution: "Declare arrayKey on that embed; without an element identity, updates pile up as duplicates."

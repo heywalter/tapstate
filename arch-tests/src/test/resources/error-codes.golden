@@ -74,6 +74,7 @@ nest.pending-protection-expired
 nest.resolver-key-limit-exceeded
 nest.resolver-vertex-limit-exceeded
 nest.root-fanout-limit-exceeded
+nest.root-key-required
 nest.sibling-embeds-target-different-parent-keys
 nest.snapshot-passthrough-forbidden
 role.unsupported
