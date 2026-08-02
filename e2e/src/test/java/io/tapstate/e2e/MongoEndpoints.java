@@ -52,6 +52,30 @@ final class MongoEndpoints implements Endpoints {
         return collection(uri, table).countDocuments();
     }
 
+    /**
+     * Every document in the collection, as a reader outside the product sees them. Counting says how
+     * many documents a run produced; it says nothing about what is inside one, which is where the whole
+     * meaning of an assembled document lives. A witness that has to look inside reads them here.
+     */
+    List<Document> documents(String uri, String table) {
+        return collection(uri, table).find().into(new ArrayList<>());
+    }
+
+    /**
+     * The collections the target holds. An empty expected collection and rows written to a differently
+     * named one look identical from a count, and the second is the likelier mistake - so a witness that
+     * finds nothing where it looked can say what is actually there.
+     */
+    List<String> collections(String uri) {
+        ConnectionString connectionString = new ConnectionString(uri);
+        String database = connectionString.getDatabase();
+        if (database == null) {
+            throw new EnvelopeException(
+                    "the endpoint at " + uri + " names no database, so there are no collections to list");
+        }
+        return client(uri).getDatabase(database).listCollectionNames().into(new ArrayList<>());
+    }
+
     @Override
     public void close() {
         clientsByUri.values().forEach(MongoClient::close);
