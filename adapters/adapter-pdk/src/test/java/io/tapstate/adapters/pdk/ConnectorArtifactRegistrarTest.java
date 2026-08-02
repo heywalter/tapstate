@@ -1,5 +1,6 @@
 package io.tapstate.adapters.pdk;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -347,8 +348,10 @@ class ConnectorArtifactRegistrarTest {
             }
 
             @Override
-            public Optional<ConnectorRegistration> find(String connectorId) {
-                return backing.find(connectorId);
+            public List<ConnectorRegistration> findAll(String connectorId) {
+                return backing.list().stream()
+                        .filter(registration -> registration.connectorId().equals(connectorId))
+                        .toList();
             }
 
             @Override
@@ -368,6 +371,23 @@ class ConnectorArtifactRegistrarTest {
 
         assertThatThrownBy(() -> registrar.register(
                         Synthetic.conflictingMysqlConnector(dir), RegistrationSource.REGISTER))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(e -> assertThat(((TapstateException) e).code())
+                        .isEqualTo(ConnectorError.REGISTRATION_CONFLICT));
+    }
+
+    @Test
+    void refusesEvenBytesThatMatchOneOfTwoArtifactsSharingTheId(@TempDir Path dir) throws Exception {
+        // An id carrying two artifacts is a state a connector load refuses outright. A register that
+        // compared the incoming bytes against only one of them would answer "already registered, nothing
+        // to do" whenever they happened to match that one - reporting success for a connector that cannot
+        // be loaded, and silencing the last place the duplicate was visible.
+        Path jar = Synthetic.seedableMysqlConnector(dir);
+        InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
+        registry.register("mysql", "1.3.5", RegistrationSource.REGISTER, Files.readAllBytes(jar));
+        registry.register("mysql", "1.3.5", RegistrationSource.REGISTER, "a second artifact".getBytes(UTF_8));
+
+        assertThatThrownBy(() -> registrarOver(registry).register(jar, RegistrationSource.REGISTER))
                 .isInstanceOf(TapstateException.class)
                 .satisfies(e -> assertThat(((TapstateException) e).code())
                         .isEqualTo(ConnectorError.REGISTRATION_CONFLICT));

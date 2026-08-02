@@ -9,6 +9,10 @@ import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 
+import io.tapstate.core.catalog.ConnectorCatalogEntry;
+import io.tapstate.core.common.TapstateException;
+import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.RegistrationOutcome;
@@ -235,8 +239,8 @@ class ConnectorCatalogViewTest {
             }
 
             @Override
-            public Optional<ConnectorRegistration> find(String connectorId) {
-                return Optional.empty();
+            public List<ConnectorRegistration> findAll(String connectorId) {
+                return List.of();
             }
 
             @Override
@@ -256,6 +260,128 @@ class ConnectorCatalogViewTest {
 
         assertThat(detail.origin()).isEqualTo("bundled");
         assertThat(detail.runtimeAvailable()).isFalse();
+    }
+
+    @Test
+    void readsAConnectorWhileAnotherStoredRowCannotBeReconstructed() {
+        // A detail read asks about one connector. Answering it by listing every derived row makes one row
+        // written by a newer build - an unknown enum value, a renamed field - fail the read of every
+        // connector, bundled ones included, and with it every connection form in the product.
+        ConnectorCatalogStore unlistable = new ConnectorCatalogStore() {
+            @Override
+            public void upsert(ConnectorCatalogEntry entry) {
+                throw new UnsupportedOperationException("the detail read never writes");
+            }
+
+            @Override
+            public Optional<ConnectorCatalogEntry> get(String connectorId) {
+                return Optional.empty();
+            }
+
+            @Override
+            public List<ConnectorCatalogEntry> list() {
+                throw new IllegalStateException("one stored row cannot be reconstructed");
+            }
+        };
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, unlistable, new InMemoryConnectorSpecStore(), emptyRegistry());
+
+        ConnectorDetail detail = view.detail(BUNDLED.ids().get(0));
+
+        assertThat(detail.origin()).isEqualTo("bundled");
+    }
+
+    @Test
+    void statesADamagedSpecSourceAsUnreadableRatherThanFailingTheWholeRead() {
+        // The stored source is one field of the response. Everything else - the config field list a
+        // connection is authored against - is intact, so a damaged spec document must not take the read
+        // down with it. It is an absence, and this type exists to state absences, so it says which one.
+        InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
+        store.upsert(CatalogEntryReader.read(ACME_ROW));
+        ConnectorSpecStore damaged = new ConnectorSpecStore() {
+            @Override
+            public void put(String contentHash, byte[] spec) {
+                throw new UnsupportedOperationException("the detail read never writes");
+            }
+
+            @Override
+            public Optional<byte[]> get(String contentHash) {
+                throw new TapstateException(
+                        ConnectorCatalogError.NOT_FOUND, java.util.Map.of("connector", "unreadable"), null);
+            }
+        };
+        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store, damaged, emptyRegistry());
+
+        ConnectorDetail detail = view.detail("acme");
+
+        assertThat(detail.spec().text()).isNull();
+        assertThat(detail.spec().unavailable()).isEqualTo("unreadable");
+        // Distinguishable from "nothing was ever stored": a consumer retrying a not-stored hash later is
+        // sensible, retrying a damaged document is not.
+        assertThat(detail.spec().unavailable()).isNotEqualTo("not-stored");
+        assertThat(detail.config()).isEmpty();
+        assertThat(detail.modes()).containsExactly("snapshot");
+    }
+
+    @Test
+    void saysTheSourceIsNotDerivedWhenTheConnectorIsRegisteredButHasNoRowHere() {
+        // Registered, its derivation never completed, so the only row is the bundled snapshot's - and the
+        // hash on that row is the one recorded when the release was built, not the one this deployment's
+        // artifact declares. The registered artifact's source IS stored, under a hash nothing here can
+        // reach. Answering "not stored" would be answering about a different spec than the one asked for.
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore(),
+                registryHolding(BUNDLED.ids().get(0), "jar-hash", true));
+
+        ConnectorDetail detail = view.detail(BUNDLED.ids().get(0));
+
+        assertThat(detail.origin()).isEqualTo("bundled");
+        assertThat(detail.spec().text()).isNull();
+        assertThat(detail.spec().unavailable()).isEqualTo("not-derived");
+    }
+
+    @Test
+    void runtimeAvailableIsFalseWhenOneIdCarriesTwoRegistrations() {
+        // Loading a connector refuses an id with two artifacts outright. Reporting it available would
+        // promise a connector that every operation actually using it - a connection test, a schema
+        // discovery, a pipeline start - then refuses, and this boolean exists to answer exactly that.
+        InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
+        store.upsert(CatalogEntryReader.read(ACME_ROW));
+        ConnectorCatalogView view = new ConnectorCatalogView(
+                BUNDLED, store, new InMemoryConnectorSpecStore(), registryHoldingTwo("acme"));
+
+        ConnectorDetail detail = view.detail("acme");
+
+        assertThat(detail.origin()).isEqualTo("registered");
+        assertThat(detail.runtimeAvailable()).isFalse();
+    }
+
+    /** A registry carrying two registrations under one id, both with their bytes present. */
+    private static ConnectorRegistry registryHoldingTwo(String connectorId) {
+        List<ConnectorRegistration> registrations = List.of(
+                new ConnectorRegistration(connectorId, "hash-a", "1.0.0", RegistrationSource.REGISTER),
+                new ConnectorRegistration(connectorId, "hash-b", "1.0.0", RegistrationSource.REGISTER));
+        return new ConnectorRegistry() {
+            @Override
+            public RegistrationOutcome register(String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+                throw new UnsupportedOperationException("the detail read never registers");
+            }
+
+            @Override
+            public List<ConnectorRegistration> list() {
+                return registrations;
+            }
+
+            @Override
+            public Optional<byte[]> artifact(String hash) {
+                throw new UnsupportedOperationException("a detail read must not pull artifact bytes");
+            }
+
+            @Override
+            public boolean hasArtifact(String hash) {
+                return true;
+            }
+        };
     }
 
     private static ConnectorRegistry emptyRegistry() {

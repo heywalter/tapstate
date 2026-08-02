@@ -19,6 +19,16 @@ public record SpecSource(String contentHash, String text, String unavailable) {
     /** No source is stored under this hash: a bundled row, or one registered before sources were kept. */
     public static final String NOT_STORED = "not-stored";
 
+    /**
+     * The connector is registered here but its catalog row was never derived, so the only hash on hand is
+     * the bundled snapshot's build-time one. The registered artifact's source is stored — under the hash
+     * that artifact declares, which the missing row is what would have recorded.
+     */
+    public static final String NOT_DERIVED = "not-derived";
+
+    /** A source is filed under this hash but could not be read back: the stored document is damaged. */
+    public static final String UNREADABLE = "unreadable";
+
     public SpecSource {
         if ((text == null) == (unavailable == null)) {
             // Exactly one of the two holds. Both set would leave "is it there?" ambiguous; neither set is

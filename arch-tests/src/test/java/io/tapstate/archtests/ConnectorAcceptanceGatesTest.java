@@ -53,8 +53,13 @@ class ConnectorAcceptanceGatesTest {
      */
     private static final String SETTING = "alsoacceptids";
 
-    /** Characters between a setting's name and its value that carry no meaning: quoting and spacing. */
-    private static final String PADDING = " \t\"'`";
+    /**
+     * Characters that can sit between a setting's name and its value without changing that it is one:
+     * spacing, and the quotes a JSON or YAML key wears. A backtick is not among them — it is how prose
+     * marks a name as a name, so treating it as padding turns a settings-reference bullet
+     * ({@code - `some.setting`: what it does}) into an accusation of setting the thing it describes.
+     */
+    private static final String PADDING = " \t\"'";
 
     /** The one shipped file that must name the setting: the class that declares it. */
     private static final String DECLARATION =
@@ -117,7 +122,13 @@ class ConnectorAcceptanceGatesTest {
         assertThat(List.of(
                 "        properties.getAlsoAcceptIds());",
                 "Set `tapstate.connectors.also-accept-ids` only if you accept leaving the supported set.",
-                "the also-accept-ids setting is empty in every shipped artifact"))
+                "the also-accept-ids setting is empty in every shipped artifact",
+                // The shape a settings reference is written in: name, then a colon, then what it does.
+                // A backtick is prose marking a name as a name, so the colon after it describes rather
+                // than assigns - the one line most likely to be written about this setting, and the one a
+                // gate that skipped backticks would accuse.
+                "- `tapstate.connectors.also-accept-ids`: further connector ids the register path accepts",
+                "| `tapstate.connectors.also-accept-ids` | empty | ids accepted beyond the supported set |"))
                 .as("a gate that reddens on reading or documenting a setting is accusing the wrong file")
                 .noneMatch(ConnectorAcceptanceGatesTest::assignsTheSetting);
     }

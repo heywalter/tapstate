@@ -25,17 +25,24 @@ public interface ConnectorRegistry {
     List<ConnectorRegistration> list();
 
     /**
-     * The registration filed under a connector id, or empty if none is. Asking about one connector must
-     * not depend on every other one being readable: a caller answering a question about a single id
-     * through {@link #list()} fails whenever any one stored registration cannot be reconstructed, which
-     * turns one corrupt entry into an outage across every connector. The default scans {@code list()}
-     * because a registry that cannot look up by id has no better answer; a store that can query by id
-     * overrides this and stays scoped to the entry asked about.
+     * Every registration filed under a connector id — normally one, empty when none is.
+     *
+     * <p>Scoped to the id on purpose: asking about one connector must not depend on every other one
+     * being readable, and a caller answering a single-id question through {@link #list()} fails whenever
+     * any one stored registration cannot be reconstructed, turning one corrupt entry into an outage
+     * across every connector. The default scans {@code list()} because a registry that cannot look up by
+     * id has no better answer; a store that can query by id overrides this.
+     *
+     * <p>A list rather than one entry, because more than one is a state callers must be able to see.
+     * One artifact per id is what a register enforces, but two concurrent registers can both pass that
+     * check before either stores, and an id carrying two artifacts is one a connector load refuses
+     * outright — so a caller handed a single arbitrary entry could neither refuse the duplicate nor
+     * report it.
      */
-    default Optional<ConnectorRegistration> find(String connectorId) {
+    default List<ConnectorRegistration> findAll(String connectorId) {
         return list().stream()
                 .filter(registration -> registration.connectorId().equals(connectorId))
-                .findFirst();
+                .toList();
     }
 
     /** The artifact bytes stored under a content hash, or empty if none is stored. */

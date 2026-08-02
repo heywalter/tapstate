@@ -6,12 +6,14 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import io.tapstate.core.catalog.ConnectorCatalogEntry;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.ConnectorSpecStore;
 
@@ -60,49 +62,73 @@ public final class ConnectorCatalogView {
     }
 
     /**
-     * Whether this connector could actually be loaded here: a registration exists AND its bytes are
-     * still in the store. Not the same question as {@code origin} — a bundled row is catalog metadata
+     * Whether this connector could actually be loaded here: exactly one registration exists AND its bytes
+     * are still in the store. Not the same question as {@code origin} — a bundled row is catalog metadata
      * that says nothing about a jar being present, and a registration whose bytes went missing is
      * registered but unrunnable. Answered without fetching the artifact.
      *
-     * <p>Scoped to the connector being asked about. Deciding this from the whole registry listing would
-     * make every read of every connector — bundled ones included, which have no registration at all —
-     * fail on a single entry that cannot be reconstructed.
+     * <p>Two registrations under one id answer false, not true. Loading a connector refuses that state
+     * outright, so reporting it as available would promise a connector that every operation actually
+     * using it — a connection test, a schema discovery, a pipeline start — then refuses.
      */
-    private boolean runnable(String connectorId) {
-        return registry.find(connectorId)
-                .map(registration -> registry.hasArtifact(registration.contentHash()))
-                .orElse(false);
+    private boolean runnable(List<ConnectorRegistration> registrations) {
+        return registrations.size() == 1 && registry.hasArtifact(registrations.get(0).contentHash());
     }
 
     /**
      * Dereferences the hash a row already records as provenance into the stored spec source. The row is
-     * a lossy projection, so a consumer needing what the projection dropped reads this; when nothing is
-     * stored the absence is stated rather than left as a bare nothing.
+     * a lossy projection, so a consumer needing what the projection dropped reads this; whenever the
+     * source cannot be produced the absence is stated, with which absence it is, rather than left as a
+     * bare nothing.
      */
-    private SpecSource specSourceFor(ConnectorCatalogEntry entry) {
+    private SpecSource specSourceFor(ConnectorCatalogEntry entry, boolean derivedHere, boolean registeredHere) {
         String hash = entry.provenance().specContentHash();
         if (hash == null) {
             return SpecSource.unavailable(null, SpecSource.NOT_STORED);
         }
-        return specStore.get(hash)
-                .map(bytes -> SpecSource.of(hash, new String(bytes, StandardCharsets.UTF_8)))
-                .orElseGet(() -> SpecSource.unavailable(hash, SpecSource.NOT_STORED));
+        if (!derivedHere && registeredHere) {
+            // The row on hand is the bundled snapshot's, so this hash is the one recorded when the release
+            // was built - not the one this deployment's registered artifact declares. That artifact's
+            // source is stored, but the hash that would address it is what the missing derived row would
+            // have carried, so nothing here can reach it. Saying "not stored" would be answering about a
+            // different spec than the one the caller is asking about.
+            return SpecSource.unavailable(hash, SpecSource.NOT_DERIVED);
+        }
+        try {
+            return specStore.get(hash)
+                    .map(bytes -> SpecSource.of(hash, new String(bytes, StandardCharsets.UTF_8)))
+                    .orElseGet(() -> SpecSource.unavailable(hash, SpecSource.NOT_STORED));
+        } catch (TapstateException unreadableSource) {
+            // A damaged spec document must not take the whole read down with it. Everything else in this
+            // response - the config field list a connection is authored against - is intact and was read
+            // before this call, so a store that could not answer here is one whose fault is this document.
+            // The field exists to state an absence; this is one, with its own reason.
+            return SpecSource.unavailable(hash, SpecSource.UNREADABLE);
+        }
     }
 
     /** One live connector row with the normalized fields a safe dynamic form consumes. */
     public ConnectorDetail detail(String id) {
         Objects.requireNonNull(id, "id");
-        List<ConnectorCatalogEntry> registered = store.list();
-        boolean registeredOrigin = registered.stream().anyMatch(entry -> entry.id().equals(id));
-        ConnectorCatalogEntry entry;
+        // Read by id rather than by listing and merging: a detail read asks about one connector, and one
+        // row written by a newer build would otherwise fail every connector's read, bundled ones included.
+        Optional<ConnectorCatalogEntry> derivedRow = store.get(id);
+        ConnectorCatalogEntry entry = derivedRow.orElseGet(() -> bundledRow(id));
+        List<ConnectorRegistration> registrations = registry.findAll(id);
+        return ConnectorDetail.of(
+                entry,
+                derivedRow.isPresent() ? REGISTERED : BUNDLED,
+                specSourceFor(entry, derivedRow.isPresent(), !registrations.isEmpty()),
+                runnable(registrations));
+    }
+
+    /** The bundled snapshot's row for an id no registration derived, or a coded not-found. */
+    private ConnectorCatalogEntry bundledRow(String id) {
         try {
-            entry = TapstateCatalog.merged(bundled, registered).byId(id);
+            return bundled.byId(id);
         } catch (IllegalArgumentException error) {
             throw new TapstateException(
                     ConnectorCatalogError.NOT_FOUND, Map.of("connector", id), error);
         }
-        return ConnectorDetail.of(
-                entry, registeredOrigin ? REGISTERED : BUNDLED, specSourceFor(entry), runnable(id));
     }
 }

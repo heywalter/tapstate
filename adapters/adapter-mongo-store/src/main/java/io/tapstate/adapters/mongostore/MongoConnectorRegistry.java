@@ -77,24 +77,26 @@ public final class MongoConnectorRegistry implements ConnectorRegistry {
     }
 
     @Override
-    public Optional<ConnectorRegistration> find(String connectorId) {
+    public List<ConnectorRegistration> findAll(String connectorId) {
         Objects.requireNonNull(connectorId, "connectorId");
         return StoreIo.call(() -> {
             // Queried on the identity carried in the file's metadata, so the answer costs one lookup and
             // depends on no other stored artifact: a registration that cannot be reconstructed fails the
             // question about that connector alone, never every connector at once.
             //
-            // Ordered by the content hash, which is the filename. One artifact per connector id is the
-            // intended state and a register refuses a second one, but two concurrent registers can both
-            // pass that check before either stores, and an operator can write out of band. Left unordered,
-            // which of them answers would be storage order - so a caller asking twice could be told two
-            // different things, and runtime availability would flap for no reason the caller can see.
-            GridFSFile file = artifacts.find(Filters.eq("metadata.connectorId", connectorId))
+            // Ordered by the content hash, which is the filename, so repeated calls agree on the order
+            // they report an id's artifacts in. Normally there is one; where there are two, a caller told
+            // them in storage order could be told something different on the next call.
+            List<ConnectorRegistration> found = new ArrayList<>();
+            try (MongoCursor<GridFSFile> cursor = artifacts.find(Filters.eq("metadata.connectorId", connectorId))
                     .sort(new Document("filename", 1))
-                    .first();
-            return file == null
-                    ? Optional.<ConnectorRegistration>empty()
-                    : Optional.of(toRegistration(file.getFilename(), file.getMetadata()));
+                    .iterator()) {
+                while (cursor.hasNext()) {
+                    GridFSFile file = cursor.next();
+                    found.add(toRegistration(file.getFilename(), file.getMetadata()));
+                }
+            }
+            return found;
         });
     }
 

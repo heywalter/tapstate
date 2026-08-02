@@ -1,5 +1,8 @@
 package io.tapstate.adapters.mongostore;
 
+import com.mongodb.ErrorCategory;
+import com.mongodb.MongoException;
+import com.mongodb.MongoWriteException;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.ReplaceOptions;
 import io.tapstate.core.common.TapstateException;
@@ -40,10 +43,22 @@ public final class MongoConnectorSpecStore implements ConnectorSpecStore {
         // Upsert by the content hash (the document _id). Content-addressed, so a second write under a
         // hash carries the same bytes: replacing in place is the idempotent outcome, not an overwrite
         // of something different.
-        StoreIo.run(() -> collection.replaceOne(
-                new Document("_id", contentHash),
-                toDocument(contentHash, spec),
-                new ReplaceOptions().upsert(true)));
+        try {
+            collection.replaceOne(
+                    new Document("_id", contentHash),
+                    toDocument(contentHash, spec),
+                    new ReplaceOptions().upsert(true));
+        } catch (MongoWriteException e) {
+            if (e.getError().getCategory() != ErrorCategory.DUPLICATE_KEY) {
+                throw StoreIo.coded(e);
+            }
+            // Two writers both found nothing under this hash and both inserted; one of them lost the race
+            // on the key. Because the key IS the content, the winner wrote the same bytes this call
+            // carries - the store now holds exactly what was asked for, so reporting a failure would fail
+            // a write that succeeded.
+        } catch (MongoException e) {
+            throw StoreIo.coded(e);
+        }
     }
 
     /** Maps spec source to its stored document: the content hash as {@code _id}, the bytes as binary. */

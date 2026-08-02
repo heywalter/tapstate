@@ -101,8 +101,15 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         rejectUnofficialConnector(connectorId);
         byte[] bytes = bytesOf(artifact);
         rejectConflictingArtifact(connectorId, ContentHash.of(bytes));
+        // Kept before the artifact is registered, so that a store failure writing it fails a register that
+        // has taken nothing: the id is still free and the caller's retry is a clean first attempt. The
+        // source is read straight off the artifact and does not depend on the connector loading, so there
+        // is nothing about the registration it needs to wait for. An artifact refused after this point
+        // leaves the source stored and unreferenced, which costs one small content-addressed document
+        // that the next registration of the same spec reuses.
+        String specHash = storeSpecSource(introspected);
         RegistrationOutcome outcome = registry.register(connectorId, introspected.pdkApiVersion(), source, bytes);
-        persistCatalogRow(connectorId, introspected, specTree, outcome);
+        persistCatalogRow(connectorId, introspected, specTree, specHash, outcome);
         return outcome;
     }
 
@@ -152,17 +159,22 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
      * Refuses a different artifact under a connector id that already has one — no silent overwrite.
      * Asked of the one id being registered: deciding it from the whole listing would fail this register
      * whenever any other, unrelated stored registration could not be reconstructed.
+     *
+     * <p>Every artifact under the id is compared, not just one of them. An id carrying two artifacts is
+     * a state a connector load refuses outright, so a register that looked at only one could answer
+     * "already registered, nothing to do" for bytes that match that one while the id stays unloadable —
+     * silencing the last signal that anything is wrong with it.
      */
     private void rejectConflictingArtifact(String connectorId, String incomingHash) {
-        registry.find(connectorId)
-                .filter(existing -> !existing.contentHash().equals(incomingHash))
-                .ifPresent(existing -> {
-                    throw new TapstateException(ConnectorError.REGISTRATION_CONFLICT,
-                            Map.of("connector", connectorId,
-                                    "existing", existing.contentHash(),
-                                    "incoming", incomingHash),
-                            null);
-                });
+        for (ConnectorRegistration existing : registry.findAll(connectorId)) {
+            if (!existing.contentHash().equals(incomingHash)) {
+                throw new TapstateException(ConnectorError.REGISTRATION_CONFLICT,
+                        Map.of("connector", connectorId,
+                                "existing", existing.contentHash(),
+                                "incoming", incomingHash),
+                        null);
+            }
+        }
     }
 
     private static Path stage(byte[] artifact) {
@@ -216,22 +228,28 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
      * the registered connector. Skipped when the bytes were already registered and a row already exists;
      * otherwise the row is (re)derived, which backfills a row missing after a prior partial register.
      */
-    private void persistCatalogRow(
-            String connectorId, IntrospectedConnector introspected, Object specTree, RegistrationOutcome outcome) {
+    /**
+     * Stores the artifact's spec source under its content hash if it is not already stored, and returns
+     * that hash. Written at most once per distinct source: a connector registered before sources were
+     * kept has none, and that gap is what a re-register backfills.
+     */
+    private String storeSpecSource(IntrospectedConnector introspected) {
         byte[] specSource = introspected.spec().getBytes(StandardCharsets.UTF_8);
         String specHash = ContentHash.of(specSource);
-        if (!outcome.newlyRegistered()
-                && catalogStore.get(connectorId).isPresent()
-                && specStore.has(specHash)) {
-            // Both artifacts of this registration are already stored, so there is nothing to redo. The
-            // spec source is part of the condition, not just the row: a connector registered before the
-            // source was kept has a row but no source, and that gap is what a re-register backfills.
+        if (!specStore.has(specHash)) {
+            specStore.put(specHash, specSource);
+        }
+        return specHash;
+    }
+
+    private void persistCatalogRow(
+            String connectorId, IntrospectedConnector introspected, Object specTree, String specHash,
+            RegistrationOutcome outcome) {
+        if (!outcome.newlyRegistered() && catalogStore.get(connectorId).isPresent()) {
+            // The bytes were already registered and their row is already derived, so there is nothing to
+            // redo. A row missing here is what a re-register backfills.
             return;
         }
-        // Stored before derivation, which may fail for a connector that will not load here: the source
-        // is read straight off the artifact and does not depend on the connector loading, so there is no
-        // reason to lose it when the capability row cannot be built.
-        specStore.put(specHash, specSource);
         ConnectorCapabilities capabilities;
         try {
             capabilities = capabilityDeriver.derive(connectorId);
