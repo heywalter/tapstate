@@ -37,9 +37,23 @@ class SourceOrderTest {
 
     @Test
     void aReservedSequenceBelowTheRingOrdersBeforeEveryChangeOfItsEpoch() {
-        SourceOrder snapshotRow = new SourceOrder(7L, Long.MIN_VALUE);
+        SourceOrder snapshotRow = new SourceOrder(7L, SourceOrder.SNAPSHOT_SEQ);
         assertThat(snapshotRow).isLessThan(new SourceOrder(7L, 0L));
         assertThat(snapshotRow).isGreaterThan(new SourceOrder(6L, Long.MAX_VALUE));
+    }
+
+    @Test
+    void everySnapshotRowOfOneGenerationCarriesTheSameReservedSequence() {
+        assertThat(SourceOrder.snapshotRow(7L)).isEqualTo(new SourceOrder(7L, SourceOrder.SNAPSHOT_SEQ));
+        assertThat(SourceOrder.snapshotRow(7L)).isEqualByComparingTo(SourceOrder.snapshotRow(7L));
+    }
+
+    @Test
+    void noSequenceTheRingCanAssignReachesDownToTheReservedOne() {
+        // The ring assigns from zero upwards, so reserving the very bottom of the range keeps the
+        // guarantee total: no change of a generation can ever tie with, let alone precede, its snapshot.
+        assertThat(SourceOrder.SNAPSHOT_SEQ).isEqualTo(Long.MIN_VALUE);
+        assertThat(SourceOrder.snapshotRow(7L)).isLessThan(new SourceOrder(7L, Long.MIN_VALUE + 1));
     }
 
     @Test

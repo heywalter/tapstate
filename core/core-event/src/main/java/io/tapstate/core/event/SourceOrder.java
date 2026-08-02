@@ -24,6 +24,26 @@ import java.io.Serializable;
  */
 public record SourceOrder(long epoch, long seq) implements Comparable<SourceOrder>, Serializable {
 
+    /**
+     * The sequence every snapshot row carries, reserved below every sequence a ring can assign. A ring
+     * numbers from zero upwards, so reserving the bottom of the range makes the guarantee total: within one
+     * generation, no change can tie with a snapshot row, let alone precede it.
+     *
+     * <p>Rows of one snapshot are not ordered among themselves — they all carry this one value — which
+     * holds because a snapshot reads each key once, so two of its rows never compete for the same key. A
+     * source that emits a key twice in one snapshot breaks that, and the two rows will simply not update
+     * each other; it is a defect of the source rather than something this order resolves.
+     */
+    public static final long SNAPSHOT_SEQ = Long.MIN_VALUE;
+
+    /**
+     * The order carried by every row of the snapshot that belongs to generation {@code epoch} — the
+     * generation the snapshot <em>began</em> in, which is not necessarily the one running now.
+     */
+    public static SourceOrder snapshotRow(long epoch) {
+        return new SourceOrder(epoch, SNAPSHOT_SEQ);
+    }
+
     @Override
     public int compareTo(SourceOrder other) {
         int byEpoch = Long.compare(epoch, other.epoch);
