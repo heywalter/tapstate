@@ -2,6 +2,7 @@ package io.tapstate.runtime.srs;
 
 import static com.hazelcast.jet.core.Edge.between;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.hazelcast.cluster.Address;
 import com.hazelcast.collection.IList;
@@ -205,6 +206,23 @@ class SrsSourceProcessorTest {
                 "orders|null|101|1:" + SourceOrder.SNAPSHOT_SEQ,
                 "orders|w0|0|1:0",
                 "orders|w1|1|1:1");
+    }
+
+    @Test
+    void refusesAChangeFoundOnARingWhoseChainHasNoGenerationOpen() throws InterruptedException {
+        // A source with no generation reads no chain of its own, so its ring is one nobody fills. A change
+        // sitting on it means a capture is writing a chain that was never opened -- and the alternative to
+        // refusing it is putting every change of this job below every real generation, which reorders data
+        // silently and no assertion on the rows would catch.
+        fill("srs.chain.nogen", 2);
+
+        Job job = hz.getJet().newJob(new DAG().vertex(new Vertex("source",
+                SrsSourceProcessor.metaSupplier("srs.chain.nogen", "orders", StartFrom.earliest(), 0L,
+                        SrsReadCursorPublisherFactory.NONE))));
+
+        assertThatThrownBy(() -> job.join())
+                .hasMessageContaining("srs.chain.nogen")
+                .hasMessageContaining("no ring generation open");
     }
 
     @Test

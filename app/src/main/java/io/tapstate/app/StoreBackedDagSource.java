@@ -135,22 +135,17 @@ final class StoreBackedDagSource implements DagSource {
     }
 
     /**
-     * The generation the source's ring is open under, read once while the job is assembled. The capture run
-     * opens the chain before the job is submitted, so a chain with no record or no generation opened means
-     * the job is being built ahead of the capture that feeds it — a wiring error, which crashes bare naming
-     * the step rather than handing the reader a generation of zero for every change to be compared on.
+     * The generation the source's ring is open under, read once while the job is assembled, and zero for a
+     * source that reads no chain of its own.
+     *
+     * <p>Only a read with an incremental tail through the shared ring opens a chain, so a snapshot-only or
+     * srs-disabled read has no record here and no ring anyone fills — its rows reach the sink from the
+     * snapshot buffer rather than the ring, and there is no stream of changes for them to be ordered
+     * against. Reading the record rather than re-deriving the plan keeps one answer to that question: the
+     * capture run writes the record, so its presence is what "this source reads a shared ring" means.
      */
     private long ringGeneration(SourceCaptureResolution resolution) {
-        long epoch = storePort.meta().read(resolution.chainId().value())
-                .map(SrsMeta::epoch)
-                .orElse(0L);
-        if (epoch < 1) {
-            throw new IllegalStateException("source '" + resolution.sourceId()
-                    + "' reads mining chain '" + resolution.chainId().value()
-                    + "', which has no ring generation open — its capture run must provision the chain "
-                    + "before the job that reads it is assembled");
-        }
-        return epoch;
+        return storePort.meta().read(resolution.chainId().value()).map(SrsMeta::epoch).orElse(0L);
     }
 
     /**

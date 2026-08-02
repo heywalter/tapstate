@@ -68,7 +68,7 @@ class StoreBackedDagSourceTest {
     }
 
     @Test
-    void refuses_a_pipeline_whose_chain_has_no_ring_generation_open() {
+    void builds_a_job_for_a_source_that_reads_no_chain_of_its_own() {
         FakeStorePort store = new FakeStorePort();
         store.artifacts().save(cdcSource("orders_src", "orders"));
         store.artifacts().save(connectionSupplier("orders_dest"));
@@ -80,14 +80,13 @@ class StoreBackedDagSourceTest {
                 serve(FromRef.literal("orders_src"), sync("sync_1", "orders_dest")),
                 null, null));
 
-        // Starting a pipeline runs its capture before it builds the job, so a chain with no generation open
-        // means the two have been wired the other way round. It crashes bare naming the step -- a wiring
-        // error, not something an author can fix -- because the alternative is handing every change of the
-        // job a generation of zero to be compared on, which no test of the data would ever notice.
-        assertThatThrownBy(() -> new StoreBackedDagSource(store).dagFor("p"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("orders_src")
-                .hasMessageContaining("no ring generation open");
+        // No chain record: only a read with an incremental tail through the shared ring opens one, so a
+        // snapshot-only or srs-disabled read reaches here with none. Its rows come from the snapshot buffer
+        // and no capture fills its ring, so demanding a generation of it would refuse to build a job that
+        // is perfectly well formed.
+        DAG dag = new StoreBackedDagSource(store).dagFor("p");
+
+        assertThat(vertexNames(dag)).contains("orders_src");
     }
 
     @Test

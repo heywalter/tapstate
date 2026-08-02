@@ -87,13 +87,28 @@ public final class SrsSourceProcessor extends AbstractProcessor {
         // The ring's sequence pairs with the generation this reader runs under to give each change its
         // order. The sequence alone is not comparable across generations: a rebuilt ring numbers from zero
         // again, so a change of the new ring would otherwise read as older than one of the ring before it.
-        reader.fill(
-                (item, seq) -> pending.add(SrsProjection.toEnvelope(item, src, new SourceOrder(epoch, seq))),
-                FILL_BATCH);
+        reader.fill((item, seq) -> pending.add(SrsProjection.toEnvelope(item, src, orderOf(seq))), FILL_BATCH);
         emitPending();
         // A streaming source never completes: on an empty ring it returns having emitted nothing and, being
         // non-cooperative, its worker backs off before the next call rather than spinning.
         return false;
+    }
+
+    /**
+     * The order for the change at ring sequence {@code seq}.
+     *
+     * <p>A source reading no chain of its own carries no generation, and for it this is unreachable: no
+     * chain means no capture writing that ring, so the reader only ever finds it empty and every row this
+     * source emits comes from the snapshot buffer instead. Reaching here without one therefore means a ring
+     * is being filled for a chain nobody opened — a wiring error, and one that would otherwise put every
+     * change of this job on a generation below every real one, so it crashes bare rather than ordering on it.
+     */
+    private SourceOrder orderOf(long seq) {
+        if (epoch < 1) {
+            throw new IllegalStateException("ring '" + ringName + "' holds changes on stream '" + src
+                    + "' but its mining chain has no ring generation open");
+        }
+        return new SourceOrder(epoch, seq);
     }
 
     /** Emits buffered envelopes until the outbox refuses one; true when the buffer is fully drained. */
@@ -115,7 +130,9 @@ public final class SrsSourceProcessor extends AbstractProcessor {
      *
      * <p>The generation is resolved when the job is assembled, not read per change: the ring is opened
      * before the job is submitted and does not change generation while it runs, so carrying it here keeps
-     * the durable store off the per-change path entirely.
+     * the durable store off the per-change path entirely. Zero means the source reads no chain of its own —
+     * a snapshot-only or srs-disabled read, whose rows come from the snapshot buffer and whose ring nobody
+     * fills; a change found on such a ring is rejected rather than ordered.
      */
     public static ProcessorMetaSupplier metaSupplier(String ringName, String src, StartFrom start, long epoch,
             SrsReadCursorPublisherFactory publisherFactory) {
@@ -123,8 +140,8 @@ public final class SrsSourceProcessor extends AbstractProcessor {
         Objects.requireNonNull(src, "src");
         Objects.requireNonNull(start, "start");
         Objects.requireNonNull(publisherFactory, "publisherFactory");
-        if (epoch < 1) {
-            throw new IllegalArgumentException("a ring is read under a generation, got " + epoch);
+        if (epoch < 0) {
+            throw new IllegalArgumentException("a ring generation is never negative, got " + epoch);
         }
         SupplierEx<Processor> supplier = () -> new SrsSourceProcessor(ringName, src, start, epoch, publisherFactory);
         return ProcessorMetaSupplier.forceTotalParallelismOne(ProcessorSupplier.of(supplier));
