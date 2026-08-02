@@ -5,6 +5,7 @@ import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import io.tapstate.adapters.transform.MapSpec;
 import io.tapstate.adapters.transform.StatelessTransforms;
+import io.tapstate.core.model.FromClause;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.SourceResource;
@@ -14,6 +15,8 @@ import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.DagBindings;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
 import io.tapstate.runtime.engine.SinkAckBinding;
+import io.tapstate.runtime.engine.nest.NestBinding;
+import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.runtime.srs.SrsReadCursorPublisherFactory;
 import io.tapstate.runtime.srs.SrsSourceProcessor;
 import io.tapstate.runtime.srs.StartFrom;
@@ -22,6 +25,8 @@ import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.TargetTable;
 import io.tapstate.spi.sink.WriteMode;
 import io.tapstate.spi.store.ArtifactStore;
+import io.tapstate.spi.store.DiscoveredSourceModel;
+import io.tapstate.spi.store.SourceTable;
 import io.tapstate.spi.store.SrsMeta;
 import io.tapstate.spi.store.StorePort;
 import io.tapstate.spi.transform.TransformPort;
@@ -70,7 +75,7 @@ final class StoreBackedDagSource implements DagSource {
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
         TargetTable target = targetModelResolver.resolve(pipeline).orElse(null);
         return PipelineDagBuilder.build(
-                pipeline, bindings(sourceIdByTable(pipeline), target), sinkAckBinding(pipeline, pipelineId));
+                pipeline, bindings(pipeline, sourceIdByTable(pipeline), target), sinkAckBinding(pipeline, pipelineId));
     }
 
     /**
@@ -112,12 +117,88 @@ final class StoreBackedDagSource implements DagSource {
      * builder walks the topology; only the vertex suppliers they return travel onto the DAG, so they may
      * reach the store freely while what they produce stays serializable.
      */
-    private DagBindings bindings(Map<String, String> sourceIdByTable, TargetTable target) {
+    private DagBindings bindings(PipelineResource pipeline, Map<String, String> sourceIdByTable, TargetTable target) {
         return new DagBindings(
                 this::sourceVertex,
                 StoreBackedDagSource::transformPort,
                 element -> sinkWriter(element, target),
-                ref -> upstreams(ref, sourceIdByTable));
+                ref -> upstreams(ref, sourceIdByTable),
+                nestBinding(pipeline, sourceIdByTable));
+    }
+
+    /**
+     * What a nest node needs that the engine will not decide: the table behind each embedded alias, where
+     * each vertex keeps its state, and where a change that can never reach a document goes.
+     *
+     * <p>Supplied whether or not the pipeline has a nest in it. It costs a walk of the transforms and
+     * nothing else, and the alternative — deciding here that a pipeline has no nest — is a second place
+     * that has to agree with the builder about what a nest is.
+     *
+     * <p>State goes on the heap of the member running the vertex: it is rebuilt by replay after a restart,
+     * which is what this build promises and no more. Dropped changes are counted and warned about rather
+     * than routed anywhere, because where they should go has not been decided; counting them is the part
+     * that is not in question.
+     */
+    private NestBinding nestBinding(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
+        return new NestBinding(byAlias::get, NestBinding.onHeap(), new CountingNestDeadLetter());
+    }
+
+    /**
+     * The table behind every alias the pipeline's nest steps declare.
+     *
+     * <p>An alias naming a table resolves to that table and the key its discovery model declares; one
+     * naming a step resolves to a table with no key, as does one whose source was never discovered. The
+     * empty key is not a failure here: it is only ever read to fill in an embed that left {@code arrayKey}
+     * out, and an embed that needs it and cannot get it is the author's to fix — the engine says so with a
+     * code. Resolving it to nothing instead would turn that into a crash.
+     *
+     * <p>Aliases are declared per step but asked for pipeline-wide, so two steps declaring one alias over
+     * different tables cannot both be answered. That is refused rather than silently resolved one way.
+     */
+    private Map<String, NestTable> nestTablesByAlias(
+            PipelineResource pipeline, Map<String, String> sourceIdByTable) {
+        Map<String, NestTable> byAlias = new LinkedHashMap<>();
+        if (pipeline.transforms() == null) {
+            return byAlias;
+        }
+        for (Step step : pipeline.transforms()) {
+            if (!(step instanceof Step.Inline inline) || !(inline.body() instanceof TransformBody.Nest)) {
+                continue;
+            }
+            if (!(inline.from() instanceof FromClause.Aliases aliases)) {
+                continue;
+            }
+            aliases.aliases().forEach((alias, ref) -> {
+                NestTable resolved = nestTable(ref, sourceIdByTable);
+                NestTable existing = byAlias.putIfAbsent(alias, resolved);
+                if (existing != null && !existing.name().equals(resolved.name())) {
+                    throw new IllegalStateException("alias '" + alias + "' names table '" + existing.name()
+                            + "' on one nest step and '" + resolved.name() + "' on another; a nest binding "
+                            + "answers per alias, so the two cannot both be resolved");
+                }
+            });
+        }
+        return byAlias;
+    }
+
+    /** One alias's table: its discovered key when the reference names a table, no key otherwise. */
+    private NestTable nestTable(FromRef ref, Map<String, String> sourceIdByTable) {
+        if (!(ref instanceof FromRef.Literal literal)) {
+            // A regex names many upstreams and so no single table key; an embed over one declares its own.
+            return new NestTable(String.valueOf(ref), List.of());
+        }
+        String table = literal.ref();
+        String sourceId = sourceIdByTable.get(table);
+        if (sourceId == null) {
+            // A step id: the stream is another step's output, which has no table key to fall back on.
+            return new NestTable(table, List.of());
+        }
+        return new NestTable(table, storePort.schemas().get(sourceId)
+                .map(DiscoveredSourceModel::model)
+                .flatMap(model -> model.tables().stream().filter(t -> t.name().equals(table)).findFirst())
+                .map(SourceTable::primaryKey)
+                .orElse(List.of()));
     }
 
     /**
