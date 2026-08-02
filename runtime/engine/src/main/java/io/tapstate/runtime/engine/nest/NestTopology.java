@@ -8,6 +8,7 @@ import io.tapstate.core.model.WriteMode;
 
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -30,7 +31,8 @@ import java.util.function.Function;
  * <p>The tree is checked while it is compiled, and everything an author can get wrong is refused with a
  * code. A tree that compiles is one the runtime can assume is well formed.
  */
-public record NestTopology(List<NestVertex> vertices, List<NestStream> streams) implements Serializable {
+public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, List<EmbedSlot> slots)
+        implements Serializable {
 
     /**
      * How many resolver vertices one nest may compile to. Each takes a thread of its own rather than
@@ -48,6 +50,7 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams) 
     public NestTopology {
         vertices = List.copyOf(vertices);
         streams = List.copyOf(streams);
+        slots = List.copyOf(slots);
     }
 
     /** Compiles the tree against the default vertex limit. */
@@ -69,7 +72,7 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams) 
         NestRoot root = nest.root();
         List<Embed> declared = childrenOf(root.embed());
         if (declared.isEmpty()) {
-            return new NestTopology(List.of(), List.of());
+            return new NestTopology(List.of(), List.of(), List.of());
         }
 
         List<Node> top = new ArrayList<>();
@@ -142,16 +145,21 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams) 
 
     private static NestTopology assemble(String pipelineId, String nodeId, NestRoot root,
             List<String> rootIdentity, List<Node> top, List<Node> all) {
+        Map<List<String>, List<String>> identities = new LinkedHashMap<>();
+        identities.put(List.of(), rootIdentity);
+        for (Node node : all) {
+            identities.put(node.pathId(), node.identity());
+        }
         List<NestVertex> vertices = new ArrayList<>();
         List<NestStream> streams = new ArrayList<>();
         for (Node node : all) {
             if (!node.children().isEmpty()) {
-                vertices.add(vertexOf(pipelineId, nodeId, node));
+                vertices.add(vertexOf(pipelineId, nodeId, node, identities.get(node.parentPathId())));
             }
         }
         String assemblerName = vertexName(nodeId, List.of());
         vertices.add(new NestVertex(List.of(), assemblerName,
-                mapName(pipelineId, nodeId, List.of()), rootIdentity,
+                mapName(pipelineId, nodeId, List.of()), rootIdentity, List.of(),
                 edgesOf(root.from(), List.of(), rootIdentity, top)));
 
         streams.add(new NestStream(root.from(), List.of(), 0, assemblerName, null));
@@ -164,12 +172,13 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams) 
             streams.add(new NestStream(node.embed().from(), node.pathId(), leaf ? depth - 1 : depth,
                     entry, node.arrayKey()));
         }
-        return new NestTopology(vertices, streams);
+        return new NestTopology(vertices, streams, slotsOf(top));
     }
 
-    private static NestVertex vertexOf(String pipelineId, String nodeId, Node node) {
+    private static NestVertex vertexOf(String pipelineId, String nodeId, Node node, List<String> parentIdentity) {
         return new NestVertex(node.pathId(), vertexName(nodeId, node.pathId()),
                 mapName(pipelineId, nodeId, node.pathId()), node.identity(),
+                joinFields(node.embed(), parentIdentity),
                 edgesOf(node.embed().from(), node.pathId(), node.identity(), node.children()));
     }
 
@@ -311,6 +320,20 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams) 
             throw new TapstateException(NestError.RESOLVER_VERTEX_LIMIT_EXCEEDED,
                     Map.of("vertices", resolvers, "limit", limit), null);
         }
+    }
+
+    /**
+     * The shape the assembler renders documents into: which field each embed occupies and whether an
+     * absent one shows as an empty array or not at all. It is a property of the declared tree and not of
+     * the data, which is why it is settled here rather than remembered per document.
+     */
+    private static List<EmbedSlot> slotsOf(List<Node> nodes) {
+        List<EmbedSlot> slots = new ArrayList<>();
+        for (Node node : nodes) {
+            Embed embed = node.embed();
+            slots.add(new EmbedSlot(embed.path(), embed.as(), slotsOf(node.children())));
+        }
+        return slots;
     }
 
     private static String vertexName(String nodeId, List<String> pathId) {

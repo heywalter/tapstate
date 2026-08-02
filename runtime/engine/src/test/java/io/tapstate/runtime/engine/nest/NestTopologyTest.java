@@ -195,6 +195,31 @@ class NestTopologyTest {
     }
 
     @Test
+    void tellsEachResolverWhereOnItsOwnRowsTheKeyOfTheLevelAboveSits() {
+        NestTopology topology = compiled();
+
+        assertThat(topology.vertexAt(List.of("policies")).parentKeyFields())
+                .describedAs("a policy row is filed under policy_id and answers with its customer_id")
+                .containsExactly("customer_id");
+        assertThat(topology.vertexAt(List.of("policies", "claims")).parentKeyFields())
+                .containsExactly("policy_id");
+        assertThat(topology.assembler().parentKeyFields())
+                .describedAs("the root hangs from nothing")
+                .isEmpty();
+    }
+
+    @Test
+    void carriesTheShapeTheAssemblerRendersDocumentsInto() {
+        List<EmbedSlot> slots = compiled().slots();
+
+        assertThat(slots).extracting(EmbedSlot::path).containsExactly("policies", "orders", "profile");
+        assertThat(slots.get(2).as()).isEqualTo(EmbedAs.OBJECT);
+        assertThat(slots.get(0).children()).extracting(EmbedSlot::path).containsExactly("claims");
+        assertThat(slots.get(0).children().get(0).children()).extracting(EmbedSlot::path)
+                .containsExactly("documents");
+    }
+
+    @Test
     void compilesARootWithNothingEmbeddedToAPassthrough() {
         NestTopology topology = NestTopology.compile(PIPELINE, NODE,
                 nest("customer", List.of("customer_id")), tables());
