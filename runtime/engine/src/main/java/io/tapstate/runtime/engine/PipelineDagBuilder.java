@@ -69,6 +69,10 @@ public final class PipelineDagBuilder {
                 if (step instanceof Step.Inline inline && inline.body() instanceof TransformBody.Nest nest) {
                     // A nest draws its own vertices and edges: their count, their keys and the ordinal
                     // each stream arrives on were all settled while compiling the tree.
+                    if (bindings.nest() == null) {
+                        throw new IllegalStateException("transform step '" + step.id()
+                                + "' is a nest, but no nest binding was supplied to the builder");
+                    }
                     byKey.put(step.id(), NestDag.attach(dag,
                             NestTopology.compile(pipeline.id(), step.id(), nest, bindings.nest().tables()),
                             step.id(), nest.root().from(), step.id(),

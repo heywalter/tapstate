@@ -1,6 +1,7 @@
 package io.tapstate.runtime.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.hazelcast.function.FunctionEx;
 import com.hazelcast.function.SupplierEx;
@@ -145,6 +146,27 @@ class PipelineDagBuilderNestTest {
                 .describedAs("it assembles nothing, so it takes no state, no map and no thread of its own")
                 .containsExactlyInAnyOrder("customers", "policies", "claims", "profiles", "doc", "serve.sync_1");
         assertThat(edges(dag)).contains("customers->doc#0,0", "doc->serve.sync_1#0,0");
+    }
+
+    @Test
+    void sayingWhyRatherThanFailingOnANullWhenNoNestBindingWasSupplied() {
+        Step step = nestStep("doc", tree(),
+                "customer", "customers", "policy", "policies", "claim", "claims", "profile", "profiles");
+        PipelineResource pipeline = new PipelineResource("p", null,
+                List.of("customers", "policies", "claims", "profiles"),
+                List.of(step), null,
+                new ServeBlock.Inline("serve", FromRef.literal("doc"),
+                        List.of(new SyncElement("sync_1", "dest", null, null, null, null)), null, null),
+                null, null);
+        DagBindings withoutNest = new DagBindings(
+                srcId -> stubMeta(),
+                s -> (SupplierEx<TransformPort>) () -> ev -> List.of(ev),
+                syncElement -> (SupplierEx<SinkWriter>) NoOpSinkWriter::new,
+                ref -> List.of(((FromRef.Literal) ref).ref()));
+
+        assertThatThrownBy(() -> PipelineDagBuilder.build(pipeline, withoutNest))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("no nest binding");
     }
 
     // ---- doubles ----------------------------------------------------------------------
