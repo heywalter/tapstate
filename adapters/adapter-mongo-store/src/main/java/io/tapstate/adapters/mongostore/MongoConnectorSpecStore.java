@@ -61,6 +61,16 @@ public final class MongoConnectorSpecStore implements ConnectorSpecStore {
         return Optional.of(toSpec(document, contentHash));
     }
 
+    @Override
+    public boolean has(String contentHash) {
+        Objects.requireNonNull(contentHash, "contentHash");
+        // Projected down to the key: the question is whether a source is filed here, and a spec source is
+        // a whole connector form, so answering it must not carry the form back.
+        return StoreIo.call(() -> collection.find(new Document("_id", contentHash))
+                .projection(new Document("_id", 1))
+                .first()) != null;
+    }
+
     /** Reads the stored bytes out of a spec document, or fails coded when the document cannot be read. */
     static byte[] toSpec(Document document, String contentHash) {
         // A document filed under the hash but carrying no readable binary under its field is store

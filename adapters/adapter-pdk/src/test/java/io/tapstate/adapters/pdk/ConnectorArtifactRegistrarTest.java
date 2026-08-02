@@ -13,6 +13,7 @@ import io.tapstate.spi.store.CapabilityDeriver;
 import io.tapstate.spi.store.ConnectorCapabilities;
 import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
@@ -323,6 +324,88 @@ class ConnectorArtifactRegistrarTest {
 
         assertThat(outcome.newlyRegistered()).isTrue();
         assertThat(rows.get("mysql")).isEmpty();
+    }
+
+    @Test
+    void refusesAConflictWithoutReadingEveryOtherRegistration(@TempDir Path dir) {
+        // The conflict is about one id, so it is asked about one id. Deciding it from the whole listing
+        // would fail this register whenever any other, unrelated stored registration could not be
+        // reconstructed - an outage across every connector caused by one corrupt entry.
+        InMemoryConnectorRegistry backing = new InMemoryConnectorRegistry();
+        ConnectorArtifactRegistrar seeding = registrarOver(backing);
+        seeding.register(Synthetic.seedableMysqlConnector(dir), RegistrationSource.SEED);
+        ConnectorRegistry unlistable = new ConnectorRegistry() {
+            @Override
+            public RegistrationOutcome register(
+                    String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+                return backing.register(id, pdkApiVersion, source, artifact);
+            }
+
+            @Override
+            public List<ConnectorRegistration> list() {
+                throw new IllegalStateException("one unrelated stored registration cannot be reconstructed");
+            }
+
+            @Override
+            public Optional<ConnectorRegistration> find(String connectorId) {
+                return backing.find(connectorId);
+            }
+
+            @Override
+            public Optional<byte[]> artifact(String contentHash) {
+                return backing.artifact(contentHash);
+            }
+
+            @Override
+            public boolean hasArtifact(String contentHash) {
+                return backing.hasArtifact(contentHash);
+            }
+        };
+        ConnectorArtifactRegistrar registrar = new ConnectorArtifactRegistrar(
+                unlistable, new ConnectorIntrospector(),
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")),
+                new InMemoryConnectorCatalogStore(), new InMemoryConnectorSpecStore());
+
+        assertThatThrownBy(() -> registrar.register(
+                        Synthetic.conflictingMysqlConnector(dir), RegistrationSource.REGISTER))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(e -> assertThat(((TapstateException) e).code())
+                        .isEqualTo(ConnectorError.REGISTRATION_CONFLICT));
+    }
+
+    @Test
+    void testsForTheStoredSpecSourceWithoutReadingIt(@TempDir Path dir) {
+        // A re-register only needs to know whether the source is already filed. A spec source is a whole
+        // connector form, so reading one back to compute a boolean costs the whole form - on every jar of
+        // every seed sweep, at every startup.
+        Path jar = Synthetic.seedableMysqlConnector(dir);
+        InMemoryConnectorRegistry registry = new InMemoryConnectorRegistry();
+        InMemoryConnectorCatalogStore rows = new InMemoryConnectorCatalogStore();
+        InMemoryConnectorSpecStore stored = new InMemoryConnectorSpecStore();
+        registrarOver(registry, rows, stored).register(jar, RegistrationSource.SEED);
+        ConnectorSpecStore presenceOnly = new ConnectorSpecStore() {
+            @Override
+            public void put(String contentHash, byte[] spec) {
+                stored.put(contentHash, spec);
+            }
+
+            @Override
+            public Optional<byte[]> get(String contentHash) {
+                throw new UnsupportedOperationException("presence must be tested without reading the source");
+            }
+
+            @Override
+            public boolean has(String contentHash) {
+                return stored.has(contentHash);
+            }
+        };
+
+        RegistrationOutcome outcome = new ConnectorArtifactRegistrar(
+                registry, new ConnectorIntrospector(),
+                id -> new ConnectorCapabilities(Set.of("batch_read_function")), rows, presenceOnly)
+                .register(jar, RegistrationSource.SEED);
+
+        assertThat(outcome.newlyRegistered()).isFalse();
     }
 
     @Test

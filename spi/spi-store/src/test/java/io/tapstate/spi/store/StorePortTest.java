@@ -342,6 +342,18 @@ class StorePortTest {
     }
 
     @Test
+    void connectorSpecPresenceAgreesWithWhatIsStored() {
+        // Presence is a question a caller asks instead of reading a whole connector form back. It has to
+        // answer what get() would: a presence test that disagreed would send a re-register into either
+        // rewriting what is filed or skipping a source that is not there.
+        ConnectorSpecStore specs = new InMemoryStore().connectorSpecs();
+        specs.put("sha256:2f1a", "{\"properties\":{\"id\":\"mysql\"}}".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(specs.has("sha256:2f1a")).isTrue();
+        assertThat(specs.has("sha256:never-stored")).isFalse();
+    }
+
+    @Test
     void connectorSpecPutIsIdempotentUnderItsContentHash() {
         // Content-addressed: a second write under a hash carries the same bytes by construction, so
         // re-registering the same connector replaces in place instead of accumulating copies.

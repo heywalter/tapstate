@@ -48,6 +48,19 @@ class MongoConnectorSpecStoreIT {
     }
 
     @Test
+    void presenceIsAnsweredWithoutTheSourceComingBack() {
+        // The projected lookup has to answer the same question the full read does - a presence test that
+        // disagreed with get() would send a re-register either into rewriting what is already filed or
+        // into skipping a source that is not there.
+        withStore((store, database) -> {
+            store.put("hash-present", "{\"properties\":{\"id\":\"mysql\"}}".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(store.has("hash-present")).isTrue();
+            assertThat(store.has("hash-absent")).isFalse();
+        });
+    }
+
+    @Test
     void storingTheSameContentTwiceKeepsOneDocument() {
         withStore((store, database) -> {
             byte[] spec = "{\"properties\":{\"id\":\"mongodb\"}}".getBytes(StandardCharsets.UTF_8);

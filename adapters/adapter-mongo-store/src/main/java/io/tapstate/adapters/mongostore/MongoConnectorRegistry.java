@@ -83,7 +83,15 @@ public final class MongoConnectorRegistry implements ConnectorRegistry {
             // Queried on the identity carried in the file's metadata, so the answer costs one lookup and
             // depends on no other stored artifact: a registration that cannot be reconstructed fails the
             // question about that connector alone, never every connector at once.
-            GridFSFile file = artifacts.find(Filters.eq("metadata.connectorId", connectorId)).first();
+            //
+            // Ordered by the content hash, which is the filename. One artifact per connector id is the
+            // intended state and a register refuses a second one, but two concurrent registers can both
+            // pass that check before either stores, and an operator can write out of band. Left unordered,
+            // which of them answers would be storage order - so a caller asking twice could be told two
+            // different things, and runtime availability would flap for no reason the caller can see.
+            GridFSFile file = artifacts.find(Filters.eq("metadata.connectorId", connectorId))
+                    .sort(new Document("filename", 1))
+                    .first();
             return file == null
                     ? Optional.<ConnectorRegistration>empty()
                     : Optional.of(toRegistration(file.getFilename(), file.getMetadata()));

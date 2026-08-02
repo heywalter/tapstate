@@ -23,4 +23,15 @@ public interface ConnectorSpecStore {
 
     /** The spec bytes stored under a content hash, or empty if none is stored. */
     Optional<byte[]> get(String contentHash);
+
+    /**
+     * Whether a spec source is stored under a content hash, without reading it. A caller deciding
+     * whether there is anything left to write needs the answer, not the document — and the document
+     * here is a whole connector form, which {@link #get(String)} would carry back in full to compute a
+     * boolean. The default reads it anyway, because a store with no cheaper way to look has no better
+     * answer; a store that can test for presence overrides this.
+     */
+    default boolean has(String contentHash) {
+        return get(contentHash).isPresent();
+    }
 }

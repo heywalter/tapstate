@@ -148,17 +148,21 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
                 null);
     }
 
-    /** Refuses a different artifact under a connector id that already has one — no silent overwrite. */
+    /**
+     * Refuses a different artifact under a connector id that already has one — no silent overwrite.
+     * Asked of the one id being registered: deciding it from the whole listing would fail this register
+     * whenever any other, unrelated stored registration could not be reconstructed.
+     */
     private void rejectConflictingArtifact(String connectorId, String incomingHash) {
-        for (ConnectorRegistration existing : registry.list()) {
-            if (existing.connectorId().equals(connectorId) && !existing.contentHash().equals(incomingHash)) {
-                throw new TapstateException(ConnectorError.REGISTRATION_CONFLICT,
-                        Map.of("connector", connectorId,
-                                "existing", existing.contentHash(),
-                                "incoming", incomingHash),
-                        null);
-            }
-        }
+        registry.find(connectorId)
+                .filter(existing -> !existing.contentHash().equals(incomingHash))
+                .ifPresent(existing -> {
+                    throw new TapstateException(ConnectorError.REGISTRATION_CONFLICT,
+                            Map.of("connector", connectorId,
+                                    "existing", existing.contentHash(),
+                                    "incoming", incomingHash),
+                            null);
+                });
     }
 
     private static Path stage(byte[] artifact) {
@@ -218,7 +222,7 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         String specHash = ContentHash.of(specSource);
         if (!outcome.newlyRegistered()
                 && catalogStore.get(connectorId).isPresent()
-                && specStore.get(specHash).isPresent()) {
+                && specStore.has(specHash)) {
             // Both artifacts of this registration are already stored, so there is nothing to redo. The
             // spec source is part of the condition, not just the row: a connector registered before the
             // source was kept has a row but no source, and that gap is what a re-register backfills.
