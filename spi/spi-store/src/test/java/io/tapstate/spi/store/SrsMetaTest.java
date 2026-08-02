@@ -51,6 +51,35 @@ class SrsMetaTest {
     }
 
     @Test
+    void carriesTheRingGenerationAndTheGenerationItsSnapshotIsPinnedTo() {
+        SrsMeta meta = new SrsMeta("chain-1", null, List.of(), "gtid:aaa-1:0", List.of(), null,
+                List.of("orders"), 4L, 3L);
+        assertThat(meta.epoch()).isEqualTo(4L);
+        assertThat(meta.snapshotEpoch()).isEqualTo(3L);
+    }
+
+    @Test
+    void theTwoGenerationsAreSeparateBecauseASnapshotOutlivesTheRingItStartedUnder() {
+        // A restart opens a new ring generation while a snapshot that had not drained keeps the one it
+        // began in -- so its rows can never win against changes the earlier generation already applied.
+        // One field could not hold both, and reading the current generation for a rerun's rows is exactly
+        // the reversal this record exists to prevent.
+        SrsMeta midSnapshotRestart = new SrsMeta("chain-1", null, List.of(), "gtid:aaa-1:0", List.of(), null,
+                List.of(), 5L, 4L);
+        assertThat(midSnapshotRestart.epoch()).isNotEqualTo(midSnapshotRestart.snapshotEpoch());
+    }
+
+    @Test
+    void theShorterConstructorsOpenNoGenerationAndPinNoSnapshot() {
+        SrsMeta sixArg = new SrsMeta("chain-1", null, List.of(), null, List.of(), null);
+        assertThat(sixArg.epoch()).isZero();
+        assertThat(sixArg.snapshotEpoch()).isZero();
+        SrsMeta sevenArg = new SrsMeta("chain-1", null, List.of(), null, List.of(), null, List.of("orders"));
+        assertThat(sevenArg.epoch()).isZero();
+        assertThat(sevenArg.snapshotEpoch()).isZero();
+    }
+
+    @Test
     void allowsNullableOffsetsBeforeAnyCdcHasBeenRead() {
         // A freshly seeded mining chain: no source read offset yet, no cdc-start position, no retention
         // set, and no consumers or schema versions attached.

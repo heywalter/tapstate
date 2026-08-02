@@ -39,7 +39,7 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
         SrsMeta m = require(miningChainId);
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), sourceReadOffset, m.consumerOffsets(), m.cdcStartPosition(),
-                m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
+                m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), m.epoch(), m.snapshotEpoch()));
     }
 
     @Override
@@ -50,7 +50,7 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
         next.add(offset);
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
-                m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
+                m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), m.epoch(), m.snapshotEpoch()));
     }
 
     @Override
@@ -72,7 +72,7 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
         next.add(new ConsumerOffset(pipelineId, perTable, ack));
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
-                m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
+                m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), m.epoch(), m.snapshotEpoch()));
     }
 
     @Override
@@ -91,15 +91,25 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
         next.add(new ConsumerOffset(pipelineId, perTable, srcpos));
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
-                m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
+                m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), m.epoch(), m.snapshotEpoch()));
     }
 
     @Override
-    public synchronized void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
+    public synchronized void setCdcStart(String miningChainId, String cdcStartPosition, long snapshotEpoch) {
         SrsMeta m = require(miningChainId);
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), m.sourceReadOffset(), m.consumerOffsets(), cdcStartPosition,
-                m.schemaHistory(), m.retention(), m.snapshotCompletedTables()));
+                m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), m.epoch(), snapshotEpoch));
+    }
+
+    @Override
+    public synchronized long openEpoch(String miningChainId) {
+        SrsMeta m = require(miningChainId);
+        long opened = m.epoch() + 1;
+        records.put(miningChainId, new SrsMeta(
+                m.miningChainId(), m.sourceReadOffset(), m.consumerOffsets(), m.cdcStartPosition(),
+                m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), opened, m.snapshotEpoch()));
+        return opened;
     }
 
     @Override
@@ -109,7 +119,7 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
         next.add(version);
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), m.sourceReadOffset(), m.consumerOffsets(), m.cdcStartPosition(),
-                next, m.retention(), m.snapshotCompletedTables()));
+                next, m.retention(), m.snapshotCompletedTables(), m.epoch(), m.snapshotEpoch()));
     }
 
     @Override

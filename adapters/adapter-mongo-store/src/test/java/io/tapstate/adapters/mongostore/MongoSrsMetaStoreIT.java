@@ -161,13 +161,60 @@ class MongoSrsMetaStoreIT {
     }
 
     @Test
-    void setCdcStartPositionPersistsTheSeamPosition() {
+    void setCdcStartPersistsTheSeamPositionAndItsGeneration() {
         withStore(store -> {
             store.create(CHAIN, null);
 
-            store.setCdcStartPosition(CHAIN, "binlog.000042:1024");
+            store.setCdcStart(CHAIN, "binlog.000042:1024", 3L);
 
-            assertThat(store.read(CHAIN).orElseThrow().cdcStartPosition()).isEqualTo("binlog.000042:1024");
+            SrsMeta record = store.read(CHAIN).orElseThrow();
+            assertThat(record.cdcStartPosition()).isEqualTo("binlog.000042:1024");
+            assertThat(record.snapshotEpoch()).isEqualTo(3L);
+        });
+    }
+
+    @Test
+    void openEpochAllocatesTheNextGenerationAgainstTheRealStore() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            assertThat(store.read(CHAIN).orElseThrow().epoch()).isZero();
+
+            // The counter is advanced by the driver and read back after the write, so two members opening
+            // the same chain cannot both come away with the same generation the way a read-add-write would.
+            assertThat(store.openEpoch(CHAIN)).isEqualTo(1L);
+            assertThat(store.openEpoch(CHAIN)).isEqualTo(2L);
+            assertThat(store.read(CHAIN).orElseThrow().epoch()).isEqualTo(2L);
+        });
+    }
+
+    @Test
+    void openEpochLeavesTheSnapshotsPinnedGenerationAlone() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            long running = store.openEpoch(CHAIN);
+            store.setCdcStart(CHAIN, "binlog.000042:1024", running);
+
+            store.openEpoch(CHAIN);
+
+            // The restart that opens the next generation is exactly when a snapshot that had not drained
+            // must keep the one it began in. Advancing both would hand a rerun's rows the newer generation
+            // and let them overwrite changes the older one had already applied.
+            SrsMeta record = store.read(CHAIN).orElseThrow();
+            assertThat(record.epoch()).isEqualTo(2L);
+            assertThat(record.snapshotEpoch()).isEqualTo(1L);
+        });
+    }
+
+    @Test
+    void aRecordWrittenBeforeGenerationsExistedReadsBackWithNoneOpened() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+
+            // The meta field set is append-only: a document an older build wrote carries neither
+            // generation, and that has to read back as "no generation opened" rather than as corruption.
+            SrsMeta record = store.read(CHAIN).orElseThrow();
+            assertThat(record.epoch()).isZero();
+            assertThat(record.snapshotEpoch()).isZero();
         });
     }
 
@@ -216,11 +263,13 @@ class MongoSrsMetaStoreIT {
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.advanceSinkAckedSrcpos("nope", "p", "gtid:aaa-1:1"))
                     .isInstanceOf(IllegalStateException.class);
-            assertThatThrownBy(() -> store.setCdcStartPosition("nope", "x"))
+            assertThatThrownBy(() -> store.setCdcStart("nope", "x", 1L))
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.appendSchemaVersion("nope", new SchemaVersion(0, Map.of(), 0)))
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.markSnapshotComplete("nope", "orders"))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> store.openEpoch("nope"))
                     .isInstanceOf(IllegalStateException.class);
         });
     }

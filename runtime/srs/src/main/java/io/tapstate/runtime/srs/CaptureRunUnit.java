@@ -74,21 +74,25 @@ public final class CaptureRunUnit {
         MiningChainId chainId = null;
         boolean merged = false;
         String table = null;
+        long epoch = 0;
         if (plan.sharedRing()) {
             // Fail fast before provisioning: a shared-ring run is single-table at L1, so a multi-table
             // config is rejected before any chain state is opened, not part way through.
             table = singleTable(spec.config());
             chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
-            merged = coordinator
-                    .provisionSource(spec.sourceId(), chainId, spec.config().streams(), spec.retention())
-                    .merged();
+            ProvisionOutcome provisioned = coordinator
+                    .provisionSource(spec.sourceId(), chainId, spec.config().streams(), spec.retention());
+            merged = provisioned.merged();
+            epoch = provisioned.epoch();
         }
 
         long snapshotCount = 0;
         if (plan.snapshot()) {
+            // A chainless read has no ring and so no generation to order its rows against: they carry no
+            // order at all, which a stateful node downstream rejects rather than guesses at.
             snapshotCount = chainId != null
-                    ? SnapshotPhase.run(
-                            port, spec.config(), chainId.value(), table, spec.cdcStart(), meta, passthrough)
+                    ? SnapshotPhase.run(port, spec.config(), chainId.value(), table, spec.cdcStart(), epoch,
+                            meta, passthrough)
                     : SnapshotPhase.drain(port, spec.config(), passthrough);
         }
 

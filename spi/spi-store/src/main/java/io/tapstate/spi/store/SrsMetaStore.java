@@ -68,10 +68,31 @@ public interface SrsMetaStore {
     void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos);
 
     /**
-     * Sets the chain's cdc start position — the opaque position the cdc tail starts from, recorded at
-     * the snapshot-to-cdc seam. A mutate on an unseeded chain is a caller ordering error.
+     * Records the chain's snapshot-to-cdc seam: the opaque position the cdc tail starts from, together
+     * with the ring generation the snapshot that reached this seam began in. A mutate on an unseeded chain
+     * is a caller ordering error.
+     *
+     * <p>The two are one call because they are only ever read together. The seam position is the sole
+     * record that a snapshot began at all, so a snapshot resuming after a restart looks here to learn
+     * both where the tail picks up and which generation to pin its rows to. A store that could write the
+     * position without its generation would leave a resumed snapshot with nothing to pin to, and a rerun
+     * that then took the current generation would overwrite changes the earlier one had already applied.
      */
-    void setCdcStartPosition(String miningChainId, String cdcStartPosition);
+    void setCdcStart(String miningChainId, String cdcStartPosition, long snapshotEpoch);
+
+    /**
+     * Opens the chain's next ring generation and returns it — the monotonic counter every order on this
+     * chain compares first. Generations begin at one, so a chain whose stored generation is still zero has
+     * never had a ring opened.
+     *
+     * <p>Called once per ring establishment: a restart or a re-mine rebuilds the ring and takes a new
+     * generation, while a second source force-merging onto an already-open chain joins the generation
+     * already running rather than opening one. Generations are per chain, because an order is only ever
+     * compared against another order of the same chain. It leaves the recorded snapshot generation alone —
+     * that is the whole point of keeping the two apart. A mutate on an unseeded chain is a caller ordering
+     * error.
+     */
+    long openEpoch(String miningChainId);
 
     /**
      * Appends a version to the chain's append-only schema history. A mutate on an unseeded chain is a
@@ -82,7 +103,7 @@ public interface SrsMetaStore {
     /**
      * Marks one table's bounded snapshot read as drained to completion on the chain. The caller marks a
      * table only once that table's snapshot has finished, so a reader may take the mark as "every row of
-     * this table has been through" — a distinct question from the one {@link #setCdcStartPosition}
+     * this table has been through" — a distinct question from the one {@link #setCdcStart}
      * answers, which is where the tail resumes and is written before the snapshot begins. Completion is
      * per table because one chain carries many, each snapshotted by its own capture run. Marking is
      * idempotent (set membership): a table already marked stays marked once, so a re-run or replay of a

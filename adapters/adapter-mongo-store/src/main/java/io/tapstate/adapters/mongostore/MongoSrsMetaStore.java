@@ -4,6 +4,8 @@ import com.mongodb.ErrorCategory;
 import com.mongodb.MongoException;
 import com.mongodb.MongoWriteException;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.FindOneAndUpdateOptions;
+import com.mongodb.client.model.ReturnDocument;
 import com.mongodb.client.result.UpdateResult;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConsumerOffset;
@@ -118,9 +120,32 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
     }
 
     @Override
-    public void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
+    public void setCdcStart(String miningChainId, String cdcStartPosition, long snapshotEpoch) {
         Objects.requireNonNull(cdcStartPosition, "cdcStartPosition");
-        update(miningChainId, new Document("$set", new Document("cdcStartPosition", cdcStartPosition)));
+        if (snapshotEpoch < 0) {
+            throw new IllegalArgumentException("snapshotEpoch must not be negative, got " + snapshotEpoch);
+        }
+        // One update, both fields: a resumed snapshot reads them together, so a state where the seam
+        // position is stored without the generation it belongs to must not be reachable.
+        update(miningChainId, new Document("$set", new Document("cdcStartPosition", cdcStartPosition)
+                .append("snapshotEpoch", snapshotEpoch)));
+    }
+
+    @Override
+    public long openEpoch(String miningChainId) {
+        Objects.requireNonNull(miningChainId, "miningChainId");
+        // An atomic increment read back after the write: two members opening the same chain must take two
+        // different generations, so the counter is advanced by the store rather than read, added to and
+        // written back. It touches only epoch, leaving any pinned snapshot generation where it is.
+        Document updated = StoreIo.call(() -> collection.findOneAndUpdate(
+                new Document("_id", miningChainId),
+                new Document("$inc", new Document("epoch", 1L)),
+                new FindOneAndUpdateOptions().returnDocument(ReturnDocument.AFTER)));
+        if (updated == null) {
+            throw new IllegalStateException("srs meta mutate on an unseeded mining chain: " + miningChainId
+                    + " (create must seed it first)");
+        }
+        return readEpoch(updated, "epoch");
     }
 
     @Override
@@ -196,7 +221,33 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
         if (meta.retention() != null) {
             document.append("retention", meta.retention());
         }
+        // Zero means "no generation opened" and "no snapshot pinned", which is also what an absent field
+        // reads back as, so a seed stays a seed rather than carrying two fields that say nothing.
+        if (meta.epoch() != 0L) {
+            document.append("epoch", meta.epoch());
+        }
+        if (meta.snapshotEpoch() != 0L) {
+            document.append("snapshotEpoch", meta.snapshotEpoch());
+        }
         return document;
+    }
+
+    /**
+     * Reads one generation counter out of a stored document. Absent is zero rather than corruption: the
+     * meta field set is append-only and these fields are newer than the collection, so a document an older
+     * build wrote has no generation opened. A stored value of another type is corruption, surfaced as a
+     * coded io diagnostic rather than a bare cast failure.
+     */
+    private static long readEpoch(Document document, String field) {
+        Object raw = document.get(field);
+        if (raw == null) {
+            return 0L;
+        }
+        if (raw instanceof Number number) {
+            return number.longValue();
+        }
+        throw new TapstateException(IoError.DOCUMENT_UNREADABLE,
+                Map.of("id", String.valueOf(document.get("_id"))), null);
     }
 
     /** Reconstructs a meta record from its stored document. */
@@ -229,7 +280,7 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
         }
         return new SrsMeta(id, document.getString("sourceReadOffset"), consumers,
                 document.getString("cdcStartPosition"), schemaHistory, document.getString("retention"),
-                snapshotCompletedTables);
+                snapshotCompletedTables, readEpoch(document, "epoch"), readEpoch(document, "snapshotEpoch"));
     }
 
     /** Reconstructs one consumer cursor from its stored sub-document, keyed by the pipeline id. */

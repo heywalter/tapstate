@@ -256,7 +256,11 @@ class HazelcastMemberTest {
             throw new UnsupportedOperationException();
         }
 
-        @Override public void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
+        @Override public void setCdcStart(String miningChainId, String cdcStartPosition, long snapshotEpoch) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override public long openEpoch(String miningChainId) {
             throw new UnsupportedOperationException();
         }
 

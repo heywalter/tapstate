@@ -14,8 +14,19 @@ import java.util.List;
  * recorded at the snapshot-to-cdc seam; absent until a snapshot seam or start point resolves it),
  * {@code schemaHistory} (the append-only versioned schema), {@code retention} (the retention
  * configuration passed through from the source; a config value only — the change ring is bounded by
- * its capacity and backpressure, not trimmed by this), and {@code snapshotCompletedTables} (the tables
- * whose bounded snapshot read has drained to completion).
+ * its capacity and backpressure, not trimmed by this), {@code snapshotCompletedTables} (the tables
+ * whose bounded snapshot read has drained to completion), {@code epoch} (the change ring's current
+ * generation, zero until one is opened) and {@code snapshotEpoch} (the generation the recorded snapshot
+ * began in, zero until a snapshot records its seam).
+ *
+ * <p>The two generations are separate because a snapshot outlives the ring it started under. Every
+ * restart or re-mine opens a new generation, and orders compare generation first — so a snapshot that
+ * had not drained keeps the one it began in, and its rerun rows can never overwrite changes the earlier
+ * generation already applied. Reading the current generation for a rerun's rows is precisely the
+ * reversal these two fields exist to prevent, which is why one field cannot serve both. {@code
+ * snapshotEpoch} is written in the same update as {@code cdcStartPosition}: the seam position is the
+ * only record that a snapshot began, so a snapshot that resumes would otherwise have no way to know
+ * what to pin its rows to.
  *
  * <p>Snapshot completion is tracked per table while the read offset is a chain-level scalar, and the
  * asymmetry is deliberate. A chain is keyed by the physical source coordinate and deliberately excludes
@@ -37,11 +48,18 @@ public record SrsMeta(
         String cdcStartPosition,
         List<SchemaVersion> schemaHistory,
         String retention,
-        List<String> snapshotCompletedTables) {
+        List<String> snapshotCompletedTables,
+        long epoch,
+        long snapshotEpoch) {
 
     public SrsMeta {
         if (miningChainId == null || miningChainId.isBlank()) {
             throw new IllegalArgumentException("srs meta miningChainId must be non-blank");
+        }
+        if (epoch < 0 || snapshotEpoch < 0) {
+            throw new IllegalArgumentException(
+                    "srs meta generations must not be negative, got epoch " + epoch
+                            + " and snapshotEpoch " + snapshotEpoch);
         }
         if (consumerOffsets == null) {
             throw new IllegalArgumentException("srs meta consumerOffsets must be set");
@@ -62,5 +80,13 @@ public record SrsMeta(
             String cdcStartPosition, List<SchemaVersion> schemaHistory, String retention) {
         this(miningChainId, sourceReadOffset, consumerOffsets, cdcStartPosition, schemaHistory, retention,
                 List.of());
+    }
+
+    /** A record with no generation opened and no snapshot pinned — the shape a freshly seeded chain has. */
+    public SrsMeta(String miningChainId, String sourceReadOffset, List<ConsumerOffset> consumerOffsets,
+            String cdcStartPosition, List<SchemaVersion> schemaHistory, String retention,
+            List<String> snapshotCompletedTables) {
+        this(miningChainId, sourceReadOffset, consumerOffsets, cdcStartPosition, schemaHistory, retention,
+                snapshotCompletedTables, 0L, 0L);
     }
 }
