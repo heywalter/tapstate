@@ -169,6 +169,23 @@ class ObservationPublisherTest {
     }
 
     @Test
+    void republishWithoutACauseKeepsTheStoredFailureWhileThePipelineStaysFailed() {
+        // The converge side reports the cause only on the pass that drives the transition; every later
+        // pass publishes without one. The store is the only carrier that survives a process restart, so a
+        // still-FAILED pipeline keeps the reason it already published rather than going reasonless the
+        // moment its publisher loses whatever in-memory copy it held.
+        state.seed("orders", PipelineState.FAILED);
+        publisher.publish("orders", new ObservationFailure("engine.job-failed", Map.of("cause", "boom")));
+
+        publisher.publish("orders", null);
+
+        ObservationFailure kept = observations.read("orders").orElseThrow().failure();
+        assertThat(kept).isNotNull();
+        assertThat(kept.code()).isEqualTo("engine.job-failed");
+        assertThat(kept.params()).containsOnly(entry("cause", "boom"));
+    }
+
+    @Test
     void republishClearsTheFailureWhenThePipelineRecovers() {
         state.seed("orders", PipelineState.FAILED);
         publisher.publish("orders", new ObservationFailure("engine.job-failed", Map.of("pipeline", "orders")));

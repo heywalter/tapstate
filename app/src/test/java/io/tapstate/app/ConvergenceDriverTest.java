@@ -254,6 +254,34 @@ class ConvergenceDriverTest {
     }
 
     @Test
+    void aPipelineStillFailedAfterARestartKeepsReportingWhyItDied() {
+        // A restart rebuilds the driver but not the stores: the FAILED checkpoint and its published reason
+        // both survive in durable state, so the first pass of the new process must keep answering with them.
+        // Anything the old driver only held in memory is gone here -- if the reason rode only there, this
+        // pass would republish the still-FAILED pipeline reasonless, the exact erasure the carry-forward
+        // exists to prevent.
+        FailingActuator actuator = new FailingActuator();
+        PipelineConverger converger =
+                new PipelineConverger(desired, state, actuator, Clock.fixed(T0, ZoneOffset.UTC));
+        ConvergenceDriver driver =
+                new ConvergenceDriver(converger, desired, new ObservationPublisher(state, observations));
+        desired.save(new DesiredState("orders", RUNNING, "rev-1"));
+        driver.reconcile();
+        actuator.failWith(new IllegalStateException("sink write failed"));
+        driver.reconcile(); // orders -> FAILED, cause published
+        assertThat(observations.read("orders").orElseThrow().failure()).isNotNull();
+
+        ConvergenceDriver restarted =
+                new ConvergenceDriver(converger, desired, new ObservationPublisher(state, observations));
+        restarted.reconcile();
+
+        ObservationFailure failure = observations.read("orders").orElseThrow().failure();
+        assertThat(failure).isNotNull();
+        assertThat(failure.code()).isEqualTo("engine.job-failed");
+        assertThat(failure.params()).containsEntry("cause", "sink write failed");
+    }
+
+    @Test
     void aPipelineThatRecoversStopsReportingTheFailureThatKilledItsPreviousRun() {
         FailingActuator actuator = new FailingActuator();
         PipelineConverger converger =

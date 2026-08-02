@@ -84,15 +84,22 @@ public final class ObservationPublisher {
     /**
      * Publishes the pipeline's latest observation from its actual state, carrying {@code failure} as the
      * coded reason its run died ({@code null} while it is healthy); a no-op if it has no checkpoint. The
-     * failure is republished from the caller each pass rather than accumulated here, so it tracks the
-     * current state like every other field: a recovered pipeline publishes without one.
+     * caller reports a failure only on the pass that witnesses the death; while the state stays FAILED,
+     * later passes publish without one and the reason already stored is carried forward — the store is the
+     * one carrier that survives a process restart, so a pipeline dead since before the restart keeps
+     * saying why. Any other state publishes exactly what the caller passed, so a recovered pipeline drops
+     * the reason its previous run died of the moment it leaves FAILED.
      */
     public void publish(String pipelineId, ObservationFailure failure) {
         Objects.requireNonNull(pipelineId, "pipelineId");
         state.read(pipelineId).ifPresent(checkpoint -> {
             PipelineState actual = StateJson.parse(checkpoint.stateJson());
+            ObservationFailure carried = failure;
+            if (carried == null && actual == PipelineState.FAILED) {
+                carried = observations.read(pipelineId).map(Observation::failure).orElse(null);
+            }
             observations.save(new Observation(pipelineId, actual, metrics(pipelineId, actual),
-                    snapshots.apply(pipelineId), positions.apply(pipelineId), failure));
+                    snapshots.apply(pipelineId), positions.apply(pipelineId), carried));
         });
     }
 
