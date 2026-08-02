@@ -23,6 +23,7 @@ import com.hazelcast.jet.core.processor.SinkProcessors;
 import com.hazelcast.jet.core.test.TestProcessorMetaSupplierContext;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.Op;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.spi.capture.SourcePosition;
 import java.time.Duration;
 import java.util.List;
@@ -86,7 +87,7 @@ class SrsSourceProcessorTest {
         List<String> out = runProjectedToStrings("srs.chain.orders", "orders", "out-orders", 5, 1024);
 
         assertThat(out).containsExactly(
-                "orders|w0|0", "orders|w1|1", "orders|w2|2", "orders|w3|3", "orders|w4|4");
+                "orders|w0|0|1:0", "orders|w1|1|1:1", "orders|w2|2|1:2", "orders|w3|3|1:3", "orders|w4|4|1:4");
     }
 
     @Test
@@ -99,7 +100,7 @@ class SrsSourceProcessorTest {
         List<String> out = runProjectedToStrings("srs.chain.bp", "orders", "out-bp", 6, 1);
 
         assertThat(out).containsExactly(
-                "orders|w0|0", "orders|w1|1", "orders|w2|2", "orders|w3|3", "orders|w4|4", "orders|w5|5");
+                "orders|w0|0|1:0", "orders|w1|1|1:1", "orders|w2|2|1:2", "orders|w3|3|1:3", "orders|w4|4|1:4", "orders|w5|5|1:5");
     }
 
     @Test
@@ -122,7 +123,7 @@ class SrsSourceProcessorTest {
             awaitSize(out, 4);
 
             assertThat(out).containsExactly(
-                    "orders|w0|0", "orders|w1|1", "orders|w2|2", "orders|w3|3");
+                    "orders|w0|0|1:0", "orders|w1|1|1:1", "orders|w2|2|1:2", "orders|w3|3|1:3");
         } finally {
             job.cancel();
         }
@@ -175,7 +176,35 @@ class SrsSourceProcessorTest {
 
         // The three snapshot rows (no source position) come first, in buffered order, then the two cdc changes.
         assertThat(out).containsExactly(
-                "orders|null|100", "orders|null|101", "orders|null|102", "orders|w0|0", "orders|w1|1");
+                "orders|null|100|null", "orders|null|101|null", "orders|null|102|null", "orders|w0|0|1:0", "orders|w1|1|1:1");
+    }
+
+    @Test
+    void everyChangeOfAGenerationOutranksEverySnapshotRowOfIt() throws InterruptedException {
+        // The snapshot phase stamps its rows with the generation the snapshot began in before they reach the
+        // buffer; the ring's changes take the same generation and the sequence the ring assigned them.
+        SnapshotBuffer buffer = new SnapshotBuffer();
+        buffer.append("srs.chain.inv1", snapshotRow(100).withOrder(SourceOrder.snapshotRow(1L)));
+        buffer.append("srs.chain.inv1", snapshotRow(101).withOrder(SourceOrder.snapshotRow(1L)));
+        fill("srs.chain.inv1", 2);
+        hz.getUserContext().put(SnapshotBuffer.USER_CONTEXT_KEY, buffer);
+
+        List<String> out;
+        try {
+            out = runProjectedToStrings("srs.chain.inv1", "orders", "out-inv1", 4, 1024);
+        } finally {
+            hz.getUserContext().remove(SnapshotBuffer.USER_CONTEXT_KEY);
+        }
+
+        // This is what makes a snapshot safe to replay against a stream that has already moved on: the two
+        // are ordered against each other, and every change of the generation wins. Asserting only that the
+        // rows arrive first would pass on a source that emits them in order but leaves them unordered --
+        // and a stateful node reorders on the order, not on arrival.
+        assertThat(out).containsExactly(
+                "orders|null|100|1:" + SourceOrder.SNAPSHOT_SEQ,
+                "orders|null|101|1:" + SourceOrder.SNAPSHOT_SEQ,
+                "orders|w0|0|1:0",
+                "orders|w1|1|1:1");
     }
 
     @Test
@@ -185,7 +214,7 @@ class SrsSourceProcessorTest {
 
         List<String> out = runProjectedToStrings("srs.chain.nobuffer", "orders", "out-nobuffer", 3, 1024);
 
-        assertThat(out).containsExactly("orders|w0|0", "orders|w1|1", "orders|w2|2");
+        assertThat(out).containsExactly("orders|w0|0|1:0", "orders|w1|1|1:1", "orders|w2|2|1:2");
     }
 
     @Test
@@ -237,9 +266,14 @@ class SrsSourceProcessorTest {
         return dag;
     }
 
-    /** A stable, Hazelcast-serializable projection of an envelope: {@code src|srcPos|id}. */
+    /** A stable, Hazelcast-serializable projection of an envelope: {@code src|srcPos|id|epoch:seq}. */
     private static String describe(Envelope event) {
-        return event.src() + "|" + event.srcPos() + "|" + event.after().get("id");
+        return event.src() + "|" + event.srcPos() + "|" + event.after().get("id") + "|" + order(event);
+    }
+
+    /** An envelope's order rendered {@code epoch:seq}, or {@code null} for one that carries none. */
+    private static String order(Envelope event) {
+        return event.order() == null ? "null" : event.order().epoch() + ":" + event.order().seq();
     }
 
     /** A snapshot read envelope (op r, no source position) on the {@code orders} stream. */
