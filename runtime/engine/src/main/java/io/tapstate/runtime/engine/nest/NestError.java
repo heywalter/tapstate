@@ -30,6 +30,12 @@ public enum NestError implements TapstateErrorCode {
     EMBED_PATH_CONFLICT("nest.embed-path-conflict", Set.of("path", "embedPathA", "embedPathB")),
 
     /**
+     * Checking the tree: the root declares no key, so its documents have no identity for children to be
+     * grouped under and nothing to partition the assembled documents by.
+     */
+    ROOT_KEY_REQUIRED("nest.root-key-required", Set.of("rootAlias")),
+
+    /**
      * Checking the tree: an embed declares no array key and its table offers no primary key to take one
      * from, leaving its elements with no identity — updates would pile up as duplicates.
      */
