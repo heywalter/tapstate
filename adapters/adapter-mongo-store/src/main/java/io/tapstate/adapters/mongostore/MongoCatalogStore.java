@@ -6,6 +6,7 @@ import com.mongodb.client.model.ReplaceOptions;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.CatalogStore;
 import io.tapstate.spi.store.ConnectionConfig;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 import org.bson.types.Binary;
 import org.bson.types.Decimal128;

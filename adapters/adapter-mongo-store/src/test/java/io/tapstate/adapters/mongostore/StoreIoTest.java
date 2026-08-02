@@ -4,6 +4,7 @@ import com.mongodb.MongoCredential;
 import com.mongodb.MongoException;
 import com.mongodb.MongoSecurityException;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.spi.store.IoError;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

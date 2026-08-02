@@ -16,6 +16,7 @@ import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.ConnectorSpecStore;
+import io.tapstate.spi.store.IoError;
 
 /**
  * The online catalog view: the bundled snapshot overlaid with the rows derived for registered
@@ -98,11 +99,17 @@ public final class ConnectorCatalogView {
             return specStore.get(hash)
                     .map(bytes -> SpecSource.of(hash, new String(bytes, StandardCharsets.UTF_8)))
                     .orElseGet(() -> SpecSource.unavailable(hash, SpecSource.NOT_STORED));
-        } catch (TapstateException unreadableSource) {
-            // A damaged spec document must not take the whole read down with it. Everything else in this
-            // response - the config field list a connection is authored against - is intact and was read
-            // before this call, so a store that could not answer here is one whose fault is this document.
-            // The field exists to state an absence; this is one, with its own reason.
+        } catch (TapstateException failure) {
+            if (failure.code() != IoError.DOCUMENT_UNREADABLE) {
+                // The store could not answer at all - it is unreachable, or it refused the credentials.
+                // Reporting that as a damaged document would name the wrong thing as broken and send an
+                // operator looking through stored data for a fault that is not in it.
+                throw failure;
+            }
+            // This one document is damaged, and it must not take the whole read down with it: everything
+            // else in the response - the config field list a connection is authored against - is intact.
+            // The field exists to state an absence, so it states this one, distinguishable from a hash
+            // nothing was ever stored under (which a consumer may sensibly ask about again later).
             return SpecSource.unavailable(hash, SpecSource.UNREADABLE);
         }
     }

@@ -5,6 +5,7 @@ import com.mongodb.ServerAddress;
 import com.mongodb.WriteError;
 import com.mongodb.client.MongoCollection;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.spi.store.IoError;
 import org.bson.BsonDocument;
 import org.bson.Document;
 import org.bson.types.Binary;

@@ -12,9 +12,10 @@ import org.junit.jupiter.api.Test;
 import io.tapstate.core.catalog.ConnectorCatalogEntry;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectorCatalogStore;
-import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
+import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.core.catalog.CatalogEntryReader;
@@ -307,7 +308,7 @@ class ConnectorCatalogViewTest {
             @Override
             public Optional<byte[]> get(String contentHash) {
                 throw new TapstateException(
-                        ConnectorCatalogError.NOT_FOUND, java.util.Map.of("connector", "unreadable"), null);
+                        IoError.DOCUMENT_UNREADABLE, java.util.Map.of("id", contentHash), null);
             }
         };
         ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store, damaged, emptyRegistry());
@@ -321,6 +322,33 @@ class ConnectorCatalogViewTest {
         assertThat(detail.spec().unavailable()).isNotEqualTo("not-stored");
         assertThat(detail.config()).isEmpty();
         assertThat(detail.modes()).containsExactly("snapshot");
+    }
+
+    @Test
+    void aStoreThatCannotAnswerAtAllIsRaised() {
+        // Degrading is for a document this store holds and cannot read. A store that is unreachable, or
+        // that refused the credentials, is not a statement about any document - reporting it as a damaged
+        // spec would name the wrong thing as broken and send an operator hunting through stored data for
+        // a fault that is not in it.
+        InMemoryConnectorCatalogStore store = new InMemoryConnectorCatalogStore();
+        store.upsert(CatalogEntryReader.read(ACME_ROW));
+        ConnectorSpecStore unreachable = new ConnectorSpecStore() {
+            @Override
+            public void put(String contentHash, byte[] spec) {
+                throw new UnsupportedOperationException("the detail read never writes");
+            }
+
+            @Override
+            public Optional<byte[]> get(String contentHash) {
+                throw new TapstateException(
+                        IoError.STORE_UNAVAILABLE, java.util.Map.of("detail", "connection reset"), null);
+            }
+        };
+        ConnectorCatalogView view = new ConnectorCatalogView(BUNDLED, store, unreachable, emptyRegistry());
+
+        assertThatThrownBy(() -> view.detail("acme"))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(e -> assertThat(((TapstateException) e).code()).isEqualTo(IoError.STORE_UNAVAILABLE));
     }
 
     @Test

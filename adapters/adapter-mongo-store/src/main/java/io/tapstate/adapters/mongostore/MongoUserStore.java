@@ -3,6 +3,7 @@ package io.tapstate.adapters.mongostore;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.ReplaceOptions;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.User;
 import io.tapstate.spi.store.UserStore;
 import org.bson.Document;

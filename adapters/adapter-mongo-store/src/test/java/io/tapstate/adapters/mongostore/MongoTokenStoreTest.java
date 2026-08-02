@@ -1,6 +1,7 @@
 package io.tapstate.adapters.mongostore;
 
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.TokenRecord;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
