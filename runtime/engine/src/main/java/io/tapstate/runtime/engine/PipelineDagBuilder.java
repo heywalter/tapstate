@@ -15,6 +15,8 @@ import io.tapstate.core.model.ServeBlock;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
+import io.tapstate.runtime.engine.nest.NestDag;
+import io.tapstate.runtime.engine.nest.NestTopology;
 import io.tapstate.spi.sink.SinkWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -64,6 +66,17 @@ public final class PipelineDagBuilder {
 
         if (pipeline.transforms() != null) {
             for (Step step : pipeline.transforms()) {
+                if (step instanceof Step.Inline inline && inline.body() instanceof TransformBody.Nest nest) {
+                    // A nest draws its own vertices and edges: their count, their keys and the ordinal
+                    // each stream arrives on were all settled while compiling the tree.
+                    byKey.put(step.id(), NestDag.attach(dag,
+                            NestTopology.compile(pipeline.id(), step.id(), nest, bindings.nest().tables()),
+                            step.id(), nest.root().from(), step.id(),
+                            alias -> aliasUpstream(inline.from(), alias, byKey, bindings),
+                            bindings.nest(),
+                            vertex -> outboundOrdinal.merge(vertex, 1, Integer::sum) - 1));
+                    continue;
+                }
                 Vertex vertex = transformVertex(dag, step, bindings);
                 byKey.put(step.id(), vertex);
                 connect(dag, resolveClause(step.from(), byKey, bindings), vertex,
@@ -106,8 +119,9 @@ public final class PipelineDagBuilder {
      * topology, not a transform - a passthrough vertex whose several inbound edges are the merge, so
      * the transform-port binding is never asked for one; every other stateless step (filter / map / a
      * scripted row transform) runs the one generic adapter over the port the binding supplies. A
-     * stateful node ({@code nest} / {@code join}) or an unresolved {@code use:} reference is out of
-     * this builder's scope and is refused; extending to them replaces the refusal, not the seam.
+     * {@code nest} never reaches here: it draws a sub-graph of its own instead of a single vertex. A
+     * {@code join} or an unresolved {@code use:} reference is out of this builder's scope and is
+     * refused; extending to them replaces the refusal, not the seam.
      */
     private static Vertex transformVertex(DAG dag, Step step, DagBindings bindings) {
         if (!(step instanceof Step.Inline inline)) {
@@ -115,7 +129,7 @@ public final class PipelineDagBuilder {
                     "transform step '" + step.id() + "' is a use-reference; resolve it to an inline step first");
         }
         TransformBody body = inline.body();
-        if (body instanceof TransformBody.Nest || body instanceof TransformBody.Join) {
+        if (body instanceof TransformBody.Join) {
             throw new IllegalArgumentException(
                     "transform step '" + step.id() + "' is a stateful " + body.type()
                             + "; the linear DAG builder does not carry it");
@@ -128,6 +142,23 @@ public final class PipelineDagBuilder {
         }
         return dag.newVertex(step.id(),
                 TransformProcessor.metaSupplier(bindings.transformPorts().apply(step)));
+    }
+
+    /**
+     * The producer vertices behind one alias of a nest / join {@code from:} map. A validated pipeline
+     * always names a declared alias, so an unknown one is a builder invariant violation rather than a
+     * user error.
+     */
+    private static List<Vertex> aliasUpstream(FromClause from, String alias, Map<String, Vertex> byKey,
+            DagBindings bindings) {
+        if (!(from instanceof FromClause.Aliases aliases)) {
+            throw new IllegalStateException("a nest step must carry an alias-map from:");
+        }
+        FromRef ref = aliases.aliases().get(alias);
+        if (ref == null) {
+            throw new IllegalStateException("nest alias '" + alias + "' is not declared on the step");
+        }
+        return resolve(ref, byKey, bindings);
     }
 
     /** Resolves every reference in a streaming {@code from:} list to the producer vertices upstream. */
