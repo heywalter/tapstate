@@ -2,6 +2,7 @@ package io.tapstate.control.core;
 
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.dsl.CapabilityRules;
 import io.tapstate.core.dsl.ReferenceGraph;
 import io.tapstate.core.dsl.Workspace;
 import io.tapstate.core.model.Resource;
@@ -65,6 +66,7 @@ public final class SourceService {
         SourceResource source = representation.toModel(draft, null);
         candidate.add(source);
         Workspace.of(candidate, catalog.get());
+        CapabilityRules.validateOnline(source, catalog.get());
 
         return switch (store.create(source)) {
             case CREATED -> view(source);
@@ -100,6 +102,7 @@ public final class SourceService {
             }
         }
         Workspace.of(candidate, catalog.get());
+        CapabilityRules.validateOnline(replacement, catalog.get());
 
         return switch (store.replace(id, expectedContentHash, replacement)) {
             case REPLACED -> view(replacement);

@@ -155,6 +155,22 @@ class SourceServiceTest {
     }
 
     @Test
+    void createsMongoSourceFromEitherConnectionConfigShape() {
+        SourceView standard = service.create(draft(
+                "mongo-standard", "mongodb", "snapshot",
+                Map.of("isUri", false, "host", "localhost", "database", "orders")));
+        assertThat(standard.config()).containsEntry("isUri", false)
+                .containsEntry("host", "localhost")
+                .containsEntry("database", "orders");
+
+        SourceView uri = service.create(draft(
+                "mongo-uri", "mongodb", "snapshot",
+                Map.of("isUri", true, "uri", "mongodb://localhost/orders")));
+        assertThat(uri.config()).containsEntry("isUri", true)
+                .containsEntry("uri", "mongodb://localhost/orders");
+    }
+
+    @Test
     void deleteRequiresAPreconditionAndRejectsStaleVersionsWithoutMutation() {
         SourceView created = service.create(draft("orders", "snapshot", "before"));
 
@@ -229,7 +245,7 @@ class SourceServiceTest {
     }
 
     private static Map<String, Object> validConfig() {
-        return Map.of("host", "localhost", "port", "3306");
+        return Map.of("host", "localhost", "port", "3306", "database", "orders", "username", "app");
     }
 
     private static SourceResource source(String id, String description) {

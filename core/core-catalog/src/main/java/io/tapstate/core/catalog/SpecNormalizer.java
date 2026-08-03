@@ -17,9 +17,9 @@ import java.util.regex.Pattern;
  */
 public final class SpecNormalizer {
 
-    /** Matches {@code $self.value === 'x'} (or {@code == true}) in a Formily visibility expression. */
+    /** Matches equality and boolean inequality checks in a Formily visibility expression. */
     private static final Pattern SELF_VALUE =
-            Pattern.compile("\\$self\\.value\\s*===?\\s*(?:'([^']*)'|\"([^\"]*)\"|(true|false))");
+            Pattern.compile("\\$self\\.value\\s*(===|==|!==|!=)\\s*(?:'([^']*)'|\"([^\"]*)\"|(true|false))");
 
     private static final String DEFAULT_LOCALE = "en_US";
 
@@ -142,12 +142,28 @@ public final class SpecNormalizer {
             return null;
         }
         List<String> values = new ArrayList<>();
+        boolean hasInequality = false;
         Matcher m = SELF_VALUE.matcher(visible);
         while (m.find()) {
-            String single = m.group(1);
-            String dbl = m.group(2);
-            String bool = m.group(3);
-            values.add(single != null ? single : dbl != null ? dbl : bool);
+            String operator = m.group(1);
+            String single = m.group(2);
+            String dbl = m.group(3);
+            String bool = m.group(4);
+            if (operator.startsWith("!")) {
+                // The normalized contract can express a boolean complement exactly. For arbitrary
+                // strings the complement is open-ended, so retain the original reaction instead of
+                // inventing a finite allow-list.
+                if (bool == null) {
+                    return null;
+                }
+                hasInequality = true;
+                values.add(Boolean.parseBoolean(bool) ? "false" : "true");
+            } else {
+                if (hasInequality) {
+                    return null;
+                }
+                values.add(single != null ? single : dbl != null ? dbl : bool);
+            }
         }
         return values.isEmpty() ? null : values;
     }

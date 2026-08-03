@@ -220,6 +220,27 @@ class SpecNormalizerTest {
     }
 
     @Test
+    void reducesBooleanInequalityReactionsToTheVisibleValue() {
+        Map<String, Object> tree = Map.of(
+                "properties", Map.of("id", "mongodb"),
+                "configOptions", Map.of("connection", Map.of("properties", Map.of(
+                        "isUri", Map.of(
+                                "type", "boolean",
+                                "x-reactions", List.of(
+                                        Map.of("target", "*(uri)", "fulfill", Map.of(
+                                                "state", Map.of("visible", "{{$self.value!==false}}"))),
+                                        Map.of("target", "*(host)", "fulfill", Map.of(
+                                                "state", Map.of("visible", "{{$self.value===false}}"))))),
+                        "uri", Map.of("type", "string", "required", true),
+                        "host", Map.of("type", "string", "required", true)))));
+
+        assertThat(field(normalize(tree), "uri").visibleWhen())
+                .isEqualTo(new VisibleWhen("isUri", List.of("true")));
+        assertThat(field(normalize(tree), "host").visibleWhen())
+                .isEqualTo(new VisibleWhen("isUri", List.of("false")));
+    }
+
+    @Test
     void rejectsASpecWithoutAnId() {
         Map<String, Object> tree = Map.of("properties", Map.of("name", "Nameless"));
 

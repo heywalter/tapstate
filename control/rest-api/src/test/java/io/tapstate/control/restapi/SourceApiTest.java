@@ -217,6 +217,17 @@ class SourceApiTest {
     }
 
     @Test
+    void sourceCreateRejectsMissingLiveConnectorConfigBeforePersisting() {
+        String missingDatabase = sourceJson("missing-config", "bad")
+                .replace("\"database\":\"orders\",", "");
+
+        assertError(request("writer").post().uri("/api/sources")
+                        .contentType(MediaType.APPLICATION_JSON).body(missingDatabase),
+                HttpStatus.BAD_REQUEST, "dsl.config-required");
+        assertThat(context.getBean(InMemoryArtifactStore.class).get("missing-config")).isEmpty();
+    }
+
+    @Test
     void authenticationScopesAndAuditGateProtectEveryOperation() {
         assertError(RestClient.create(base()).get().uri("/api/sources"),
                 HttpStatus.UNAUTHORIZED, "control.unauthenticated");
@@ -243,10 +254,13 @@ class SourceApiTest {
         assertThat(view.path("metadata").path("description").asText()).isEqualTo(description);
         assertThat(view.path("connector").asText()).isEqualTo("mysql");
         assertThat(view.path("mode").asText()).isEqualTo("cdc");
-        assertThat(view.path("config").propertyNames()).containsExactlyInAnyOrder("host", "port");
+        assertThat(view.path("config").propertyNames())
+                .containsExactlyInAnyOrder("host", "port", "database", "username");
         assertThat(view.path("config").path("host").asText()).isEqualTo("localhost");
         assertThat(view.path("config").path("port").isIntegralNumber()).isTrue();
         assertThat(view.path("config").path("port").asInt()).isEqualTo(3306);
+        assertThat(view.path("config").path("database").asText()).isEqualTo("orders");
+        assertThat(view.path("config").path("username").asText()).isEqualTo("app");
         assertThat(view.path("configuredSecrets").get(0).asText()).isEqualTo("password");
         assertThat(view.path("tables").get(0).propertyNames()).containsExactly("type", "name");
         assertThat(view.path("tables").get(0).path("type").asText()).isEqualTo("literal");
@@ -335,7 +349,7 @@ class SourceApiTest {
     private static String sourceJson(String id, String description) {
         return """
                 {"id":"%s","metadata":{"labels":{"team":"finance"},"description":"%s"},
-                 "connector":"mysql","config":{"host":"localhost","port":3306,"password":"%s"},
+                 "connector":"mysql","config":{"host":"localhost","port":3306,"database":"orders","username":"app","password":"%s"},
                  "mode":"cdc","tables":[{"type":"literal","name":"orders"},
                  {"type":"regex","pattern":"audit_.*"},
                  {"type":"spec","name":"customers","filter":"active == true","pk":["id"],"options":{}}],

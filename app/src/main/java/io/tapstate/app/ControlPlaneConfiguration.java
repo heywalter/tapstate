@@ -18,6 +18,7 @@ import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
+import io.tapstate.control.core.ConnectorConfigValidator;
 import io.tapstate.control.core.ConnectorRegisterService;
 import io.tapstate.control.core.ControlOperations;
 import io.tapstate.control.core.CredentialAuthenticator;
@@ -276,9 +277,15 @@ class ControlPlaneConfiguration {
     }
 
     @Bean
+    ConnectorConfigValidator connectorConfigValidator(ConnectorCatalogView connectorCatalogView) {
+        return new ConnectorConfigValidator(connectorCatalogView::merged);
+    }
+
+    @Bean
     ConnectionTestService connectionTestService(
-            ConnectionProbe probe, ConnectionTestResultStore resultStore, AuditGate auditGate) {
-        return new ConnectionTestService(probe, resultStore, auditGate);
+            ConnectionProbe probe, ConnectionTestResultStore resultStore, AuditGate auditGate,
+            ConnectorConfigValidator configValidator) {
+        return new ConnectionTestService(probe, resultStore, auditGate, configValidator);
     }
 
     @Bean
@@ -306,8 +313,9 @@ class ControlPlaneConfiguration {
 
     @Bean
     SchemaDiscoveryService schemaDiscoveryService(
-            SchemaDiscoveryProbe probe, SchemaStore schemaStore, AuditGate auditGate, Clock clock) {
-        return new SchemaDiscoveryService(probe, schemaStore, auditGate, clock);
+            SchemaDiscoveryProbe probe, SchemaStore schemaStore, AuditGate auditGate, Clock clock,
+            ConnectorConfigValidator configValidator) {
+        return new SchemaDiscoveryService(probe, schemaStore, auditGate, clock, configValidator);
     }
 
     @Bean

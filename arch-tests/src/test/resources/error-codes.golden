@@ -46,6 +46,7 @@ control.unauthenticated
 control.unreachable
 dsl.ambiguous-reference
 dsl.composition
+dsl.config-required
 dsl.config-type-mismatch
 dsl.duplicate-id
 dsl.forbidden-field

@@ -86,6 +86,9 @@ dsl.unsupported-mode:
 dsl.config-type-mismatch:
   message: "Config field '{field}' of connector '{connector}' at {path} has the wrong type; expected {expected}."
   solution: "Provide a value of the expected type."
+dsl.config-required:
+  message: "Required config field '{field}' of connector '{connector}' is missing at {path}."
+  solution: "Provide the field, or choose a connection mode that makes it unnecessary."
 dsl.invalid-config-value:
   message: "Config field '{field}' of connector '{connector}' at {path} has an invalid value '{value}'."
   solution: "Use one of the allowed values: {allowed}."

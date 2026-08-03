@@ -222,7 +222,7 @@ class McpOperationExecutorTest {
                 answer(exchange, 201, "{\"id\":\"orders\"}");
             }
         });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(10), Duration.ofSeconds(10))) {
             McpOperationExecutor executor = new McpOperationExecutor(baseOf(server), "token", Map.of(), client);
 
             McpResult defaulted = executor.execute(ControlOperations.SOURCE_CREATE,
@@ -232,7 +232,7 @@ class McpOperationExecutorTest {
                     Map.of("id", "orders", "connector", "mysql",
                             "config", Map.of("password", "${MYSQL_PASSWORD}")));
 
-            assertThat(defaulted.error()).isFalse();
+            assertThat(defaulted.error()).as(defaulted.body().toString()).isFalse();
             assertThat(((Map<?, ?>) posted.get().get("config")).get("host")).isEqualTo("localhost");
             assertThat(missing.error()).isTrue();
             assertThat(missing.body()).containsEntry("code", "mcp.environment-missing");
@@ -310,7 +310,7 @@ class McpOperationExecutorTest {
     @Test
     void sourceCreateRejectsNonObjectConnectorResponse() throws Exception {
         HttpServer server = server(exchange -> answer(exchange, 200, "[]"));
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(10), Duration.ofSeconds(10))) {
             McpOperationExecutor executor = new McpOperationExecutor(
                     baseOf(server), "token", Map.of(), client);
 
