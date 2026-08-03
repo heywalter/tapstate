@@ -67,18 +67,20 @@ class SecretTrackingArtifactStoreTest {
     }
 
     @Test
-    void tracksEveryScalarWhenAStoredConnectorIsNoLongerInTheCatalog() {
+    void tracksOnlyClearlySecretValuesWhenAStoredConnectorIsNoLongerInTheCatalog() {
         RecordingStore delegate = new RecordingStore();
         SecretRedactor redactor = new SecretRedactor();
         SecretTrackingArtifactStore store = tracking(delegate, redactor);
         SourceResource source = new SourceResource(
                 "legacy", null, "removed-connector",
-                Map.of("credentials", Map.of("password", "nested-secret")),
+                Map.of("host", "db.internal", "port", 3306,
+                        "credentials", Map.of("password", "nested-secret")),
                 null, null, null, null, null);
 
         store.save(source);
 
-        assertThat(redactor.redact("nested-secret")).isEqualTo("********");
+        assertThat(redactor.redact("db.internal 3306 nested-secret"))
+                .isEqualTo("db.internal 3306 ********");
     }
 
     private static SecretTrackingArtifactStore tracking(ArtifactStore delegate, SecretRedactor redactor) {

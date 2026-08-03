@@ -40,17 +40,26 @@ class ArtifactController {
                       @RequestAttribute(AuthInterceptor.PRINCIPAL_ATTRIBUTE) String principal) {
         // Refuse a body with no drafts array at the boundary as a coded 400, rather than letting a null trip
         // the service's bare invariant guard (a 500). A missing body is already a framework-level 400 upstream.
-        List<ArtifactDraft> drafts = MalformedRequest.require(
-                request == null ? null : request.drafts(), "the request must carry a `drafts` array");
+        List<ArtifactDraft> drafts = requireDrafts(request);
         return applyService.apply(principal, drafts);
     }
 
     @Verb("artifact.validate")
     @PostMapping("/artifacts:validate")
     ArtifactValidationResult validate(@RequestBody ApplyRequest request) {
+        List<ArtifactDraft> drafts = requireDrafts(request);
+        return applyService.validate(drafts);
+    }
+
+    private static List<ArtifactDraft> requireDrafts(ApplyRequest request) {
         List<ArtifactDraft> drafts = MalformedRequest.require(
                 request == null ? null : request.drafts(), "the request must carry a `drafts` array");
-        return applyService.validate(drafts);
+        for (ArtifactDraft draft : drafts) {
+            if (draft == null || draft.content().isBlank()) {
+                throw MalformedRequest.rejecting("each draft must carry non-blank content", null);
+            }
+        }
+        return drafts;
     }
 
     @Verb("artifact.get")

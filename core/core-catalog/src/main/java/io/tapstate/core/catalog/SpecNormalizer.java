@@ -142,6 +142,7 @@ public final class SpecNormalizer {
             return null;
         }
         List<String> values = new ArrayList<>();
+        boolean hasEquality = false;
         boolean hasInequality = false;
         Matcher m = SELF_VALUE.matcher(visible);
         while (m.find()) {
@@ -156,12 +157,16 @@ public final class SpecNormalizer {
                 if (bool == null) {
                     return null;
                 }
+                if (hasEquality) {
+                    return null;
+                }
                 hasInequality = true;
                 values.add(Boolean.parseBoolean(bool) ? "false" : "true");
             } else {
                 if (hasInequality) {
                     return null;
                 }
+                hasEquality = true;
                 values.add(single != null ? single : dbl != null ? dbl : bool);
             }
         }

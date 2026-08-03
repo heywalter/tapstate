@@ -888,6 +888,18 @@ class ReplTest {
     }
 
     @Test
+    void tokenListReportsWhenNoMachineTokensExist() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.tokenListOutcome = new TokenListOutcome.Listed(List.of());
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("token list")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).contains("no machine tokens");
+    }
+
+    @Test
     void tokenRevokeRequiresAnIdAndConfirmsTheRevocation() {
         FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
         client.tokenRevokeOutcome = new TokenRevokeOutcome.Revoked();

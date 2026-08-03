@@ -94,6 +94,18 @@ class HttpControlClientTest {
     }
 
     @Test
+    void malformedNonSuccessBodyRetainsTheHttpRejectionStatus() throws Exception {
+        HttpServer server = server(exchange -> answer(exchange, 502, "upstream gateway error"));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            assertThat(client.get(baseOf(server), "token", "/api/tokens"))
+                    .isEqualTo(new ControlResponse.Rejected(
+                            502, "", "The server refused the request.", Map.of()));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void rejectionWithoutAStableCodeUsesTheGenericControlContract() throws Exception {
         HttpServer server = server(exchange -> answer(exchange, 503, "{}"));
         try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
@@ -108,13 +120,9 @@ class HttpControlClientTest {
 
     @Test
     void connectionFailureIsAStableUnreachableOutcome() throws Exception {
-        int closedPort;
-        try (ServerSocket socket = new ServerSocket(0)) {
-            closedPort = socket.getLocalPort();
-        }
-        try (HttpControlClient client = new HttpControlClient(
-                Duration.ofMillis(250), Duration.ofMillis(250))) {
-            assertThat(client.get(URI.create("http://127.0.0.1:" + closedPort), "token", "/api/tokens"))
+        try (ServerSocket socket = new ServerSocket(0);
+             HttpControlClient client = new HttpControlClient(Duration.ofMillis(250), Duration.ofMillis(250))) {
+            assertThat(client.get(URI.create("http://127.0.0.1:" + socket.getLocalPort()), "token", "/api/tokens"))
                     .isInstanceOf(ControlResponse.Unreachable.class);
         }
     }

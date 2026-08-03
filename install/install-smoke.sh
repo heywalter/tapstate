@@ -133,16 +133,18 @@ else
   bad "--print-platform unsupported (rc=$rc, out='$out')"
 fi
 
-# --- idempotent: a second run over the same dir upgrades in place, still exit 0 ----------------------
+# --- idempotent: an identical version retains the live bundle before updating the stable entry --------
 idir="$(mktemp -d)/bin"
 run_install Darwin arm64 glibc "$idir"; rc1=$RC
+printf '\n# immutable-version-sentinel\n' >> "$idir/versions/$VERSION/bin/tapstate"
 run_install Darwin arm64 glibc "$idir"; rc2=$RC
 if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && [ -L "$idir/tapstate" ] \
    && [ -x "$idir/versions/$VERSION/bin/tapstate" ] \
-   && [ -x "$idir/versions/$VERSION/libexec/tapstate-mcp" ]; then
-  ok "re-run over the same install dir is idempotent (exit 0, bundle intact)"
+   && [ -x "$idir/versions/$VERSION/libexec/tapstate-mcp" ] \
+   && grep -q 'immutable-version-sentinel' "$idir/versions/$VERSION/bin/tapstate"; then
+  ok "re-run retains the complete immutable version bundle (exit 0, stable entry intact)"
 else
-  bad "re-run not idempotent (rc1=$rc1 rc2=$rc2): $OUT"
+  bad "re-run replaced or damaged the immutable version bundle (rc1=$rc1 rc2=$rc2): $OUT"
 fi
 
 # --- AC17 negatives: unsupported platforms refuse, non-zero, no binary left behind ------------------

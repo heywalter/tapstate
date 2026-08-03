@@ -65,8 +65,9 @@ public final class SourceService {
 
         SourceResource source = representation.toModel(draft, null);
         candidate.add(source);
-        Workspace.of(candidate, catalog.get());
-        CapabilityRules.validateOnline(source, catalog.get());
+        TapstateCatalog liveCatalog = catalog.get();
+        Workspace.of(candidate, liveCatalog);
+        CapabilityRules.validateOnline(source, liveCatalog);
 
         return switch (store.create(source)) {
             case CREATED -> view(source);
@@ -101,8 +102,9 @@ public final class SourceService {
                 break;
             }
         }
-        Workspace.of(candidate, catalog.get());
-        CapabilityRules.validateOnline(replacement, catalog.get());
+        TapstateCatalog liveCatalog = catalog.get();
+        Workspace.of(candidate, liveCatalog);
+        CapabilityRules.validateOnline(replacement, liveCatalog);
 
         return switch (store.replace(id, expectedContentHash, replacement)) {
             case REPLACED -> view(replacement);

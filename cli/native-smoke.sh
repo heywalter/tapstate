@@ -63,6 +63,7 @@ if pid == 0:                              # child: the binary on a controlling t
 else:
     out = bytearray()
     input_sent = False
+    write_failed = None
     deadline = time.time() + 15
     timed_out = True                     # cleared when the child closes the pty (clean EOF)
     while time.time() < deadline:
@@ -83,7 +84,12 @@ else:
             ready = (len(argv) == 1 and b"Tapstate CLI." in out) or (len(argv) > 1)
             if ready and not input_sent:
                 time.sleep(0.05)
-                os.write(fd, data)
+                try:
+                    os.write(fd, data)
+                except OSError as error:
+                    write_failed = str(error)
+                    timed_out = False
+                    break
                 input_sent = True
     if timed_out:                        # never leave the native binary running
         try:
@@ -101,7 +107,9 @@ else:
         pass
     sys.stdout.write(out.decode("utf-8", "replace"))
     sys.stdout.flush()
-    clean = (not timed_out) and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+    if write_failed is not None:
+        sys.stderr.write(f"could not write CLI input: {write_failed}\n")
+    clean = (write_failed is None) and (not timed_out) and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
     sys.exit(0 if clean else 1)
 PY
 )

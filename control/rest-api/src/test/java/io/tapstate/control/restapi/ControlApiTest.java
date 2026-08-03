@@ -266,6 +266,23 @@ class ControlApiTest {
     }
 
     @Test
+    void applyAndValidateRejectNullDraftEntriesAtTheBoundary() {
+        for (String endpoint : List.of("/api/artifacts:apply", "/api/artifacts:validate")) {
+            ApiError body = client().post().uri(endpoint)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .body("{\"drafts\":[null]}")
+                    .exchange((request, response) -> {
+                        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                        return response.bodyTo(ApiError.class);
+                    });
+
+            assertThat(body.code()).isEqualTo("control.malformed-request");
+            assertThat(body.params()).containsKey("reason");
+        }
+    }
+
+    @Test
     void applyingAnEmptyDraftsArrayIsAValidNoOp() {
         // The boundary guard refuses only a missing drafts array (null), never an empty one: applying zero
         // drafts is a legitimate no-op, not a malformed request. It answers 200 with no outcomes and writes

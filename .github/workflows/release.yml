@@ -148,6 +148,12 @@ jobs:
         run: bash cli/native-smoke.sh cli/target/tapstate
       - name: MCP stdio smoke (black-box against the produced sidecar)
         run: bash control/mcp-server/mcp-smoke.sh control/mcp-server/target/tapstate-mcp
+      - name: MCP stdio smoke (Boot JAR fallback)
+        shell: bash
+        run: |
+          jar="$(find control/mcp-server/target -maxdepth 1 -name 'mcp-server-*-boot.jar' -print -quit)"
+          test -n "$jar"
+          bash control/mcp-server/mcp-smoke.sh "$jar"
       # Read the oldest system this binary can run on back out of the binary, rather than asserting one.
       # Both platforms tie the answer to the machine that built it, and the hosted build machines move,
       # so measuring is what keeps the published number true without anyone having to remember. The two

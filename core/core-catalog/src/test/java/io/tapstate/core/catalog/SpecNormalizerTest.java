@@ -241,6 +241,22 @@ class SpecNormalizerTest {
     }
 
     @Test
+    void dropsMixedEqualityAndInequalityVisibilityConditions() {
+        Map<String, Object> tree = Map.of(
+                "properties", Map.of("id", "mixed"),
+                "configOptions", Map.of("connection", Map.of("properties", Map.of(
+                        "isUri", Map.of(
+                                "type", "boolean",
+                                "x-reactions", List.of(Map.of(
+                                        "target", "*(uri)",
+                                        "fulfill", Map.of("state", Map.of(
+                                                "visible", "{{$self.value===false || $self.value!==true}}"))))),
+                        "uri", Map.of("type", "string", "required", true)))));
+
+        assertThat(field(normalize(tree), "uri").visibleWhen()).isNull();
+    }
+
+    @Test
     void rejectsASpecWithoutAnId() {
         Map<String, Object> tree = Map.of("properties", Map.of("name", "Nameless"));
 

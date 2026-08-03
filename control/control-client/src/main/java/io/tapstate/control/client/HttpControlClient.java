@@ -117,7 +117,10 @@ public final class HttpControlClient implements AutoCloseable {
                     ? null
                     : JsonReader.parse(response.body());
         } catch (RuntimeException malformed) {
-            return new ControlResponse.Unreachable();
+            if (status >= 200 && status < 300) {
+                return new ControlResponse.Unreachable();
+            }
+            body = null;
         }
         if (status >= 200 && status < 300) {
             return new ControlResponse.Success(status, body);
@@ -164,6 +167,7 @@ public final class HttpControlClient implements AutoCloseable {
     public void close() {
         if (closed.compareAndSet(false, true)) {
             inFlight.forEach(future -> future.cancel(true));
+            client.shutdownNow();
             executor.shutdownNow();
         }
     }

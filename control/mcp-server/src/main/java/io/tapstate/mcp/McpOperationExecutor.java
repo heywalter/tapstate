@@ -59,7 +59,9 @@ final class McpOperationExecutor {
                 case "pipeline.metrics" -> pipelineRead(args, "metrics");
                 case "pipeline.snapshot" -> pipelineRead(args, "snapshot");
                 case "pipeline.logs" -> pipelineLogs(args);
-                default -> throw new IllegalArgumentException("unsupported MCP operation: " + operation.id());
+                default -> McpResult.coded(
+                        ControlError.MALFORMED_REQUEST,
+                        Map.of("reason", "unsupported MCP operation: " + operation.id()));
             };
         } catch (TapstateException error) {
             return McpResult.coded(error.code(), error.args());

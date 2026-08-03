@@ -499,6 +499,9 @@ final class Repl {
         List<Object> rows = tokens.stream().map(Repl::tokenDocument).map(value -> (Object) value).toList();
         if (format == OutputFormat.TEXT) {
             PrintWriter out = commandLine.getOut();
+            if (tokens.isEmpty()) {
+                out.println("no machine tokens");
+            }
             for (RemoteToken token : tokens) {
                 out.println(token.tokenId() + "  " + token.scope() + "  "
                         + (token.revoked() ? "revoked" : "active") + "  " + token.createdAt());

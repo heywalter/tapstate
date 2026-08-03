@@ -12,6 +12,7 @@ import io.tapstate.spi.store.ArtifactStore;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -92,7 +93,7 @@ final class SecretTrackingArtifactStore implements ArtifactStore {
         try {
             connector = catalog.get().byId(source.connector());
         } catch (IllegalArgumentException unavailable) {
-            return scalarValues(source.config());
+            return namedSecretValues(source.config());
         }
 
         List<String> secrets = new ArrayList<>();
@@ -118,10 +119,33 @@ final class SecretTrackingArtifactStore implements ArtifactStore {
         return current;
     }
 
-    private static Collection<String> scalarValues(Object value) {
+    private static Collection<String> namedSecretValues(Object value) {
         List<String> values = new ArrayList<>();
-        collectScalars(value, values);
+        collectNamedSecretValues(value, null, values);
         return values;
+    }
+
+    private static void collectNamedSecretValues(
+            Object value, String fieldName, Collection<String> target) {
+        if (value instanceof Map<?, ?> map) {
+            map.forEach((name, child) -> collectNamedSecretValues(child, String.valueOf(name), target));
+        } else if (value instanceof Iterable<?> iterable) {
+            iterable.forEach(child -> collectNamedSecretValues(child, fieldName, target));
+        } else if (value != null && fieldName != null && isLikelySecretField(fieldName)) {
+            target.add(String.valueOf(value));
+        }
+    }
+
+    private static boolean isLikelySecretField(String fieldName) {
+        String normalized = fieldName.toLowerCase(Locale.ROOT);
+        return normalized.contains("password")
+                || normalized.contains("secret")
+                || normalized.contains("token")
+                || normalized.contains("credential")
+                || normalized.equals("key")
+                || normalized.endsWith("key")
+                || normalized.contains("uri")
+                || normalized.contains("connectionstring");
     }
 
     private static void collectScalars(Object value, Collection<String> target) {

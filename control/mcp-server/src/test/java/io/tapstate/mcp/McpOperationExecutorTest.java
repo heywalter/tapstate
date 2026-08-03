@@ -25,7 +25,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class McpOperationExecutorTest {
 
@@ -191,13 +190,10 @@ class McpOperationExecutorTest {
 
     @Test
     void unreachableServerIsReturnedAsStructuredCodedFailure() throws Exception {
-        int closedPort;
-        try (ServerSocket socket = new ServerSocket(0)) {
-            closedPort = socket.getLocalPort();
-        }
-        try (HttpControlClient client = new HttpControlClient(Duration.ofMillis(200), Duration.ofMillis(200))) {
+        try (ServerSocket socket = new ServerSocket(0);
+                HttpControlClient client = new HttpControlClient(Duration.ofMillis(200), Duration.ofMillis(200))) {
             McpOperationExecutor executor = new McpOperationExecutor(
-                    URI.create("http://127.0.0.1:" + closedPort), "token", Map.of(), client);
+                    URI.create("http://127.0.0.1:" + socket.getLocalPort()), "token", Map.of(), client);
 
             McpResult result = executor.execute(ControlOperations.PIPELINE_STATUS, Map.of("id", "orders"));
 
@@ -273,15 +269,16 @@ class McpOperationExecutorTest {
     }
 
     @Test
-    void unsupportedOperationsAreRejectedAsProgrammerErrors() {
+    void unsupportedOperationsAreReturnedAsStructuredFailures() {
         try (HttpControlClient client = new HttpControlClient()) {
             McpOperationExecutor executor = new McpOperationExecutor(
                     URI.create("http://127.0.0.1:1"), "token", Map.of(), client);
 
-            assertThatThrownBy(() -> executor.execute(
-                    new Operation("test.unsupported", Scope.READ, false, null, Map.of()), Map.of()))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("unsupported MCP operation");
+            McpResult result = executor.execute(
+                    new Operation("test.unsupported", Scope.READ, false, null, Map.of()), Map.of());
+
+            assertThat(result.error()).isTrue();
+            assertThat(result.body()).containsEntry("code", "control.malformed-request");
         }
     }
 

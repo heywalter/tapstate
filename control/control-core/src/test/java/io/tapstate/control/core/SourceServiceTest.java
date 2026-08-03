@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -152,6 +153,23 @@ class SourceServiceTest {
                 .isInstanceOfSatisfying(TapstateException.class,
                         error -> assertThat(error.code()).isEqualTo(DslError.UNSUPPORTED_MODE));
         assertThat(service.get("orders")).isEqualTo(created);
+    }
+
+    @Test
+    void createUsesOneCatalogSnapshotForWorkspaceAndLiveConfigValidation() {
+        AtomicInteger reads = new AtomicInteger();
+        InMemoryArtifactStore isolatedStore = new InMemoryArtifactStore();
+        SourceService dynamicService = new SourceService(
+                () -> {
+                    reads.incrementAndGet();
+                    return catalog;
+                },
+                isolatedStore,
+                new SourceRepresentation(catalog));
+
+        dynamicService.create(draft("orders", "snapshot", "before"));
+
+        assertThat(reads).hasValue(1);
     }
 
     @Test

@@ -28,6 +28,7 @@ fi
 TAPSTATE_MCP_SMOKE_COMMAND="$(printf '%q ' "${COMMAND[@]}")" python3 - <<'PY'
 import json
 import os
+import select
 import shlex
 import subprocess
 
@@ -48,7 +49,12 @@ def send(message):
     process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
     process.stdin.flush()
 
-def receive():
+def receive(timeout=5):
+    readable, _, _ = select.select([process.stdout], [], [], timeout)
+    if not readable:
+        process.kill()
+        _, stderr = process.communicate()
+        raise RuntimeError(f"MCP process did not respond within {timeout}s; stderr: {stderr!r}")
     line = process.stdout.readline()
     if not line:
         raise RuntimeError("MCP process closed stdout before responding")
@@ -57,27 +63,32 @@ def receive():
     except json.JSONDecodeError as error:
         raise RuntimeError(f"non-protocol stdout frame: {line!r}") from error
 
-send({
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": "2025-06-18",
-        "capabilities": {},
-        "clientInfo": {"name": "tapstate-smoke", "version": "1"},
-    },
-})
-assert receive()["result"]["protocolVersion"] == "2025-06-18"
-send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-tools = receive()["result"]["tools"]
-assert len(tools) == 11
-assert "source_create" not in {tool["name"] for tool in tools}
+try:
+    send({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "tapstate-smoke", "version": "1"},
+        },
+    })
+    assert receive()["result"]["protocolVersion"] == "2025-06-18"
+    send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    tools = receive()["result"]["tools"]
+    assert len(tools) == 11
+    assert "source_create" not in {tool["name"] for tool in tools}
 
-process.stdin.close()
-process.wait(timeout=5)
-assert process.returncode == 0
-stderr = process.stderr.read()
-assert "smoke-token" not in stderr
-print("mcp smoke: initialize, 11 read tools, clean EOF, no credential leak")
+    process.stdin.close()
+    process.wait(timeout=5)
+    assert process.returncode == 0
+    stderr = process.stderr.read()
+    assert "smoke-token" not in stderr
+    print("mcp smoke: initialize, 11 read tools, clean EOF, no credential leak")
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait(timeout=5)
 PY

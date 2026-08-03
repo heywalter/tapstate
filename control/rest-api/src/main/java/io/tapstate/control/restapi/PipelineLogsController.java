@@ -30,6 +30,9 @@ class PipelineLogsController {
     PipelineLogs logs(
             @PathVariable("id") String id,
             @RequestParam(value = "limit", required = false) Integer limit) {
+        if (limit != null && limit < 1) {
+            throw MalformedRequest.rejecting("limit must be positive", null);
+        }
         return limit == null ? logs.logs(id) : logs.logs(id, limit);
     }
 }

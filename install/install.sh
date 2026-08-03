@@ -209,10 +209,16 @@ install_bundle() {
     [ ! -f "$bundle_root/LICENSE" ] || cp "$bundle_root/LICENSE" "$staged/LICENSE"
     [ ! -f "$bundle_root/NOTICE" ] || cp "$bundle_root/NOTICE" "$staged/NOTICE"
     final="$install_dir/versions/$version"
-    if [ -e "$final" ] || [ -L "$final" ]; then
-        rm -rf "$final"
+    if [ -d "$final" ] \
+       && [ -x "$final/bin/tapstate" ] \
+       && { [ -x "$final/libexec/tapstate-mcp" ] || [ -f "$final/libexec/tapstate-mcp.jar" ]; }; then
+        rm -rf "$staged"
+    else
+        if [ -e "$final" ] || [ -L "$final" ]; then
+            rm -rf "$final"
+        fi
+        mv "$staged" "$final"
     fi
-    mv "$staged" "$final"
     staged=""
     staged_link="$install_dir/.tapstate.$$"
     ln -s "versions/$version/bin/tapstate" "$staged_link"

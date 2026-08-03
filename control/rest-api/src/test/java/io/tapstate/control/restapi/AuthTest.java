@@ -226,6 +226,10 @@ class AuthTest {
                 .header("Authorization", "Bearer " + admin)
                 .exchange((request, response) -> response.getStatusCode());
         assertThat(revoked).isEqualTo(HttpStatus.NO_CONTENT);
+        HttpStatusCode revokedAgain = client().post().uri("/api/tokens/{id}:revoke", tokenId)
+                .header("Authorization", "Bearer " + admin)
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(revokedAgain).isEqualTo(HttpStatus.NO_CONTENT);
 
         HttpStatusCode afterRevoke = client().get().uri("/api/artifacts")
                 .header("Authorization", "Bearer " + token)
