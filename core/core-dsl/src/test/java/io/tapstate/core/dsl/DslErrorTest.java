@@ -41,6 +41,7 @@ class DslErrorTest {
                 "dsl.malformed-interpolation",
                 // post-semantic row-expression type errors — the artifact is well-formed and complete,
                 // but the verdict turns on a source's discovered column types, which it does not carry
+                "dsl.row-expression-needs-discovery",
                 "dsl.row-expression-type-unsupported",
                 "dsl.row-expression-type-unknown");
     }
@@ -69,6 +70,8 @@ class DslErrorTest {
         assertThat(DslError.MALFORMED_INTERPOLATION.placeholders()).containsExactlyInAnyOrder("ref");
         // the row-expression type codes name the column the verdict is about, so the author is told
         // which one to change rather than only that the expression was refused
+        assertThat(DslError.ROW_EXPRESSION_NEEDS_DISCOVERY.placeholders())
+                .containsExactlyInAnyOrder("expr", "source", "path");
         assertThat(DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED.placeholders())
                 .containsExactlyInAnyOrder("expr", "column", "type", "path");
         assertThat(DslError.ROW_EXPRESSION_TYPE_UNKNOWN.placeholders())

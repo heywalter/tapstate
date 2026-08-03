@@ -19,9 +19,8 @@ import org.junit.jupiter.api.Test;
  * expression that cannot be evaluated on what the columns actually are, rather than letting it reach
  * the runtime and fail there.
  *
- * <p>A source with no entry in the column map has not been discovered. Nothing about it is refused
- * here: with no model, no column has a type to judge, and requiring the discovery in the first place
- * is a separate rule.
+ * <p>These cases are all about the type verdict, so every source they read has been discovered. What
+ * happens when one has not is the discovery obligation's own concern.
  */
 class RowExpressionTypeRulesTest {
 
@@ -176,13 +175,6 @@ class RowExpressionTypeRulesTest {
     void expressionWithoutRowAccessNeedsNoModel() {
         assertThatCode(() -> RowExpressionTypeRules.validate(
                 batch(filterPipeline("op == 'i'")), Map.of())).doesNotThrowAnyException();
-    }
-
-    @Test
-    @DisplayName("a source with no discovered model refuses nothing here")
-    void undiscoveredSourceRefusesNothingHere() {
-        assertThatCode(() -> RowExpressionTypeRules.validate(
-                batch(filterPipeline("after.amount * 2 > 0")), Map.of())).doesNotThrowAnyException();
     }
 
     // ---- every place an expression can hide ----------------------------------------------

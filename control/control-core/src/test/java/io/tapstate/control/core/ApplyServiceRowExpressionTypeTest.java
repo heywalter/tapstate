@@ -116,10 +116,14 @@ class ApplyServiceRowExpressionTypeTest {
     }
 
     @Test
-    @DisplayName("a source that has never been discovered refuses nothing at this gate")
-    void anUndiscoveredSourceIsNotRefusedHere() {
-        assertThatCode(() -> service.apply("tester", batch("after.amount * 2 > 0")))
-                .doesNotThrowAnyException();
+    @DisplayName("reading a row field from a source apply cannot find a model for is refused, naming it")
+    void anUndiscoveredSourceIsRefused() {
+        DslException thrown = catchThrowableOfType(DslException.class,
+                () -> service.apply("tester", batch("after.amount * 2 > 0")));
+
+        assertThat(thrown.code()).isEqualTo(DslError.ROW_EXPRESSION_NEEDS_DISCOVERY);
+        assertThat(thrown.args()).containsEntry("source", "src_orders");
+        assertThat(artifacts.saved).isEmpty();
     }
 
     @Test

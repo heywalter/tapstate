@@ -69,6 +69,12 @@ public enum DslError implements TapstateErrorCode {
      *  corpus witness, for the same reasons as {@link #UNDEFINED_VARIABLE}; {@code ref} echoes the
      *  offending reference. */
     MALFORMED_INTERPOLATION("dsl.malformed-interpolation", Set.of("ref")),
+    /** A row expression reading a column of a source whose schema has never been discovered, so there
+     *  is nothing to judge the expression against. {@code source} names the source to discover.
+     *  Post-semantic: it turns on what has been discovered, not on the document, so it has no corpus
+     *  witness and is proven by a direct test. */
+    ROW_EXPRESSION_NEEDS_DISCOVERY(
+            "dsl.row-expression-needs-discovery", Set.of("expr", "source", "path")),
     /** A row expression computing on a column whose type cannot survive the operation — an exact
      *  fixed-point number, a temporal value, a shape only known to be JSON. {@code column} names the
      *  column and {@code type} what it resolved to. Post-semantic: it needs a discovered source model,
