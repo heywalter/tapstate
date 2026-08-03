@@ -75,6 +75,16 @@ class AssemblerProcessorTest {
                         Map.of("policy", new ChainPosition(at(seq), null))));
     }
 
+    /** A claim element as the claims resolver would have routed it: it hangs under a policy, not the root. */
+    private static KeyedElement claimElement(long seq, String customerId, String policyId, String claimId,
+            String token) {
+        ElementRef ref = new ElementRef(
+                List.of("policies", "claims"), List.of(policyId), List.of(claimId), null);
+        return new KeyedElement(List.of(customerId),
+                new NestElement(ref, row("claim_id", claimId, "policy_id", policyId), at(seq),
+                        Map.of("claim", new ChainPosition(at(seq), token))));
+    }
+
     private List<Envelope> feed(int ordinal, Object... items) {
         TestInbox inbox = new TestInbox();
         inbox.queue().addAll(Arrays.asList(items));
@@ -218,6 +228,29 @@ class AssemblerProcessorTest {
         assertThat(store.load(key))
                 .describedAs("the entry is what carries the tombstone a replayed insert has to lose to")
                 .isNotNull();
+    }
+
+    /**
+     * A change held for an ancestor that has not arrived has been taken off the stream and put where no
+     * sink can see it, so what this vertex reports as its bound has to stay below it. The position is
+     * read off the arriving change and can only be kept if it is handed to the state that holds it -
+     * drop it there and the bound silently rises past a change that a restart neither replays nor finds.
+     */
+    @Test
+    void aChildWaitingForItsPolicyKeepsThePositionTheFrontierMustStayBelow() {
+        feed(ROOT_ROWS, customer(1, "C1", "Ada"));
+        List<Object> key = List.of("C1");
+
+        feed(FROM_POLICIES, claimElement(5, "C1", "P1", "CL1", "t5"));
+
+        assertThat(store.load(key).lowestPendingByChain())
+                .containsExactly(Map.entry("claim", new ChainPosition(at(5), "t5")));
+
+        feed(FROM_POLICIES, policyElement(6, "C1", "P1"));
+
+        assertThat(store.load(key).lowestPendingByChain())
+                .describedAs("the parent arrived, the child is in the document, nothing is held back")
+                .isEmpty();
     }
 
     @Test

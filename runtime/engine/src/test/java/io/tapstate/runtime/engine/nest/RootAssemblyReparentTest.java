@@ -9,6 +9,7 @@ import java.util.Map;
 import static io.tapstate.runtime.engine.nest.NestFixtures.at;
 import static io.tapstate.runtime.engine.nest.NestFixtures.element;
 import static io.tapstate.runtime.engine.nest.NestFixtures.listAt;
+import static io.tapstate.runtime.engine.nest.NestFixtures.noPositions;
 import static io.tapstate.runtime.engine.nest.NestFixtures.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -34,12 +35,12 @@ class RootAssemblyReparentTest {
     private static RootAssembly customerWithAClaimUnderP1() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("customer_id", "C1"), at(1));
-        assembly.applyElement(policy("P1"), row("policy_no", "P1"), at(2));
-        assembly.applyElement(policy("P2"), row("policy_no", "P2"), at(3));
-        assembly.applyElement(claimUnder("P1"), row("claim_no", "CL1"), at(4));
+        assembly.applyElement(policy("P1"), row("policy_no", "P1"), at(2), noPositions());
+        assembly.applyElement(policy("P2"), row("policy_no", "P2"), at(3), noPositions());
+        assembly.applyElement(claimUnder("P1"), row("claim_no", "CL1"), at(4), noPositions());
         assembly.applyElement(
                 element(List.of("policies", "claims", "documents"), "CL1", "D1", null),
-                row("document_no", "D1"), at(5));
+                row("document_no", "D1"), at(5), noPositions());
         return assembly;
     }
 
@@ -48,7 +49,7 @@ class RootAssemblyReparentTest {
         RootAssembly assembly = customerWithAClaimUnderP1();
 
         assertThat(assembly.reparentElement(
-                claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1"), at(6))).isTrue();
+                claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1"), at(6), noPositions())).isTrue();
 
         Map<String, Object> document = assembly.render(TREE).orElseThrow();
         List<Map<String, Object>> policies = listAt(document, "policies");
@@ -68,7 +69,7 @@ class RootAssemblyReparentTest {
         RootAssembly assembly = customerWithAClaimUnderP1();
 
         assembly.reparentElement(
-                claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1", "status", "reopened"), at(6));
+                claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1", "status", "reopened"), at(6), noPositions());
 
         assertThat(listAt(assembly.render(TREE).orElseThrow(), "policies").get(1))
                 .extracting("claims")
@@ -82,7 +83,7 @@ class RootAssemblyReparentTest {
         RootAssembly assembly = customerWithAClaimUnderP1();
 
         assertThat(assembly.reparentElement(
-                claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1"), at(3))).isFalse();
+                claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1"), at(3), noPositions())).isFalse();
 
         List<Map<String, Object>> policies = listAt(assembly.render(TREE).orElseThrow(), "policies");
         assertThat((List<?>) policies.get(0).get("claims")).hasSize(1);
@@ -96,12 +97,12 @@ class RootAssemblyReparentTest {
         // P3's row has not arrived. Leaving the claim under P1 would show a relationship the source has
         // already contradicted - and if P3 never arrives, it would stay wrong for good with no signal.
         assembly.reparentElement(
-                claimUnder("P1"), claimUnder("P3"), row("claim_no", "CL1"), at(6));
+                claimUnder("P1"), claimUnder("P3"), row("claim_no", "CL1"), at(6), noPositions());
 
         List<Map<String, Object>> policies = listAt(assembly.render(TREE).orElseThrow(), "policies");
         assertThat((List<?>) policies.get(0).get("claims")).isEmpty();
 
-        assembly.applyElement(policy("P3"), row("policy_no", "P3"), at(7));
+        assembly.applyElement(policy("P3"), row("policy_no", "P3"), at(7), noPositions());
 
         List<Map<String, Object>> afterP3 = listAt(assembly.render(TREE).orElseThrow(), "policies");
         assertThat(afterP3).hasSize(3);
@@ -116,9 +117,9 @@ class RootAssemblyReparentTest {
     void movingAnElementThatWasNeverHereJustPlacesIt() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("customer_id", "C1"), at(1));
-        assembly.applyElement(policy("P2"), row("policy_no", "P2"), at(2));
+        assembly.applyElement(policy("P2"), row("policy_no", "P2"), at(2), noPositions());
 
-        assembly.reparentElement(claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1"), at(3));
+        assembly.reparentElement(claimUnder("P1"), claimUnder("P2"), row("claim_no", "CL1"), at(3), noPositions());
 
         assertThat(listAt(assembly.render(TREE).orElseThrow(), "policies", "claims"))
                 .singleElement()
@@ -131,6 +132,6 @@ class RootAssemblyReparentTest {
         ElementRef other = element(List.of("policies", "claims"), "P2", "CL9", "CL9");
 
         assertThatIllegalArgumentException().isThrownBy(() ->
-                assembly.reparentElement(claimUnder("P1"), other, row("claim_no", "CL1"), at(6)));
+                assembly.reparentElement(claimUnder("P1"), other, row("claim_no", "CL1"), at(6), noPositions()));
     }
 }

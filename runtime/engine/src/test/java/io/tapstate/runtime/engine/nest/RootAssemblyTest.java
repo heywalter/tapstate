@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static io.tapstate.runtime.engine.nest.NestFixtures.at;
+import static io.tapstate.runtime.engine.nest.NestFixtures.noPositions;
 import static io.tapstate.runtime.engine.nest.NestFixtures.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -36,7 +37,7 @@ class RootAssemblyTest {
     void theDocumentCarriesTheRootFieldsAndItsElements() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7, "customer", "ann"), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
 
         Map<String, Object> document = assembly.render(ITEMS_ARRAY).orElseThrow();
         assertThat(document).containsEntry("id", 7).containsEntry("customer", "ann");
@@ -46,7 +47,7 @@ class RootAssemblyTest {
     @Test
     void noDocumentUntilTheRootArrives() {
         RootAssembly assembly = new RootAssembly();
-        assembly.applyElement(item("i1"), row("sku", "a"), at(1));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(1), noPositions());
 
         assertThat(assembly.render(ITEMS_ARRAY)).isEmpty();
 
@@ -76,8 +77,8 @@ class RootAssemblyTest {
     void deletingTheRootKeepsTheElementsForItsReturn() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
-        assembly.applyElement(item("i2"), row("sku", "b"), at(3));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
+        assembly.applyElement(item("i2"), row("sku", "b"), at(3), noPositions());
 
         assembly.deleteRoot(at(4));
         assertThat(assembly.rootPresent()).isFalse();
@@ -94,7 +95,7 @@ class RootAssemblyTest {
         assembly.applyRoot(row("id", 7), at(1));
         assembly.deleteRoot(at(2));
 
-        assembly.applyElement(item("i1"), row("sku", "a"), at(3));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(3), noPositions());
         assertThat(assembly.render(ITEMS_ARRAY)).isEmpty();
     }
 
@@ -112,11 +113,11 @@ class RootAssemblyTest {
     void anElementUpdateStaysInItsPlace() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
-        assembly.applyElement(item("i2"), row("sku", "b"), at(3));
-        assembly.applyElement(item("i3"), row("sku", "c"), at(4));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
+        assembly.applyElement(item("i2"), row("sku", "b"), at(3), noPositions());
+        assembly.applyElement(item("i3"), row("sku", "c"), at(4), noPositions());
 
-        assembly.applyElement(item("i2"), row("sku", "b2"), at(5));
+        assembly.applyElement(item("i2"), row("sku", "b2"), at(5), noPositions());
 
         assertThat(itemsOf(assembly.render(ITEMS_ARRAY)))
                 .containsExactly(row("sku", "a"), row("sku", "b2"), row("sku", "c"));
@@ -126,9 +127,9 @@ class RootAssemblyTest {
     void anOlderElementUpdateDoesNotOverwriteANewerOne() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "new"), at(5));
+        assembly.applyElement(item("i1"), row("sku", "new"), at(5), noPositions());
 
-        assertThat(assembly.applyElement(item("i1"), row("sku", "old"), at(4))).isFalse();
+        assertThat(assembly.applyElement(item("i1"), row("sku", "old"), at(4), noPositions())).isFalse();
         assertThat(itemsOf(assembly.render(ITEMS_ARRAY))).containsExactly(row("sku", "new"));
     }
 
@@ -136,11 +137,11 @@ class RootAssemblyTest {
     void deletingAnElementLeavesTheRestUntouched() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
-        assembly.applyElement(item("i2"), row("sku", "b"), at(3));
-        assembly.applyElement(item("i3"), row("sku", "c"), at(4));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
+        assembly.applyElement(item("i2"), row("sku", "b"), at(3), noPositions());
+        assembly.applyElement(item("i3"), row("sku", "c"), at(4), noPositions());
 
-        assembly.deleteElement(item("i2"), at(5));
+        assembly.deleteElement(item("i2"), at(5), noPositions());
 
         assertThat(itemsOf(assembly.render(ITEMS_ARRAY)))
                 .containsExactly(row("sku", "a"), row("sku", "c"));
@@ -150,10 +151,10 @@ class RootAssemblyTest {
     void aReplayedInsertBeneathTheElementTombstoneStaysDeleted() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
-        assembly.deleteElement(item("i1"), at(10));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
+        assembly.deleteElement(item("i1"), at(10), noPositions());
 
-        assertThat(assembly.applyElement(item("i1"), row("sku", "a"), at(9))).isFalse();
+        assertThat(assembly.applyElement(item("i1"), row("sku", "a"), at(9), noPositions())).isFalse();
         assertThat(itemsOf(assembly.render(ITEMS_ARRAY))).isEmpty();
     }
 
@@ -161,10 +162,10 @@ class RootAssemblyTest {
     void aRebuildAboveTheElementTombstoneBringsTheElementBack() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
-        assembly.deleteElement(item("i1"), at(10));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
+        assembly.deleteElement(item("i1"), at(10), noPositions());
 
-        assertThat(assembly.applyElement(item("i1"), row("sku", "rebuilt"), at(11))).isTrue();
+        assertThat(assembly.applyElement(item("i1"), row("sku", "rebuilt"), at(11), noPositions())).isTrue();
         assertThat(itemsOf(assembly.render(ITEMS_ARRAY))).containsExactly(row("sku", "rebuilt"));
     }
 
@@ -172,11 +173,11 @@ class RootAssemblyTest {
     void aReplayedDeleteBeneathTheElementTombstoneChangesNothing() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
-        assembly.deleteElement(item("i1"), at(10));
-        assembly.applyElement(item("i1"), row("sku", "rebuilt"), at(11));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
+        assembly.deleteElement(item("i1"), at(10), noPositions());
+        assembly.applyElement(item("i1"), row("sku", "rebuilt"), at(11), noPositions());
 
-        assertThat(assembly.deleteElement(item("i1"), at(10))).isFalse();
+        assertThat(assembly.deleteElement(item("i1"), at(10), noPositions())).isFalse();
         assertThat(itemsOf(assembly.render(ITEMS_ARRAY))).containsExactly(row("sku", "rebuilt"));
     }
 
@@ -202,7 +203,7 @@ class RootAssemblyTest {
     void anObjectEmbedRendersTheElementItselfNotAnArray() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
 
         assertThat(assembly.render(ITEMS_OBJECT).orElseThrow()).containsEntry(ITEMS, row("sku", "a"));
     }
@@ -213,9 +214,9 @@ class RootAssemblyTest {
         assembly.applyRoot(row("id", 7), at(1));
         // Arrival order disagrees with the order the events carry, in both directions: the winner is
         // neither the first nor the last to arrive, so neither can pass for "the latest".
-        assembly.applyElement(item("i1"), row("sku", "earliest"), at(2));
-        assembly.applyElement(item("i3"), row("sku", "latest"), at(9));
-        assembly.applyElement(item("i2"), row("sku", "middle"), at(5));
+        assembly.applyElement(item("i1"), row("sku", "earliest"), at(2), noPositions());
+        assembly.applyElement(item("i3"), row("sku", "latest"), at(9), noPositions());
+        assembly.applyElement(item("i2"), row("sku", "middle"), at(5), noPositions());
 
         assertThat(assembly.render(ITEMS_OBJECT).orElseThrow())
                 .containsEntry(ITEMS, row("sku", "latest"));
@@ -227,16 +228,16 @@ class RootAssemblyTest {
         assertThatNullPointerException().isThrownBy(() -> assembly.applyRoot(row("id", 7), null));
         assertThatNullPointerException().isThrownBy(() -> assembly.deleteRoot(null));
         assertThatNullPointerException()
-                .isThrownBy(() -> assembly.applyElement(item("i1"), row("sku", "a"), null));
+                .isThrownBy(() -> assembly.applyElement(item("i1"), row("sku", "a"), null, noPositions()));
         assertThatNullPointerException()
-                .isThrownBy(() -> assembly.deleteElement(item("i1"), null));
+                .isThrownBy(() -> assembly.deleteElement(item("i1"), null, noPositions()));
     }
 
     @Test
     void aRenderedDocumentDoesNotShareStateWithTheAssembly() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
 
         Map<String, Object> document = assembly.render(ITEMS_ARRAY).orElseThrow();
         document.remove("id");
@@ -251,9 +252,9 @@ class RootAssemblyTest {
     void theAssemblyRoundTripsThroughSerializationWithItsTombstones() throws Exception {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("id", 7, "customer", "ann"), at(1));
-        assembly.applyElement(item("i1"), row("sku", "a"), at(2));
-        assembly.applyElement(item("i2"), row("sku", "b"), at(3));
-        assembly.deleteElement(item("i2"), at(10));
+        assembly.applyElement(item("i1"), row("sku", "a"), at(2), noPositions());
+        assembly.applyElement(item("i2"), row("sku", "b"), at(3), noPositions());
+        assembly.deleteElement(item("i2"), at(10), noPositions());
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
@@ -265,7 +266,7 @@ class RootAssemblyTest {
         }
 
         assertThat(itemsOf(restored.render(ITEMS_ARRAY))).containsExactly(row("sku", "a"));
-        assertThat(restored.applyElement(item("i2"), row("sku", "b"), at(9))).isFalse();
+        assertThat(restored.applyElement(item("i2"), row("sku", "b"), at(9), noPositions())).isFalse();
         assertThat(itemsOf(restored.render(ITEMS_ARRAY))).containsExactly(row("sku", "a"));
     }
 }

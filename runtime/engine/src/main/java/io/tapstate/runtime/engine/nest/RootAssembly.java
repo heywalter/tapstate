@@ -1,5 +1,6 @@
 package io.tapstate.runtime.engine.nest;
 
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.SourceOrder;
 
 import java.io.Serializable;
@@ -39,6 +40,11 @@ import java.util.Optional;
  * row travel with nothing but its own parent's key. Held children are state like any other: they
  * survive being stored and restored, and a delete held that way still wins over an insert replayed
  * from beneath it.
+ *
+ * <p><b>A held child keeps the position it arrived with.</b> It has been taken off the stream and put
+ * where no sink can see it, so the durable frontier must stay below it; {@link #lowestPendingByChain()}
+ * is what a vertex reports so that can be enforced. Let the frontier past it and a restart neither
+ * replays that change nor finds it, leaving the document an element short with nothing to signal it.
  *
  * <p><b>A document is rendered only while the root is present.</b> Until the root arrives, and again
  * once it is deleted, there is no document at all, whatever triggered the render — a child arriving, an
@@ -114,19 +120,21 @@ public final class RootAssembly implements Serializable {
     /**
      * Applies one element's row — an update of an element already there keeps its place in the array and
      * the children beneath it. Returns whether the assembly changed; a child held for a parent that has
-     * not arrived has changed it.
+     * not arrived has changed it. {@code positions} is where the change came from on the chains that
+     * carried it, kept only while it is held, so the frontier can be told to stay below it.
      */
-    public boolean applyElement(ElementRef ref, Map<String, Object> fields, SourceOrder order) {
+    public boolean applyElement(ElementRef ref, Map<String, Object> fields, SourceOrder order,
+            Map<String, ChainPosition> positions) {
         Objects.requireNonNull(fields, "fields");
-        return mutate(ref, copyOf(fields), order);
+        return mutate(ref, copyOf(fields), order, positions);
     }
 
     /**
      * Deletes one element, leaving a tombstone at {@code order} and its subtree in place. Returns
      * whether the assembly changed.
      */
-    public boolean deleteElement(ElementRef ref, SourceOrder order) {
-        return mutate(ref, null, order);
+    public boolean deleteElement(ElementRef ref, SourceOrder order, Map<String, ChainPosition> positions) {
+        return mutate(ref, null, order, positions);
     }
 
     /**
@@ -140,7 +148,8 @@ public final class RootAssembly implements Serializable {
      * with nothing to signal it. Held, it sits in the pending bucket where an unresolvable parent is
      * already accounted for. An element that was never at {@code from} is simply placed at {@code to}.
      */
-    public boolean reparentElement(ElementRef from, ElementRef to, Map<String, Object> fields, SourceOrder order) {
+    public boolean reparentElement(ElementRef from, ElementRef to, Map<String, Object> fields, SourceOrder order,
+            Map<String, ChainPosition> positions) {
         Objects.requireNonNull(from, "from");
         Objects.requireNonNull(to, "to");
         Objects.requireNonNull(fields, "fields");
@@ -152,7 +161,7 @@ public final class RootAssembly implements Serializable {
         Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
         ElementNode moved = slot == null ? null : slot.get(from.elementKey());
         if (slot == null || moved == null || moved.deleted()) {
-            return mutate(to, copyOf(fields), order);
+            return mutate(to, copyOf(fields), order, positions);
         }
         if (!wins(order, moved.order())) {
             return false;
@@ -162,11 +171,27 @@ public final class RootAssembly implements Serializable {
         Map<String, Map<List<Object>, ElementNode>> target = containerFor(to);
         if (target == null) {
             waiting.computeIfAbsent(new WaitingOn(to.parentPathId(), to.parentIdentity()), on -> new ArrayList<>())
-                    .add(Pending.of(to, moved, order));
+                    .add(Pending.of(to, moved, order, positions));
             return true;
         }
         target.computeIfAbsent(to.field(), field -> new LinkedHashMap<>()).put(to.elementKey(), moved);
         return true;
+    }
+
+    /**
+     * The lowest position held per chain — the bound the durable frontier must stay below for the elements
+     * waiting here for an ancestor that has not arrived. Chains with nothing waiting do not appear, and a
+     * chain's two halves are reported as they arrived: the order to compare on, the token to persist.
+     */
+    public Map<String, ChainPosition> lowestPendingByChain() {
+        Map<String, ChainPosition> lowest = new LinkedHashMap<>();
+        for (List<Pending> held : waiting.values()) {
+            for (Pending pending : held) {
+                pending.positions().forEach((chain, position) -> lowest.merge(chain, position,
+                        (kept, candidate) -> candidate.order().compareTo(kept.order()) < 0 ? candidate : kept));
+            }
+        }
+        return lowest;
     }
 
     /**
@@ -184,13 +209,15 @@ public final class RootAssembly implements Serializable {
         return Optional.of(document);
     }
 
-    private boolean mutate(ElementRef ref, Map<String, Object> fields, SourceOrder order) {
+    private boolean mutate(ElementRef ref, Map<String, Object> fields, SourceOrder order,
+            Map<String, ChainPosition> positions) {
         Objects.requireNonNull(ref, "ref");
         Objects.requireNonNull(order, "order");
+        Objects.requireNonNull(positions, "positions");
         Map<String, Map<List<Object>, ElementNode>> container = containerFor(ref);
         if (container == null) {
             waiting.computeIfAbsent(new WaitingOn(ref.parentPathId(), ref.parentIdentity()), on -> new ArrayList<>())
-                    .add(Pending.of(ref, fields, order));
+                    .add(Pending.of(ref, fields, order, positions));
             return true;
         }
         Map<List<Object>, ElementNode> slot = container.computeIfAbsent(ref.field(), field -> new LinkedHashMap<>());
@@ -219,7 +246,7 @@ public final class RootAssembly implements Serializable {
         }
         for (Pending pending : held) {
             if (pending.node() == null) {
-                mutate(pending.ref(), pending.fields(), pending.order());
+                mutate(pending.ref(), pending.fields(), pending.order(), pending.positions());
             } else {
                 ElementRef ref = pending.ref();
                 // Released only from the parent that just arrived, so its embed is there by construction;
@@ -334,15 +361,17 @@ public final class RootAssembly implements Serializable {
      * a null {@code fields} meaning a deletion), or a whole node being moved, which is attached as it
      * stands so its subtree travels with it.
      */
-    private record Pending(ElementRef ref, Map<String, Object> fields, SourceOrder order, ElementNode node)
-            implements Serializable {
+    private record Pending(ElementRef ref, Map<String, Object> fields, SourceOrder order, ElementNode node,
+            Map<String, ChainPosition> positions) implements Serializable {
 
-        private static Pending of(ElementRef ref, Map<String, Object> fields, SourceOrder order) {
-            return new Pending(ref, fields, order, null);
+        private static Pending of(ElementRef ref, Map<String, Object> fields, SourceOrder order,
+                Map<String, ChainPosition> positions) {
+            return new Pending(ref, fields, order, null, positions);
         }
 
-        private static Pending of(ElementRef ref, ElementNode node, SourceOrder order) {
-            return new Pending(ref, null, order, node);
+        private static Pending of(ElementRef ref, ElementNode node, SourceOrder order,
+                Map<String, ChainPosition> positions) {
+            return new Pending(ref, null, order, node, positions);
         }
     }
 }

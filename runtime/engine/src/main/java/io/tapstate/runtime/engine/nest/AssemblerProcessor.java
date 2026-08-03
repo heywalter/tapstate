@@ -112,9 +112,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
 
     private static void apply(Touched document, NestElement element) {
         if (element.deletion()) {
-            document.assembly.deleteElement(element.ref(), element.order());
+            document.assembly.deleteElement(element.ref(), element.order(), element.positions());
         } else {
-            document.assembly.applyElement(element.ref(), element.fields(), element.order());
+            document.assembly.applyElement(element.ref(), element.fields(), element.order(), element.positions());
         }
     }
 

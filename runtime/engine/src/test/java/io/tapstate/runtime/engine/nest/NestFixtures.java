@@ -1,5 +1,6 @@
 package io.tapstate.runtime.engine.nest;
 
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.SourceOrder;
 
 import java.util.LinkedHashMap;
@@ -15,6 +16,14 @@ final class NestFixtures {
     /** An order in the first epoch, at {@code seq} — enough to order events within one test. */
     static SourceOrder at(long seq) {
         return new SourceOrder(1L, seq);
+    }
+
+    /**
+     * A change with no chain position of its own, for the tests that are about where an element lands
+     * rather than about how far the frontier may go.
+     */
+    static Map<String, ChainPosition> noPositions() {
+        return Map.of();
     }
 
     /** A row from alternating key/value arguments, in the order given. */
