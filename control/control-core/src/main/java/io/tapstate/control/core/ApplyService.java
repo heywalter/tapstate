@@ -1,16 +1,24 @@
 package io.tapstate.control.core;
 
 import io.tapstate.core.catalog.TapstateCatalog;
+import io.tapstate.core.common.TapstateType;
 import io.tapstate.core.dsl.DslException;
 import io.tapstate.core.dsl.DslParser;
+import io.tapstate.core.dsl.RowExpressionTypeRules;
 import io.tapstate.core.dsl.Workspace;
 import io.tapstate.core.model.Resource;
+import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactStore;
+import io.tapstate.spi.store.SchemaStore;
+import io.tapstate.spi.store.SourceField;
+import io.tapstate.spi.store.SourceTable;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -19,9 +27,16 @@ import java.util.function.Supplier;
  * The resource-type-agnostic apply pipeline. {@link #plan} is the front half — validate -> canonical
  * -> hash: it parses each draft (structural + expression checks), validates the whole batch as one
  * closure (duplicate ids, reference closure, mode rules, and the connector capability matrix against
- * the catalog), then emits each resource's canonical form and content hash, touching no store.
+ * the catalog), judges the batch's row expressions against the columns its sources were discovered to
+ * hold, then emits each resource's canonical form and content hash. It writes nothing, and the only
+ * store it reads is the schema store — an observation of what discovery found, never the config truth
+ * layer, which apply is the one writer of.
  * {@link #apply} runs a plan and then upserts each artifact into the store by its id, skipping the
  * write when the stored artifact's content hash is unchanged (a no-op).
+ *
+ * <p>The row-expression type check is the one layer that cannot run offline: the columns' types exist
+ * only once a connection has been discovered, so an expression the data cannot survive is refused
+ * here rather than at the offline check, which has nothing to judge it against.
  *
  * <p>Any validation failure aborts with the first coded {@code dsl.*} diagnostic before any upsert;
  * nothing is written on a validation failure. The batch is the closure: references resolve within the
@@ -41,13 +56,16 @@ public final class ApplyService {
     private final Supplier<TapstateCatalog> catalog;
     private final ArtifactStore store;
     private final AuditGate auditGate;
+    private final SchemaStore schemas;
     private final DslParser parser = new DslParser();
     private final CanonicalWriter writer = new CanonicalWriter();
 
-    public ApplyService(Supplier<TapstateCatalog> catalog, ArtifactStore store, AuditGate auditGate) {
+    public ApplyService(
+            Supplier<TapstateCatalog> catalog, ArtifactStore store, AuditGate auditGate, SchemaStore schemas) {
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.store = Objects.requireNonNull(store, "store");
         this.auditGate = Objects.requireNonNull(auditGate, "auditGate");
+        this.schemas = Objects.requireNonNull(schemas, "schemas");
     }
 
     /**
@@ -62,6 +80,7 @@ public final class ApplyService {
             resources.add(parse(draft));
         }
         Workspace workspace = Workspace.of(resources, catalog.get());
+        RowExpressionTypeRules.validate(resources, discoveredColumns(resources));
         List<PreparedArtifact> prepared = new ArrayList<>();
         for (Resource resource : workspace.resources()) {
             String canonicalForm = writer.write(resource);
@@ -112,6 +131,34 @@ public final class ApplyService {
             store.saveAll(toWrite);
             return new ApplyResult(outcomes);
         });
+    }
+
+    /**
+     * The columns each source in the batch was discovered to hold, keyed by the source's id — which is
+     * also the connection id its discovery is stored under. A source that has never been discovered is
+     * absent from the result rather than present and empty, so the rules can tell "discovered nothing"
+     * apart from "not discovered".
+     *
+     * <p>A source's own tables are merged the same way the rules merge across sources: one column name
+     * two tables resolved to different types is left unresolved, never silently taken from one of them.
+     */
+    private Map<String, Map<String, TapstateType>> discoveredColumns(List<Resource> resources) {
+        Map<String, Map<String, TapstateType>> bySource = new LinkedHashMap<>();
+        for (Resource resource : resources) {
+            if (!(resource instanceof SourceResource source)) {
+                continue;
+            }
+            schemas.get(source.id()).ifPresent(discovered -> {
+                Map<String, TapstateType> columns = new LinkedHashMap<>();
+                for (SourceTable table : discovered.model().tables()) {
+                    for (SourceField field : table.fields()) {
+                        RowExpressionTypeRules.mergeColumn(columns, field.name(), field.type());
+                    }
+                }
+                bySource.put(source.id(), columns);
+            });
+        }
+        return bySource;
     }
 
     /** The content hash of a stored artifact, recomputed over its canonical form for the no-op check. */

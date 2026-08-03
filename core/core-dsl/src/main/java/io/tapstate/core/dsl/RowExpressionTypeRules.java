@@ -90,14 +90,22 @@ public final class RowExpressionTypeRules {
             if (columns == null) {
                 continue;
             }
-            columns.forEach((column, type) -> {
-                TapstateType seen = merged.putIfAbsent(column, type);
-                if (seen != null && seen != type) {
-                    merged.put(column, TapstateType.UNKNOWN);
-                }
-            });
+            columns.forEach((column, type) -> mergeColumn(merged, column, type));
         }
         return merged;
+    }
+
+    /**
+     * Folds one stream's column into a view merged across several. A column two streams resolved
+     * differently is left unresolved, which is what the refusal downstream reports: taking either
+     * side would be a guess. Callers that merge a source's own tables before handing the columns in
+     * share this, so the two levels cannot disagree about what a conflict means.
+     */
+    public static void mergeColumn(Map<String, TapstateType> into, String column, TapstateType type) {
+        TapstateType seen = into.putIfAbsent(column, type);
+        if (seen != null && seen != type) {
+            into.put(column, TapstateType.UNKNOWN);
+        }
     }
 
     // ---- where an expression can sit -----------------------------------------------------

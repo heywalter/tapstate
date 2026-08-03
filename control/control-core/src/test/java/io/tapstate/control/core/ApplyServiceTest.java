@@ -45,7 +45,7 @@ class ApplyServiceTest {
     private final RecordingArtifactStore store = new RecordingArtifactStore();
     private final RecordingAuditStore auditStore = new RecordingAuditStore();
     private final ApplyService service =
-            new ApplyService(TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK));
+            new ApplyService(TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore());
 
     /** An audit store that captures every record it is asked to write. */
     private static final class RecordingAuditStore implements AuditStore {
@@ -186,7 +186,7 @@ class ApplyServiceTest {
         List<ConnectorCatalogEntry> registered = new ArrayList<>();
         registered.add(CatalogEntryReader.read(acmeRow("cdc")));
         Supplier<TapstateCatalog> live = () -> TapstateCatalog.merged(TapstateCatalog.load(), List.copyOf(registered));
-        ApplyService liveService = new ApplyService(live, store, new AuditGate(auditStore, FIXED_CLOCK));
+        ApplyService liveService = new ApplyService(live, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore());
 
         assertThatCode(() -> liveService.plan(List.of(draft(ACME_CDC_SOURCE)))).doesNotThrowAnyException();
 
@@ -270,13 +270,13 @@ class ApplyServiceTest {
 
     @Test
     void aNullCatalogIsRejected() {
-        assertThatThrownBy(() -> new ApplyService(null, store, new AuditGate(auditStore, FIXED_CLOCK)))
+        assertThatThrownBy(() -> new ApplyService(null, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore()))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void aNullStoreIsRejected() {
-        assertThatThrownBy(() -> new ApplyService(TapstateCatalog::load, null, new AuditGate(auditStore, FIXED_CLOCK)))
+        assertThatThrownBy(() -> new ApplyService(TapstateCatalog::load, null, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore()))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -464,7 +464,8 @@ class ApplyServiceTest {
         // No audit, no execute: if the record cannot be written the apply is refused with a coded
         // control.audit-blocked and nothing reaches the artifact store.
         ApplyService refusing = new ApplyService(
-                TapstateCatalog::load, store, new AuditGate(new FailingAuditStore(), FIXED_CLOCK));
+                TapstateCatalog::load, store, new AuditGate(new FailingAuditStore(), FIXED_CLOCK),
+                new EmptySchemaStore());
 
         Throwable t = catchThrowable(() -> refusing.apply("alice", List.of(draft(TGT_MY))));
 
@@ -476,7 +477,16 @@ class ApplyServiceTest {
 
     @Test
     void aNullAuditGateIsRejected() {
-        assertThatThrownBy(() -> new ApplyService(TapstateCatalog::load, store, null))
+        assertThatThrownBy(() -> new ApplyService(TapstateCatalog::load, store, null, new EmptySchemaStore()))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void aNullSchemaStoreIsRejected() {
+        // The row-expression type check is not optional: a service built without a schema store would
+        // silently skip it, and skipping it is exactly the state the check exists to end.
+        assertThatThrownBy(() ->
+                new ApplyService(TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), null))
                 .isInstanceOf(NullPointerException.class);
     }
 

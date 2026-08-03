@@ -175,7 +175,10 @@ class ControlPlaneConfiguration {
             StorePort storePort, ConnectorCatalogView connectorCatalogView, AuditGate auditGate) {
         // The online apply validates against the live catalog view (the bundled snapshot union the
         // connectors registered so far), so a connector registered at runtime is honoured without a restart.
-        return new ApplyService(connectorCatalogView::merged, storePort.artifacts(), auditGate);
+        // It also reads the schema store, which is what lets it judge a row expression against the columns
+        // its sources were discovered to hold - the one check that cannot run offline.
+        return new ApplyService(
+                connectorCatalogView::merged, storePort.artifacts(), auditGate, storePort.schemas());
     }
 
     @Bean
