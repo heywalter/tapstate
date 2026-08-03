@@ -7,12 +7,17 @@ import io.tapstate.core.common.TapstateType;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
  * Pins the mapping from a connector's own declared column type onto the tapstate type namespace.
@@ -24,6 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PdkTypeMappingTest {
 
+    /** A fresh directory per case: the synthetic connector's source is written into it. */
+    @TempDir
+    private Path dir;
+
     /** The mysql connector's own declaration for its decimal column type, verbatim from its spec. */
     private static final String DECIMAL_SPEC = """
             {"dataTypes": {"decimal[($precision,$scale)][unsigned]": {"to": "TapNumber",\
@@ -31,8 +40,8 @@ class PdkTypeMappingTest {
              "unsigned": "unsigned", "fixed": true}}}""";
 
     @Test
-    void aFixedPointColumnMapsOntoDecimal(@TempDir Path dir) {
-        TapField amount = filled(dir, DECIMAL_SPEC, "amount", "decimal(18,4)");
+    void aFixedPointColumnMapsOntoDecimal() {
+        TapField amount = filled(DECIMAL_SPEC, "amount", "decimal(18,4)");
 
         assertThat(PdkTypeMapping.of(amount.getTapType()))
                 .as("a decimal column carries a scale no binary floating point type holds losslessly")
@@ -45,8 +54,8 @@ class PdkTypeMappingTest {
              "value": [-9223372036854775808, 9223372036854775807]}}}""";
 
     @Test
-    void anIntegerColumnMapsOntoInt64(@TempDir Path dir) {
-        TapField id = filled(dir, BIGINT_SPEC, "id", "bigint");
+    void anIntegerColumnMapsOntoInt64() {
+        TapField id = filled(BIGINT_SPEC, "id", "bigint");
 
         assertThat(PdkTypeMapping.of(id.getTapType()))
                 .as("an integer column holds no scale, so it maps losslessly onto the 64-bit integer")
@@ -59,8 +68,8 @@ class PdkTypeMappingTest {
              "preferScale": 4, "scale": [0, 17], "fixed": false}}}""";
 
     @Test
-    void aBinaryFloatingPointColumnMapsOntoDouble(@TempDir Path dir) {
-        TapField rate = filled(dir, DOUBLE_SPEC, "rate", "double");
+    void aBinaryFloatingPointColumnMapsOntoDouble() {
+        TapField rate = filled(DOUBLE_SPEC, "rate", "double");
 
         assertThat(PdkTypeMapping.of(rate.getTapType()))
                 .as("the source itself already holds this column as binary floating point, so nothing is lost")
@@ -73,8 +82,8 @@ class PdkTypeMappingTest {
              "defaultByte": 1, "byteRatio": 3}}}""";
 
     @Test
-    void aTextColumnMapsOntoString(@TempDir Path dir) {
-        TapField customer = filled(dir, VARCHAR_SPEC, "customer", "varchar(64)");
+    void aTextColumnMapsOntoString() {
+        TapField customer = filled(VARCHAR_SPEC, "customer", "varchar(64)");
 
         assertThat(PdkTypeMapping.of(customer.getTapType()))
                 .as("text is the one column shape row expressions already read without losing anything")
@@ -82,11 +91,11 @@ class PdkTypeMappingTest {
     }
 
     @Test
-    void aColumnTheConnectorDeclaresNothingAboutMapsOntoUnknown(@TempDir Path dir) {
+    void aColumnTheConnectorDeclaresNothingAboutMapsOntoUnknown() {
         // The connector declares a mapping for bigint only. A column of any other type is one its own
         // machinery cannot resolve, and what comes back is the framework's raw fallback - not an absent
         // type, which is what makes the fallback worth pinning here.
-        TapField amount = filled(dir, BIGINT_SPEC, "amount", "decimal(18,4)");
+        TapField amount = filled(BIGINT_SPEC, "amount", "decimal(18,4)");
         assertThat(amount.getTapType()).as("an unresolvable column falls back to raw").isInstanceOf(TapRaw.class);
 
         assertThat(PdkTypeMapping.of(amount.getTapType()))
@@ -101,8 +110,56 @@ class PdkTypeMappingTest {
                 .isEqualTo(TapstateType.UNKNOWN);
     }
 
+    /**
+     * Every remaining column shape a real connector declares, each declaration verbatim from a connector's
+     * own spec. Numbers get a case each above - their split is what this mapping exists for - while these
+     * are one table because each is a plain projection with nothing to weigh. The binary entry is the one
+     * that earns its place twice: it declares {@code fixed} as well, so it also witnesses that the exact /
+     * approximate split stays scoped to numbers rather than firing on any type that declares the word.
+     */
+    static Stream<Arguments> declaredColumnShapes() {
+        return Stream.of(
+                arguments("date", """
+                        {"dataTypes": {"date": {"to": "TapDate", "range": ["1000-01-01", "9999-12-31"],\
+                         "pattern": "yyyy-MM-dd"}}}""", TapstateType.DATE),
+                arguments("time", """
+                        {"dataTypes": {"time[($fraction)]": {"to": "TapTime", "fraction": [0, 6],\
+                         "defaultFraction": 0, "range": ["-838:59:59", "838:59:59"], "pattern": "HH:mm:ss"}}}""",
+                        TapstateType.TIME),
+                arguments("datetime", """
+                        {"dataTypes": {"datetime[($fraction)]": {"to": "TapDateTime",\
+                         "range": ["1000-01-01 00:00:00", "9999-12-31 23:59:59"], "pattern": "yyyy-MM-dd HH:mm:ss",\
+                         "fraction": [0, 6], "defaultFraction": 0}}}""", TapstateType.DATETIME),
+                arguments("year", """
+                        {"dataTypes": {"year[($fraction)]": {"to": "TapYear", "range": ["1901", "2155"],\
+                         "fraction": [0, 4], "defaultFraction": 4, "pattern": "yyyy"}}}""", TapstateType.YEAR),
+                arguments("bit(1)", """
+                        {"dataTypes": {"bit(1)": {"to": "TapBoolean", "bit": 1, "queryOnly": true}}}""",
+                        TapstateType.BOOLEAN),
+                arguments("binary(16)", """
+                        {"dataTypes": {"binary[($byte)]": {"to": "TapBinary", "byte": 255, "defaultByte": 1,\
+                         "fixed": true}}}""", TapstateType.BINARY),
+                arguments("json", """
+                        {"dataTypes": {"json": {"to": "TapJson", "byte": "4g", "pkEnablement": false}}}""",
+                        TapstateType.JSON),
+                arguments("OBJECT", """
+                        {"dataTypes": {"OBJECT": {"to": "TapMap"}}}""", TapstateType.MAP),
+                arguments("ARRAY", """
+                        {"dataTypes": {"ARRAY": {"to": "TapArray"}}}""", TapstateType.ARRAY),
+                arguments("NULL", """
+                        {"dataTypes": {"NULL": {"to": "TapRaw"}}}""", TapstateType.UNKNOWN));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("declaredColumnShapes")
+    void aDeclaredColumnShapeMapsOntoItsNamedType(String dataType, String spec, TapstateType expected) {
+        TapField column = filled(spec, "value", dataType);
+
+        assertThat(PdkTypeMapping.of(column.getTapType())).isEqualTo(expected);
+    }
+
     /** Discovers one column of the given database type through a connector declaring {@code spec}. */
-    private static TapField filled(Path dir, String spec, String column, String dataType) {
+    private TapField filled(String spec, String column, String dataType) {
         ConnectorRef ref = new ConnectorRef(
                 List.of(Synthetic.discoverableSource(dir)), "synthetic.Discoverable", "2.0.8", null, spec);
         try (PdkConnector connector = PdkConnector.open("demo", ref, Map.of())) {

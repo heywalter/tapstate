@@ -25,6 +25,33 @@ public enum TapstateType {
     /** A binary floating point number: the source holds it approximately already. */
     DOUBLE,
 
+    /** True or false. */
+    BOOLEAN,
+
+    /** A calendar date, with no time of day. */
+    DATE,
+
+    /** A time of day, with no date. */
+    TIME,
+
+    /** A date and a time of day together. */
+    DATETIME,
+
+    /** A calendar year on its own. */
+    YEAR,
+
+    /** An opaque byte string. */
+    BINARY,
+
+    /** A JSON document. */
+    JSON,
+
+    /** An ordered list of values. */
+    ARRAY,
+
+    /** A nested document keyed by name. */
+    MAP,
+
     /**
      * A column nothing resolved a type for. It is a named outcome rather than an absent one so that a
      * consumer deciding what may be done with a column has to rule on it, instead of an absent type
