@@ -107,12 +107,20 @@ public final class AssemblerProcessor extends AbstractProcessor {
         }
     }
 
-    /** Stores every document this drain touched and emits each one once, in the state it now stands in. */
+    /**
+     * Stores every document this drain touched and emits each one once, in the state it now stands in.
+     *
+     * <p>A document goes out as a whole row and is applied by upserting it on its key, which is what makes
+     * a resend harmless and lets any idempotent sink take it unchanged. It is deliberately not sent as a
+     * change: there is no before image to offer - the elements that moved came from other rows entirely -
+     * and a sink handed a change with no before image matches nothing, so it writes nothing and reports
+     * nothing wrong.
+     */
     private void settle(Map<Object, Touched> touched) {
         touched.forEach((key, document) -> {
             store.save(key, document.assembly);
             document.assembly.render(slots).ifPresentOrElse(
-                    rendered -> outgoing.add(Envelope.update(document.ts, outputStream, null, rendered, null)),
+                    rendered -> outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null)),
                     () -> {
                         if (document.rootDeleted) {
                             outgoing.add(Envelope.delete(document.ts, outputStream, keyRow(key), null));

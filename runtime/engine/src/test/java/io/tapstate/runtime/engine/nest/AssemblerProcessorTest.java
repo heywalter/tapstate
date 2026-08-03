@@ -105,6 +105,21 @@ class AssemblerProcessorTest {
     }
 
     @Test
+    void anAssembledDocumentGoesOutAsAWholeRowAnUpsertCanApply() {
+        List<Envelope> out = feed(ROOT_ROWS, customer(1, "C1", "Ada"));
+
+        assertThat(out).hasSize(1);
+        assertThat(out.get(0).op())
+                .describedAs("the resend unit is the whole document and a sink applies it by upserting; a "
+                        + "change offering no before image is the one shape such a sink cannot apply, and it "
+                        + "matches nothing rather than failing, so nothing is written and nothing is reported")
+                .isEqualTo(Op.INSERT);
+        assertThat(out.get(0).before())
+                .describedAs("there is no before image to give: what goes out is the state, not the change")
+                .isNull();
+    }
+
+    @Test
     void anElementArrivingBeforeItsRootProducesNoDocumentAtAll() {
         assertThat(feed(FROM_POLICIES, policyElement(2, "C1", "P1")))
                 .describedAs("a document with no root fields is a ghost that nothing later removes")
