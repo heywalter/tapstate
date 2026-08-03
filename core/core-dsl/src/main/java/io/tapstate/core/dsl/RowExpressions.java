@@ -219,6 +219,15 @@ public final class RowExpressions {
         return OpaqueType.create("tapstate." + type.name().toLowerCase(Locale.ROOT));
     }
 
+    /**
+     * Whether CEL has no exact counterpart for {@code type}, so a column holding it can be carried
+     * through an expression but not computed on. Derived from the mapping itself rather than restated,
+     * so the two can never disagree about which types those are.
+     */
+    static boolean withoutExactCelType(TapstateType type) {
+        return celTypeOf(type) instanceof OpaqueType;
+    }
+
     private static CelTypeProvider providerOf(StructType row) {
         return new CelTypeProvider() {
             @Override

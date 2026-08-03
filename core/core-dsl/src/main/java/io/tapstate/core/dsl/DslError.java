@@ -7,10 +7,16 @@ import java.util.Set;
 
 /**
  * The {@code dsl} domain's error codes (ADR-0024 D1; the domain's first consumer, plan poc1 B3-7).
- * Each semantic constant maps 1:1 to a corpus rule-vocabulary key (corpus/README.md) — the symbol is
- * the vocabulary key, the canonical code prefixes it with the {@code dsl.} domain. The one exception
- * is {@link #MALFORMED_YAML}: a pure syntax error cannot be a well-formed corpus artifact, so it has
- * no corpus witness and is proven by a direct parser test instead.
+ * Each constant a well-formed artifact can raise on its own maps 1:1 to a corpus rule-vocabulary key
+ * (corpus/README.md) — the symbol is the vocabulary key, the canonical code prefixes it with the
+ * {@code dsl.} domain.
+ *
+ * <p>The exceptions are the codes no corpus artifact can witness, each proven by a direct test
+ * instead. They are exempt for one of two reasons, and every exemption states which: a code is
+ * <em>pre-semantic</em> when it fires before an artifact exists to be a witness ({@link #MALFORMED_YAML}
+ * on unparseable text, the two interpolation codes on raw text), or <em>post-semantic</em> when it
+ * needs knowledge no artifact carries — the row-expression type codes need a source model that only
+ * exists once a connection has been discovered.
  *
  * <p>{@code placeholders()} is the named-argument contract: every throw site supplies a value for
  * each name, and (once the catalog lands in the presentation layer) the build-time placeholder
@@ -62,7 +68,18 @@ public enum DslError implements TapstateErrorCode {
      *  reference, an unknown prefix, or a name that is not a variable name. Pre-semantic and without a
      *  corpus witness, for the same reasons as {@link #UNDEFINED_VARIABLE}; {@code ref} echoes the
      *  offending reference. */
-    MALFORMED_INTERPOLATION("dsl.malformed-interpolation", Set.of("ref"));
+    MALFORMED_INTERPOLATION("dsl.malformed-interpolation", Set.of("ref")),
+    /** A row expression computing on a column whose type cannot survive the operation — an exact
+     *  fixed-point number, a temporal value, a shape only known to be JSON. {@code column} names the
+     *  column and {@code type} what it resolved to. Post-semantic: it needs a discovered source model,
+     *  which no offline artifact carries, so it has no corpus witness and is proven by a direct test. */
+    ROW_EXPRESSION_TYPE_UNSUPPORTED(
+            "dsl.row-expression-type-unsupported", Set.of("expr", "column", "type", "path")),
+    /** A row expression reading a column nothing resolved a type for — either the source declared a
+     *  type outside the tapstate namespace, or two upstream sources resolved the same column name to
+     *  different types, which is as good as unresolved. Post-semantic and without a corpus witness,
+     *  for the same reason as {@link #ROW_EXPRESSION_TYPE_UNSUPPORTED}. */
+    ROW_EXPRESSION_TYPE_UNKNOWN("dsl.row-expression-type-unknown", Set.of("expr", "column", "path"));
 
     private final String code;
     private final Set<String> placeholders;

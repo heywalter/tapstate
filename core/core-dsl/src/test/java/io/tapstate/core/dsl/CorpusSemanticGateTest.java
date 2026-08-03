@@ -69,14 +69,24 @@ class CorpusSemanticGateTest {
     void everyCodeIsWitnessed() {
         Set<DslError> witnessed = EnumSet.noneOf(DslError.class);
         invalidCases().forEach(a -> witnessed.add(DslError.ofSymbol((String) a.get()[1])));
-        // Three codes are pre-semantic and exempt, each proven by a direct test instead.
-        // MALFORMED_YAML: a syntax error cannot be a well-formed corpus artifact (DslMalformedYamlTest).
-        // UNDEFINED_VARIABLE / MALFORMED_INTERPOLATION: interpolation runs on raw text before the parse,
-        // and whether a reference resolves depends on the environment rather than on the document — so
-        // no artifact can witness them, and a corpus that tried would pass or fail by ambient state
-        // (InterpolatorTest).
+        // A corpus artifact witnesses a code by being that code's whole cause. Where it cannot be,
+        // the code is exempt here and proven by a direct test instead. Two reasons, and the exemption
+        // holds only for as long as its reason does:
+        //
+        // pre-semantic - the code fires before there is an artifact to serve as the witness.
+        //   MALFORMED_YAML: a syntax error cannot be a well-formed corpus artifact (DslMalformedYamlTest).
+        //   UNDEFINED_VARIABLE / MALFORMED_INTERPOLATION: interpolation runs on raw text before the
+        //   parse, and whether a reference resolves depends on the environment rather than on the
+        //   document, so a corpus that tried would pass or fail by ambient state (InterpolatorTest).
+        //
+        // post-semantic - the artifact is well-formed and complete, but the code needs knowledge that
+        // lives outside it.
+        //   ROW_EXPRESSION_TYPE_UNSUPPORTED / ROW_EXPRESSION_TYPE_UNKNOWN: the verdict depends on the
+        //   discovered types of a source's columns, which no document declares and no offline check
+        //   can reach (RowExpressionTypeRulesTest).
         Set<DslError> requiresCorpusWitness = EnumSet.complementOf(EnumSet.of(
-                DslError.MALFORMED_YAML, DslError.UNDEFINED_VARIABLE, DslError.MALFORMED_INTERPOLATION));
+                DslError.MALFORMED_YAML, DslError.UNDEFINED_VARIABLE, DslError.MALFORMED_INTERPOLATION,
+                DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED, DslError.ROW_EXPRESSION_TYPE_UNKNOWN));
         assertThat(witnessed).containsExactlyInAnyOrderElementsOf(requiresCorpusWitness);
     }
 
