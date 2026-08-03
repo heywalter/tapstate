@@ -48,8 +48,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <pre>
  *   mvn -pl e2e -am verify -Dapi.version=1.44 \
- *     -Dtapstate.e2e.connectors-dir=/path/to/connectors -Dit.test=NestAssemblesParentAndChildrenIT
+ *     -Dtapstate.e2e.connectors-dir=/path/to/connectors -Dit.test=NestAssemblesParentAndChildrenIT \
+ *     -Dfailsafe.failIfNoSpecifiedTests=false
  * </pre>
+ *
+ * <p>The last flag is not optional and the run is not skippable with {@code -DskipTests}. Building the
+ * reactor up to this module runs every upstream module's integration phase too, and a name that matches
+ * nothing there ends the build before this test is reached; {@code -DskipTests} skips the integration
+ * tests along with the unit tests, so the run reports success having executed nothing.
  */
 class NestAssemblesParentAndChildrenIT {
 
