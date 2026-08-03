@@ -19,8 +19,11 @@ first-admin bootstrap all seeded and started together — then drive a source �
 pipeline → target from the CLI so rows move from one datastore to another: snapshot
 first, then live change-data-capture (CDC).
 
-The worked example is **MySQL → MongoDB**, but the runtime is connector-agnostic:
-any PDK connector works the same way.
+The worked example is **MySQL → MongoDB**. The runtime itself is connector-agnostic —
+every connector is loaded through the same plugin interface — but this release
+**registers MySQL and MongoDB only**: they are the connectors it supports end to end
+today, and registering any other one is refused. The set grows as connectors are
+certified.
 
 ## The one-command demo
 
@@ -146,10 +149,12 @@ curl -fL -O "$base/mysql-connector.jar"
 curl -fL -O "$base/mongodb-connector.jar"
 ```
 
-Any PDK connector jar works the same way — these two are published only so this page
-runs without building the connector repositories first. They are shaded and carry
-their own drivers on an isolated loader; `mysql-connector.jar` bundles Oracle MySQL
-Connector/J under GPL-2.0 with the Universal FOSS Exception (see [`NOTICE`](../NOTICE)).
+These two are what this release registers, and they are published so this page runs
+without building the connector repositories first. A jar declaring any other connector
+is refused with `connector.not-official`, whether it is uploaded with `register` or
+staged in the seed directory. They are shaded and carry their own drivers on an
+isolated loader; `mysql-connector.jar` bundles Oracle MySQL Connector/J under GPL-2.0
+with the Universal FOSS Exception (see [`NOTICE`](../NOTICE)).
 
 ## 5. Author the resources
 

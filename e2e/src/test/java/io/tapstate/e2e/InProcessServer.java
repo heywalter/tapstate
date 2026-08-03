@@ -38,7 +38,8 @@ final class InProcessServer implements ServerHandle {
                         "tapstate.store.mongo.server-selection-timeout=5s",
                         // This tier's working directory is the harness's own module, and the setting's
                         // default is relative to it.
-                        ServerHandle.PLUGINS_DIRECTORY_SETTING + "=" + ServerHandle.privateStagingDirectory())
+                        ServerHandle.PLUGINS_DIRECTORY_SETTING + "=" + ServerHandle.privateStagingDirectory(),
+                        ServerHandle.ALSO_ACCEPT_IDS_SETTING + "=" + E2eConnectorJar.CONNECTOR_ID)
                 .run();
         int port = ((WebServerApplicationContext) context).getWebServer().getPort();
         return new InProcessServer(context, URI.create("http://localhost:" + port));

@@ -47,6 +47,7 @@ import io.tapstate.spi.store.ConnectionTestResultStore;
 import io.tapstate.spi.store.ConnectionTester;
 import io.tapstate.spi.store.CapabilityDeriver;
 import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.SchemaDiscoverer;
 import io.tapstate.spi.store.SchemaStore;
@@ -197,15 +198,23 @@ class ControlPlaneConfiguration {
     }
 
     @Bean
+    ConnectorSpecStore connectorSpecStore(StorePort storePort) {
+        return storePort.connectorSpecs();
+    }
+
+    @Bean
     CapabilityDeriver capabilityDeriver(ConnectorProvisioner provisioner) {
         return new PdkCapabilityDeriver(provisioner);
     }
 
     @Bean
-    ConnectorCatalogView connectorCatalogView(ConnectorCatalogStore connectorCatalogStore) {
+    ConnectorCatalogView connectorCatalogView(
+            ConnectorCatalogStore connectorCatalogStore, ConnectorSpecStore connectorSpecStore,
+            ConnectorRegistry connectorRegistry) {
         // The online catalog view = the bundled snapshot overlaid with the rows derived for registered
         // connectors, read live; the offline native CLI keeps reading only the bundled snapshot.
-        return new ConnectorCatalogView(TapstateCatalog.load(), connectorCatalogStore);
+        return new ConnectorCatalogView(
+                TapstateCatalog.load(), connectorCatalogStore, connectorSpecStore, connectorRegistry);
     }
 
     @Bean
@@ -230,8 +239,11 @@ class ControlPlaneConfiguration {
     @Bean
     ConnectorArtifactRegistrar connectorArtifactRegistrar(
             ConnectorRegistry registry, ConnectorIntrospector introspector,
-            CapabilityDeriver capabilityDeriver, ConnectorCatalogStore connectorCatalogStore) {
-        return new ConnectorArtifactRegistrar(registry, introspector, capabilityDeriver, connectorCatalogStore);
+            CapabilityDeriver capabilityDeriver, ConnectorCatalogStore connectorCatalogStore,
+            ConnectorSpecStore connectorSpecStore, ConnectorPluginProperties properties) {
+        return new ConnectorArtifactRegistrar(
+                registry, introspector, capabilityDeriver, connectorCatalogStore, connectorSpecStore,
+                properties.getAlsoAcceptIds());
     }
 
     @Bean

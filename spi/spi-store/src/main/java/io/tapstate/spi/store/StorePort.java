@@ -34,6 +34,9 @@ public interface StorePort {
     /** The derived connector catalog rows: one normalized capability row per registered connector. */
     ConnectorCatalogStore connectorCatalog();
 
+    /** The spec sources kept beside the derived rows, keyed by content hash. */
+    ConnectorSpecStore connectorSpecs();
+
     /** The store of the latest connection-test result per connection. */
     ConnectionTestResultStore connectionTestResults();
 

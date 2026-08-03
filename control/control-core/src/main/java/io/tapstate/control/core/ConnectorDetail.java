@@ -16,9 +16,12 @@ public record ConnectorDetail(
         boolean sink,
         boolean pushOut,
         String origin,
-        List<ConnectorConfigFieldView> config) {
+        List<ConnectorConfigFieldView> config,
+        SpecSource spec,
+        boolean runtimeAvailable) {
 
-    static ConnectorDetail of(ConnectorCatalogEntry entry, String origin) {
+    static ConnectorDetail of(
+            ConnectorCatalogEntry entry, String origin, SpecSource spec, boolean runtimeAvailable) {
         return new ConnectorDetail(
                 entry.id(),
                 entry.displayName(),
@@ -29,6 +32,8 @@ public record ConnectorDetail(
                 entry.sink().capable(),
                 entry.pushOut(),
                 origin,
-                entry.config().stream().map(ConnectorConfigFieldView::of).toList());
+                entry.config().stream().map(ConnectorConfigFieldView::of).toList(),
+                spec,
+                runtimeAvailable);
     }
 }

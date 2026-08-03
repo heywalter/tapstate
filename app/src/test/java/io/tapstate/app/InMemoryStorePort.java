@@ -4,6 +4,7 @@ import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.CatalogStore;
 import io.tapstate.spi.store.ConnectionTestResultStore;
 import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.DesiredStore;
 import io.tapstate.spi.store.ObservationStore;
@@ -78,6 +79,11 @@ final class InMemoryStorePort implements StorePort {
     @Override
     public ConnectorCatalogStore connectorCatalog() {
         throw new UnsupportedOperationException("the connector catalog is not exercised by the convergence wiring test");
+    }
+
+    @Override
+    public ConnectorSpecStore connectorSpecs() {
+        throw new UnsupportedOperationException("connector specs are not exercised by the convergence wiring test");
     }
 
     @Override

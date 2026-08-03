@@ -3,6 +3,7 @@ package io.tapstate.app;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * The connector runtime settings, bound from {@code tapstate.connectors.*}. The plugins directory is the
@@ -20,6 +21,22 @@ public class ConnectorPluginProperties {
 
     /** The seed directory swept at startup: every {@code *.jar} in it is registered if absent. */
     private Path seedDir = Path.of("connectors");
+
+    /**
+     * Further connector ids the runtime register path accepts, beyond the ones this release officially
+     * supports. Empty by default and left empty by every shipped artifact: it exists for a deployment
+     * that stands up its own server with its own connector, and naming an id here does not make that
+     * connector supported — it only stops the register path refusing it.
+     */
+    private List<String> alsoAcceptIds = List.of();
+
+    public List<String> getAlsoAcceptIds() {
+        return alsoAcceptIds;
+    }
+
+    public void setAlsoAcceptIds(List<String> alsoAcceptIds) {
+        this.alsoAcceptIds = List.copyOf(alsoAcceptIds);
+    }
 
     public Path getPluginsDir() {
         return pluginsDir;

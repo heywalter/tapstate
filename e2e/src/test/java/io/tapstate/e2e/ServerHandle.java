@@ -19,6 +19,13 @@ interface ServerHandle extends AutoCloseable {
     /** The product setting naming where it stages the connector artifacts it resolves. */
     String PLUGINS_DIRECTORY_SETTING = "tapstate.connectors.plugins-dir";
 
+    /**
+     * The product setting naming further connector ids the register path accepts. The harness supplies
+     * its own synthetic connector, which is by construction not one this release supports, so a server
+     * the harness starts must be told to accept it. No shipped artifact sets this.
+     */
+    String ALSO_ACCEPT_IDS_SETTING = "tapstate.connectors.also-accept-ids";
+
     /** Where the product's HTTP surface answers, on loopback. */
     URI baseUrl();
 

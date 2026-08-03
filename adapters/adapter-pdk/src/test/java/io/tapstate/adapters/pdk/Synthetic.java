@@ -541,6 +541,48 @@ final class Synthetic {
                 Map.of("PDK-API-Version", "1.3.5"));
     }
 
+    /**
+     * A registrable connector declaring an officially supported id, so it passes the runtime-register
+     * guard. Used wherever a test drives the register path itself rather than the guard — post-guard
+     * those paths only ever run for an official connector, so an unofficial fixture would exercise a
+     * combination production no longer reaches.
+     */
+    static Path seedableMysqlConnector(Path dir) {
+        String src = SELF_SCAN_IMPORTS
+                + "@TapConnectorClass(\"mysql-spec.json\")"
+                + "public class SeedMysql implements TapConnector {" + INERT_CONNECTOR_BODY + "}";
+        return SyntheticJar.compileToJar(dir, "synthetic.SeedMysql", src,
+                Map.of("mysql-spec.json", "{\"properties\":{\"id\":\"mysql\"}}"),
+                Map.of("PDK-API-Version", "1.3.5"));
+    }
+
+    /**
+     * A second artifact declaring the SAME official id as {@link #seedableMysqlConnector} with different
+     * bytes — the register-time conflict, reached through the guard rather than short-circuited by it.
+     */
+    static Path conflictingMysqlConnector(Path dir) {
+        String src = SELF_SCAN_IMPORTS
+                + "@TapConnectorClass(\"mysql-spec.json\")"
+                + "public class OtherMysql implements TapConnector {" + INERT_CONNECTOR_BODY + "}";
+        return SyntheticJar.compileToJar(dir, "synthetic.OtherMysql", src,
+                Map.of("mysql-spec.json", "{\"properties\":{\"id\":\"mysql\"}}"),
+                Map.of("PDK-API-Version", "1.3.5"));
+    }
+
+    /**
+     * A second registrable connector declaring an officially supported id, whose manifest declares no
+     * PDK API version — the pair to {@link #seedableMysqlConnector} wherever two accepted connectors
+     * are needed at once.
+     */
+    static Path seedableMongodbConnector(Path dir) {
+        String src = SELF_SCAN_IMPORTS
+                + "@TapConnectorClass(\"mongodb-spec.json\")"
+                + "public class SeedMongodb implements TapConnector {" + INERT_CONNECTOR_BODY + "}";
+        return SyntheticJar.compileToJar(dir, "synthetic.SeedMongodb", src,
+                Map.of("mongodb-spec.json", "{\"properties\":{\"id\":\"mongodb\"}}"),
+                Map.of());
+    }
+
     /** A second registrable connector under a distinct id, whose manifest declares no PDK API version. */
     static Path seedablePaymentsConnector(Path dir) {
         String src = SELF_SCAN_IMPORTS

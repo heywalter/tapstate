@@ -24,6 +24,34 @@ public interface ConnectorRegistry {
     /** Every registered connector. */
     List<ConnectorRegistration> list();
 
+    /**
+     * Every registration filed under a connector id — normally one, empty when none is.
+     *
+     * <p>Scoped to the id on purpose: asking about one connector must not depend on every other one
+     * being readable, and a caller answering a single-id question through {@link #list()} fails whenever
+     * any one stored registration cannot be reconstructed, turning one corrupt entry into an outage
+     * across every connector. The default scans {@code list()} because a registry that cannot look up by
+     * id has no better answer; a store that can query by id overrides this.
+     *
+     * <p>A list rather than one entry, because more than one is a state callers must be able to see.
+     * One artifact per id is what a register enforces, but two concurrent registers can both pass that
+     * check before either stores, and an id carrying two artifacts is one a connector load refuses
+     * outright — so a caller handed a single arbitrary entry could neither refuse the duplicate nor
+     * report it.
+     */
+    default List<ConnectorRegistration> findAll(String connectorId) {
+        return list().stream()
+                .filter(registration -> registration.connectorId().equals(connectorId))
+                .toList();
+    }
+
     /** The artifact bytes stored under a content hash, or empty if none is stored. */
     Optional<byte[]> artifact(String contentHash);
+
+    /**
+     * Whether bytes are stored under a content hash, without fetching them. A read face asking "can this
+     * connector actually run here?" needs the answer, not the artifact; {@link #artifact(String)} would
+     * pull tens of megabytes to compute a boolean.
+     */
+    boolean hasArtifact(String contentHash);
 }

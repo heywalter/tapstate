@@ -9,6 +9,7 @@ import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.ContentHash;
+import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
 import org.bson.Document;
@@ -77,6 +78,30 @@ public final class MongoConnectorRegistry implements ConnectorRegistry {
     }
 
     @Override
+    public List<ConnectorRegistration> findAll(String connectorId) {
+        Objects.requireNonNull(connectorId, "connectorId");
+        return StoreIo.call(() -> {
+            // Queried on the identity carried in the file's metadata, so the answer costs one lookup and
+            // depends on no other stored artifact: a registration that cannot be reconstructed fails the
+            // question about that connector alone, never every connector at once.
+            //
+            // Ordered by the content hash, which is the filename, so repeated calls agree on the order
+            // they report an id's artifacts in. Normally there is one; where there are two, a caller told
+            // them in storage order could be told something different on the next call.
+            List<ConnectorRegistration> found = new ArrayList<>();
+            try (MongoCursor<GridFSFile> cursor = artifacts.find(Filters.eq("metadata.connectorId", connectorId))
+                    .sort(new Document("filename", 1))
+                    .iterator()) {
+                while (cursor.hasNext()) {
+                    GridFSFile file = cursor.next();
+                    found.add(toRegistration(file.getFilename(), file.getMetadata()));
+                }
+            }
+            return found;
+        });
+    }
+
+    @Override
     public Optional<byte[]> artifact(String contentHash) {
         Objects.requireNonNull(contentHash, "contentHash");
         return StoreIo.call(() -> {
@@ -126,5 +151,12 @@ public final class MongoConnectorRegistry implements ConnectorRegistry {
 
     private static TapstateException unreadable(String contentHash) {
         return new TapstateException(IoError.DOCUMENT_UNREADABLE, Map.of("id", String.valueOf(contentHash)), null);
+    }
+
+    @Override
+    public boolean hasArtifact(String contentHash) {
+        Objects.requireNonNull(contentHash, "contentHash");
+        // The same GridFS lookup artifact() does, stopping before the download.
+        return StoreIo.call(() -> artifacts.find(Filters.eq("filename", contentHash)).first()) != null;
     }
 }

@@ -290,7 +290,28 @@ core artifact.
            at prepare-package (strictly after the test phase, so ordering is unambiguous) for
            SonarQube to auto-detect and aggregate. Modules with no tests emit no execution data
            and are silently skipped; pom-packaging modules have no prepare-package phase and do
-           nothing. Only unit coverage is wired; integration-test (failsafe) coverage is out of scope. -->
+           nothing.
+
+           Integration coverage is wired the same way, one phase later: prepare-agent-integration
+           re-points argLine at jacoco-it.exec before failsafe runs, and report-integration writes
+           target/site/jacoco-it/jacoco.xml at verify. Both files are default locations the coverage
+           importer already looks in, so nothing else needs configuring.
+
+           This exists because a store adapter's only honest test drives a real database. Left to
+           unit coverage alone, such a class reads as wholly untested while its integration test
+           passes in the very same build - and the answer to that is not a mock that proves the mock
+           works. Note that the agent APPENDS to its exec file: a local run that reuses a target
+           directory carries earlier data forward, so reproducing a coverage number means deleting
+           the exec files first.
+
+           The end-to-end module is deliberately left out: its failsafe configuration sets its own
+           argLine (carrying the module opening a real connector needs), which replaces the agent
+           rather than extending it. That is the right outcome regardless. An end-to-end specification sweeps
+           most of the product incidentally, so counting it would report lines as covered on the
+           strength of having been executed once in passing, which is not what this number is read
+           as meaning. Targeted integration tests - this store against a real database, this
+           assembly wired for real - are a unit test that happens to need a container, and those
+           are the ones that count here. -->
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
@@ -306,6 +327,19 @@ core artifact.
             <phase>prepare-package</phase>
             <goals>
               <goal>report</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>jacoco-prepare-agent-integration</id>
+            <goals>
+              <goal>prepare-agent-integration</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>jacoco-report-integration</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>report-integration</goal>
             </goals>
           </execution>
         </executions>

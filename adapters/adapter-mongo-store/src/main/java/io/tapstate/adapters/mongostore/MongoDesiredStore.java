@@ -7,6 +7,7 @@ import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.DesiredState;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.spi.store.DesiredStore;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 
 import java.util.ArrayList;

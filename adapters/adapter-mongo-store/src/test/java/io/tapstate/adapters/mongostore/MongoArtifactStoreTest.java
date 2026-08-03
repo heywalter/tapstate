@@ -5,6 +5,7 @@ import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 

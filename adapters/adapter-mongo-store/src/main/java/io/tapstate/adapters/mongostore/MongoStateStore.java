@@ -9,6 +9,7 @@ import com.mongodb.client.model.ReturnDocument;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
+import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.StateStore;
 import org.bson.Document;
 

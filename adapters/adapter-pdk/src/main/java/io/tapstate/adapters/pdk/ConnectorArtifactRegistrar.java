@@ -12,6 +12,7 @@ import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistrar;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ContentHash;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
@@ -21,6 +22,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -46,17 +48,47 @@ import java.util.Objects;
  */
 public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
 
+    /**
+     * The connectors this release officially supports, in the order a refusal message names them. A
+     * list rather than a set so that order — and therefore the message — is fixed; the membership test
+     * over two entries costs nothing. This is the default accepted set and the only one any shipped
+     * artifact uses; a test pins its exact contents, because a silent addition here would be a support
+     * promise nobody made.
+     */
+    static final List<String> OFFICIAL_CONNECTOR_IDS = List.of("mysql", "mongodb");
+
     private final ConnectorRegistry registry;
     private final ConnectorIntrospector introspector;
     private final CapabilityDeriver capabilityDeriver;
     private final ConnectorCatalogStore catalogStore;
+    private final ConnectorSpecStore specStore;
+    private final List<String> acceptedConnectorIds;
 
+    /** Registers with the release's own accepted set — what every shipped artifact uses. */
     public ConnectorArtifactRegistrar(ConnectorRegistry registry, ConnectorIntrospector introspector,
-                                      CapabilityDeriver capabilityDeriver, ConnectorCatalogStore catalogStore) {
+                                      CapabilityDeriver capabilityDeriver, ConnectorCatalogStore catalogStore,
+                                      ConnectorSpecStore specStore) {
+        this(registry, introspector, capabilityDeriver, catalogStore, specStore, List.of());
+    }
+
+    /**
+     * Registers with further connector ids accepted beyond the official set. Empty in every shipped
+     * artifact: this exists for a deployment that stands up its own server and supplies its own
+     * connector — the product's end-to-end harness is the case it was built for. Naming ids here does
+     * not make them supported; it only stops the register path refusing them.
+     */
+    public ConnectorArtifactRegistrar(ConnectorRegistry registry, ConnectorIntrospector introspector,
+                                      CapabilityDeriver capabilityDeriver, ConnectorCatalogStore catalogStore,
+                                      ConnectorSpecStore specStore, List<String> alsoAccept) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.introspector = Objects.requireNonNull(introspector, "introspector");
         this.capabilityDeriver = Objects.requireNonNull(capabilityDeriver, "capabilityDeriver");
         this.catalogStore = Objects.requireNonNull(catalogStore, "catalogStore");
+        this.specStore = Objects.requireNonNull(specStore, "specStore");
+        Objects.requireNonNull(alsoAccept, "alsoAccept");
+        List<String> accepted = new ArrayList<>(OFFICIAL_CONNECTOR_IDS);
+        accepted.addAll(alsoAccept);
+        this.acceptedConnectorIds = List.copyOf(accepted);
     }
 
     /** Registers the artifact at {@code artifact} if its content hash is not already registered. */
@@ -66,20 +98,18 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         IntrospectedConnector introspected = introspector.introspect(List.of(artifact));
         Object specTree = parseSpecTree(introspected, artifact);
         String connectorId = declaredId(specTree, introspected, artifact);
+        rejectUnofficialConnector(connectorId);
         byte[] bytes = bytesOf(artifact);
         rejectConflictingArtifact(connectorId, ContentHash.of(bytes));
+        // Kept before the artifact is registered, so that a store failure writing it fails a register that
+        // has taken nothing: the id is still free and the caller's retry is a clean first attempt. The
+        // source is read straight off the artifact and does not depend on the connector loading, so there
+        // is nothing about the registration it needs to wait for. An artifact refused after this point
+        // leaves the source stored and unreferenced, which costs one small content-addressed document
+        // that the next registration of the same spec reuses.
+        String specHash = storeSpecSource(introspected);
         RegistrationOutcome outcome = registry.register(connectorId, introspected.pdkApiVersion(), source, bytes);
-        try {
-            persistCatalogRow(connectorId, introspected, specTree, outcome);
-        } catch (TapstateException containedDerivationFailure) {
-            // The catalog row is best-effort: the artifact is registered whether or not its capabilities can
-            // be derived. A connector that introspects (entry class + spec id) but will not load in this
-            // deployment (an incompatible PDK level, or a construct-time failure) fails derivation; that coded
-            // failure is contained so the register never reports failure over already-stored bytes and wedges
-            // the id. The row stays absent — so the connector is out of the online catalog — until a
-            // re-register derives it (the missing-row backfill re-runs derivation). A programmer bug (a bare
-            // RuntimeException, not a coded one) still crashes rather than being swallowed.
-        }
+        persistCatalogRow(connectorId, introspected, specTree, specHash, outcome);
         return outcome;
     }
 
@@ -101,10 +131,43 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
         }
     }
 
-    /** Refuses a different artifact under a connector id that already has one — no silent overwrite. */
+    /**
+     * Refuses a register naming a connector outside the accepted set, before any byte enters the
+     * distribution store — so a refused register leaves no half-registration wedging the id. Staging
+     * and self-scan run first, because the id being checked is the one the artifact's own spec
+     * declares and reading it means opening the artifact.
+     *
+     * <p>Every registration source is gated, the seed sweep included. A seed directory is not
+     * release-controlled: a deployment mounts its own directory as the seed directory and stages jars
+     * there, so an ungated sweep would register anything left in it and the accepted set would bound
+     * only the artifacts that happened to arrive over the wire. A refused seed jar is one contained
+     * per-jar failure the sweep reports and carries on from, exactly like any other defective artifact.
+     */
+    private void rejectUnofficialConnector(String connectorId) {
+        if (acceptedConnectorIds.contains(connectorId)) {
+            return;
+        }
+        // The message names what would actually be accepted here, not the release default: a caller
+        // debugging a refusal needs the set this server is applying, whatever it was started with.
+        throw new TapstateException(ConnectorError.NOT_OFFICIAL,
+                Map.of("connector", connectorId,
+                        "official", String.join(", ", acceptedConnectorIds)),
+                null);
+    }
+
+    /**
+     * Refuses a different artifact under a connector id that already has one — no silent overwrite.
+     * Asked of the one id being registered: deciding it from the whole listing would fail this register
+     * whenever any other, unrelated stored registration could not be reconstructed.
+     *
+     * <p>Every artifact under the id is compared, not just one of them. An id carrying two artifacts is
+     * a state a connector load refuses outright, so a register that looked at only one could answer
+     * "already registered, nothing to do" for bytes that match that one while the id stays unloadable —
+     * silencing the last signal that anything is wrong with it.
+     */
     private void rejectConflictingArtifact(String connectorId, String incomingHash) {
-        for (ConnectorRegistration existing : registry.list()) {
-            if (existing.connectorId().equals(connectorId) && !existing.contentHash().equals(incomingHash)) {
+        for (ConnectorRegistration existing : registry.findAll(connectorId)) {
+            if (!existing.contentHash().equals(incomingHash)) {
                 throw new TapstateException(ConnectorError.REGISTRATION_CONFLICT,
                         Map.of("connector", connectorId,
                                 "existing", existing.contentHash(),
@@ -165,14 +228,47 @@ public final class ConnectorArtifactRegistrar implements ConnectorRegistrar {
      * the registered connector. Skipped when the bytes were already registered and a row already exists;
      * otherwise the row is (re)derived, which backfills a row missing after a prior partial register.
      */
+    /**
+     * Stores the artifact's spec source under its content hash if it is not already stored, and returns
+     * that hash. Written at most once per distinct source: a connector registered before sources were
+     * kept has none, and that gap is what a re-register backfills.
+     */
+    private String storeSpecSource(IntrospectedConnector introspected) {
+        byte[] specSource = introspected.spec().getBytes(StandardCharsets.UTF_8);
+        String specHash = ContentHash.of(specSource);
+        if (!specStore.has(specHash)) {
+            specStore.put(specHash, specSource);
+        }
+        return specHash;
+    }
+
     private void persistCatalogRow(
-            String connectorId, IntrospectedConnector introspected, Object specTree, RegistrationOutcome outcome) {
+            String connectorId, IntrospectedConnector introspected, Object specTree, String specHash,
+            RegistrationOutcome outcome) {
         if (!outcome.newlyRegistered() && catalogStore.get(connectorId).isPresent()) {
+            // The bytes were already registered and their row is already derived, so there is nothing to
+            // redo. A row missing here is what a re-register backfills.
             return;
         }
-        ConnectorCapabilities capabilities = capabilityDeriver.derive(connectorId);
+        ConnectorCapabilities capabilities;
+        try {
+            capabilities = capabilityDeriver.derive(connectorId);
+        } catch (TapstateException containedDerivationFailure) {
+            // The catalog row is best-effort in exactly one respect: whether the connector's capabilities
+            // can be derived. A connector that introspects (entry class + spec id) but will not load in
+            // this deployment (an incompatible PDK level, or a construct-time failure) fails here, and that
+            // coded failure is contained so the register never reports failure over already-stored bytes and
+            // wedges the id. The row stays absent — so the connector is out of the online catalog — until a
+            // re-register derives it (the missing-row backfill re-runs derivation).
+            //
+            // The containment is this one call and no more. A store failure writing the spec source or the
+            // row is also a coded exception, and swallowing one would report a registration that succeeded
+            // while the connector stayed invisible in the online catalog, with nothing reported anywhere. A
+            // programmer bug (a bare RuntimeException, not a coded one) still crashes rather than being
+            // swallowed.
+            return;
+        }
         NormalizedSpec normalized = SpecNormalizer.normalize(asSpecObject(specTree));
-        String specHash = ContentHash.of(introspected.spec().getBytes(StandardCharsets.UTF_8));
         ConnectorCatalogEntry row = CatalogEntryAssembler.assemble(
                 normalized, capabilities.capabilityIds(), null, introspected.specPath(), specHash);
         catalogStore.upsert(row);

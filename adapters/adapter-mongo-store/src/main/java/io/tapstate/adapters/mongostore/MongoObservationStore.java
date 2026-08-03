@@ -6,6 +6,7 @@ import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
+import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.ObservationStore;
 import org.bson.Document;
 

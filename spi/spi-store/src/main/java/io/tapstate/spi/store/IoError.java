@@ -1,4 +1,4 @@
-package io.tapstate.adapters.mongostore;
+package io.tapstate.spi.store;
 
 import io.tapstate.core.common.TapstateErrorCode;
 import io.tapstate.core.common.Severity;
@@ -12,8 +12,12 @@ import java.util.Set;
  * reaching the store at startup (unreachable, not-a-replica-set, TLS policy); {@code io} is the
  * data-plane counterpart, raised while operating on an already-verified store.
  *
- * <p>Driver exceptions are translated into these coded diagnostics inside this module, so no driver
- * type escapes it (rule R3). Programmer errors / invariant violations (a compare-and-swap on an
+ * <p>Declared beside the store ports rather than inside one implementation of them: these are what a
+ * store raises whatever it is built on, so a caller can both expect them and tell them apart. A read
+ * face deciding whether a failure is about one damaged document or about reaching the store at all
+ * needs to name that difference, and it cannot name a classification that lives in an adapter it must
+ * not depend on. Each implementation translates its own driver's exceptions into these, so no driver
+ * type escapes the adapter (rule R3). Programmer errors / invariant violations (a compare-and-swap on an
  * unseeded pipeline, say) stay bare and are allowed to crash — they are not laundered into an
  * {@code io.*} code that would hide the defect. {@code placeholders()} is the named-argument
  * contract: every throw site supplies a value for each name, and the build-time placeholder gate
