@@ -3,6 +3,7 @@ package io.tapstate.adapters.mongostore;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.ReplaceOptions;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.common.TapstateType;
 import io.tapstate.spi.store.DiscoveredSourceModel;
 import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.SchemaStore;
@@ -72,8 +73,11 @@ public final class MongoSchemaStore implements SchemaStore {
     private static Document tableDocument(SourceTable table) {
         List<Document> fields = new ArrayList<>();
         for (SourceField field : table.fields()) {
+            // The document holds both type namespaces, so each key names the one it carries. The declared
             // type is null when discovery could not resolve it; stored as a null value, read back as null.
-            fields.add(new Document("name", field.name()).append("type", field.type()));
+            fields.add(new Document("name", field.name())
+                    .append("type", field.dataType())
+                    .append("tapstateType", field.type().name()));
         }
         List<Document> indexes = new ArrayList<>();
         for (SourceIndex index : table.indexes()) {
@@ -85,6 +89,24 @@ public final class MongoSchemaStore implements SchemaStore {
                 .append("fields", fields)
                 .append("primaryKey", List.copyOf(table.primaryKey()))
                 .append("indexes", indexes);
+    }
+
+    /**
+     * The resolved type a stored field carries, or unknown when the document predates the resolution or
+     * names a type this build does not know. An unreadable type is the absence of one, never a refusal of
+     * the whole read: the model is a derived observation that re-discovery replaces.
+     */
+    private static TapstateType tapstateType(Document field) {
+        String name = field.getString("tapstateType");
+        if (name == null) {
+            return TapstateType.UNKNOWN;
+        }
+        for (TapstateType candidate : TapstateType.values()) {
+            if (candidate.name().equals(name)) {
+                return candidate;
+            }
+        }
+        return TapstateType.UNKNOWN;
     }
 
     /** Reconstructs a discovery envelope from its stored document, or fails coded when the shape is unreadable. */
@@ -122,7 +144,7 @@ public final class MongoSchemaStore implements SchemaStore {
             if (fieldName == null) {
                 throw unreadable(id);
             }
-            fields.add(new SourceField(fieldName, field.getString("type")));
+            fields.add(new SourceField(fieldName, field.getString("type"), tapstateType(field)));
         }
         List<SourceIndex> indexes = new ArrayList<>();
         for (Document index : documentList(table.get("indexes"), id)) {

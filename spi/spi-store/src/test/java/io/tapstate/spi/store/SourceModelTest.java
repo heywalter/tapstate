@@ -1,5 +1,6 @@
 package io.tapstate.spi.store;
 
+import io.tapstate.core.common.TapstateType;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -30,7 +31,7 @@ class SourceModelTest {
         assertThat(model.tables()).extracting(SourceTable::name).containsExactly("orders");
         SourceTable table = model.tables().get(0);
         assertThat(table.fields()).extracting(SourceField::name).containsExactly("id", "amount");
-        assertThat(table.fields()).extracting(SourceField::type).containsExactly("int", "decimal");
+        assertThat(table.fields()).extracting(SourceField::dataType).containsExactly("int", "decimal");
         assertThat(table.primaryKey()).containsExactly("id");
         assertThat(table.indexes()).extracting(SourceIndex::name).containsExactly("idx_amount");
         assertThat(table.indexes().get(0).fields()).containsExactly("amount");
@@ -78,8 +79,13 @@ class SourceModelTest {
     }
 
     @Test
-    void fieldTypeMayBeNullWhenDiscoveryCannotResolveIt() {
-        assertThat(field("mystery", null).type()).isNull();
+    void anUnresolvedFieldCarriesNoDeclaredTypeButStillNamesItsTapstateTypeAsUnknown() {
+        SourceField mystery = field("mystery", null);
+
+        assertThat(mystery.dataType()).as("nothing was declared, so there is nothing to carry").isNull();
+        assertThat(mystery.type())
+                .as("the tapstate type is never absent, so a caller cannot read absence as harmless")
+                .isEqualTo(TapstateType.UNKNOWN);
     }
 
     @Test

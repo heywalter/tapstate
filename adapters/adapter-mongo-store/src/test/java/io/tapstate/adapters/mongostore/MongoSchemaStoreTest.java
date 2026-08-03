@@ -1,6 +1,7 @@
 package io.tapstate.adapters.mongostore;
 
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.common.TapstateType;
 import io.tapstate.spi.store.DiscoveredSourceModel;
 import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.SourceField;
@@ -85,14 +86,47 @@ class MongoSchemaStoreTest {
     }
 
     @Test
-    void aFieldWithNoResolvedTypeRoundTripsAsNull() {
+    void aFieldWithNoDeclaredTypeRoundTripsAsUnresolved() {
         DiscoveredSourceModel envelope = discovered("x", new SourceModel(List.of(
                 new SourceTable("t", List.of(new SourceField("c", null)), List.of(), List.of()))));
 
         DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(MongoSchemaStore.toDocument(envelope));
 
-        assertThat(read.model().tables().get(0).fields().get(0).type()).isNull();
+        SourceField field = read.model().tables().get(0).fields().get(0);
+        assertThat(field.dataType()).isNull();
+        assertThat(field.type()).isEqualTo(TapstateType.UNKNOWN);
         assertThat(read).isEqualTo(envelope);
+    }
+
+    @Test
+    void aFieldsResolvedTypeSurvivesTheRoundTrip() {
+        DiscoveredSourceModel envelope = discovered("x", new SourceModel(List.of(new SourceTable(
+                "t",
+                List.of(new SourceField("amount", "decimal(18,4)", TapstateType.DECIMAL)),
+                List.of(),
+                List.of()))));
+
+        DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(MongoSchemaStore.toDocument(envelope));
+
+        assertThat(read.model().tables().get(0).fields().get(0).type())
+                .as("the resolution happens once, at discovery, so the store has to carry it")
+                .isEqualTo(TapstateType.DECIMAL);
+    }
+
+    @Test
+    void aStoredFieldFromBeforeTypesWereResolvedReadsBackAsUnknown() {
+        // A document written before discovery resolved types carries the declared type and no resolved one.
+        // The model is a derived observation a re-discovery replaces, so an older document is read, not
+        // refused - and what it is read as must be unknown rather than any type that would be acted on.
+        Document stored = MongoSchemaStore.toDocument(discovered("x", new SourceModel(List.of(
+                new SourceTable("t", List.of(new SourceField("amount", "decimal(18,4)")), List.of(), List.of())))));
+        List<Document> tables = stored.getList("tables", Document.class);
+        tables.get(0).getList("fields", Document.class).get(0).remove("tapstateType");
+
+        DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(stored);
+
+        assertThat(read.model().tables().get(0).fields().get(0).type()).isEqualTo(TapstateType.UNKNOWN);
+        assertThat(read.model().tables().get(0).fields().get(0).dataType()).isEqualTo("decimal(18,4)");
     }
 
     @Test

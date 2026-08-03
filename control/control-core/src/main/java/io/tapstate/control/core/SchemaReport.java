@@ -41,7 +41,7 @@ public record SchemaReport(String connectionId, String connectorId, List<Table> 
     public record Field(String name, String type) {
 
         static Field from(SourceField field) {
-            return new Field(field.name(), field.type());
+            return new Field(field.name(), field.dataType());
         }
     }
 
