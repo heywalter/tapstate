@@ -156,7 +156,9 @@ class NestAssemblesParentAndChildrenIT {
                 + ITEMS.size() + " elements between them, and '" + PARENT_TABLE + "' holds " + documents
                 + System.lineSeparator() + "  pipeline state: " + control.state(PIPELINE_ID)
                 + ", error count: " + control.errorCount(PIPELINE_ID)
-                + System.lineSeparator() + "  collections in the target: " + mongo.collections(targetUri);
+                + System.lineSeparator() + "  collections in the target: " + mongo.collections(targetUri)
+                + System.lineSeparator() + "  metrics: " + control.metrics(PIPELINE_ID)
+                + System.lineSeparator() + "  logs: " + control.logs(PIPELINE_ID);
     }
 
     /** Whether every root is present and every child is attached somewhere, so waiting can stop. */
