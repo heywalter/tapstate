@@ -198,6 +198,28 @@ class AssemblerProcessorTest {
         assertThat(out.get(0).after()).isNull();
     }
 
+    /**
+     * Reclaiming the entry outright is cheaper than keeping a tombstone, and it is not allowed here. The
+     * two conditions that make it safe - the deletion being below the replay floor, and nothing pending -
+     * both need a reading of how far the sink has durably got, which this vertex sits upstream of and has
+     * no way to obtain. Reclaiming without that reading loses the tombstone, and then a replayed insert
+     * from inside the window brings a deleted document back after a restart. Late reclamation costs
+     * memory; early reclamation is wrong, so until the reading exists the entry stays.
+     */
+    @Test
+    void aDeletedRootKeepsItsEntryBecauseNothingHereCanTellWhenReclaimingItIsSafe() {
+        feed(ROOT_ROWS, customer(1, "C1", "Ada"));
+        List<Object> key = List.of("C1");
+        assertThat(store.load(key)).isNotNull();
+
+        feed(ROOT_ROWS, Envelope.delete(5, "customer", row("customer_id", "C1", "name", "Ada"), null)
+                .withOrder(at(5)));
+
+        assertThat(store.load(key))
+                .describedAs("the entry is what carries the tombstone a replayed insert has to lose to")
+                .isNotNull();
+    }
+
     @Test
     void anElementOfANeverSeenRootStillProducesNoDeletion() {
         assertThat(feed(FROM_POLICIES, policyElement(2, "C9", "P9")))

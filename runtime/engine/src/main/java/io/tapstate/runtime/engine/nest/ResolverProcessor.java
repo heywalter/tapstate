@@ -68,6 +68,10 @@ public final class ResolverProcessor extends AbstractProcessor {
                 if (!flush()) {
                     return;
                 }
+                if (touched.size() >= DrainFolding.MAX_KEYS_HELD) {
+                    touched.forEach(store::save);
+                    touched.clear();
+                }
             }
         } finally {
             touched.forEach(store::save);

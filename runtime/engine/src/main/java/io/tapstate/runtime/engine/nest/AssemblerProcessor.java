@@ -62,6 +62,17 @@ public final class AssemblerProcessor extends AbstractProcessor {
             for (Object item; (item = inbox.peek()) != null; ) {
                 handle(edge, item, touched);
                 inbox.remove();
+                // A wide drain writes back what it holds rather than holding a document per key to the
+                // end. A root touched again afterwards is read back and goes out a second time in the
+                // same batch, which costs a write and is otherwise invisible: what goes out is the whole
+                // document, so a sink upserting it twice lands where it would have landed once.
+                if (touched.size() >= DrainFolding.MAX_KEYS_HELD) {
+                    settle(touched);
+                    touched.clear();
+                    if (!flush()) {
+                        return;
+                    }
+                }
             }
         } finally {
             settle(touched);
