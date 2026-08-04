@@ -14,11 +14,13 @@ import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.jet.Job;
 import com.hazelcast.jet.config.EdgeConfig;
+import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.JobStatus;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.Vertex;
+import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.core.processor.Processors;
 import com.hazelcast.jet.core.processor.SinkProcessors;
 import com.hazelcast.jet.core.test.TestProcessorMetaSupplierContext;
@@ -236,6 +238,55 @@ class SrsSourceProcessorTest {
     }
 
     @Test
+    void stampsTheFrontierAtTheLastChangeItHasEmitted() throws InterruptedException {
+        SEEN.clear();
+        fill("srs.chain.bound", 3);
+
+        // A source is the only vertex that can say a change exists at all, so the frontier starts here. What a
+        // bound is encoded as belongs to whoever wires the job -- this ring knows a sequence, not an axis or a
+        // packing -- so the test stamps its own: axis 7, the sequence itself.
+        runRecordingBounds("srs.chain.bound", "orders", "out-bound", 3, 1024, "b:7:2");
+
+        // The bound trails the changes it stands for. A source that spoke first would be promising changes
+        // still sitting in its own outbox, and nothing later takes such a promise back.
+        assertThat(SEEN).containsSubsequence("i:0", "i:1", "i:2", "b:7:2");
+    }
+
+    @Test
+    void neverPromisesAChangeStillWaitingInItsOwnBuffer() throws InterruptedException {
+        SEEN.clear();
+        fill("srs.chain.boundbp", 6);
+
+        // A one-deep edge queue makes the outbox refuse mid-batch, so the source finishes emitting the read
+        // remainder on a later run. A bound worked out while part of that batch is still buffered would be
+        // claiming changes that have not left this vertex, and no later message takes such a claim back.
+        runRecordingBounds("srs.chain.boundbp", "orders", "out-boundbp", 6, 1, "b:7:5");
+
+        assertThat(SEEN).containsSubsequence("i:5", "b:7:5");
+    }
+
+    @Test
+    void saysNothingFurtherWhileTheRingStaysWhereItWas() throws InterruptedException {
+        SEEN.clear();
+        fill("srs.chain.boundidle", 2);
+
+        // A source polls its ring continuously, so "nothing new" is the common case. The engine fails a job
+        // outright on a bound that does not climb - equal counts - which makes a periodic repeat of the last
+        // bound fatal rather than merely wasteful. Silence is the only correct thing to say.
+        Job job = hz.getJet().newJob(recordingDag("srs.chain.boundidle", "orders", "out-boundidle", 1024));
+        try {
+            awaitSize(hz.getList("out-boundidle"), 2);
+            Thread.sleep(500);
+
+            assertThat(job.getStatus()).isEqualTo(JobStatus.RUNNING);
+            assertThat(SEEN.stream().filter(entry -> entry.startsWith("b:")).toList())
+                    .containsExactly("b:7:1");
+        } finally {
+            job.cancel();
+        }
+    }
+
+    @Test
     void pins_the_source_vertex_to_a_single_instance_across_the_cluster() throws Exception {
         // One reader per ring is what keeps the change stream in order; a per-member instance would re-lane it.
         // A static resolution check: a total-parallelism-one supplier hands the real supplier to one member and
@@ -250,6 +301,80 @@ class SrsSourceProcessorTest {
         Function<? super Address, ? extends ProcessorSupplier> assignment = meta.get(addresses);
 
         assertThat(addresses.stream().map(assignment).distinct().count()).isGreaterThan(1);
+    }
+
+    /**
+     * Runs source -> record -> list with a bounded edge queue, waiting until {@code size} changes arrive.
+     * Everything the recording vertex is handed, changes and bounds alike, lands in {@link #SEEN} in the
+     * order it arrived - which is what "a bound never overtakes the changes it covers" is a claim about.
+     */
+    private static void runRecordingBounds(String ringName, String src, String sinkName, int size, int queueSize,
+            String bound) throws InterruptedException {
+        Job job = hz.getJet().newJob(recordingDag(ringName, src, sinkName, queueSize));
+        try {
+            awaitSize(hz.getList(sinkName), size);
+            awaitSeen(bound);
+        } finally {
+            job.cancel();
+        }
+    }
+
+    /**
+     * Waits until {@code entry} has been recorded. The changes reach the sink one vertex further on than the
+     * bound is recorded at, so their arrival says nothing about whether the bound has been handed over yet;
+     * waiting on the bound itself is what makes the order it arrived in a fact rather than a race.
+     */
+    private static void awaitSeen(String entry) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        while (!SEEN.contains(entry)) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("timed out waiting for " + entry + ", saw " + SEEN);
+            }
+            Thread.sleep(50);
+        }
+    }
+
+    /**
+     * source -> record -> list, with the source stamping its read progress. The stamp is the test's own -
+     * axis 7, the sequence itself - because a change ring knows a sequence and nothing about which axis its
+     * stream was numbered onto or how a bound is packed.
+     */
+    private static DAG recordingDag(String ringName, String src, String sinkName, int queueSize) {
+        DAG dag = new DAG();
+        Vertex source = dag.newVertex("source", SrsSourceProcessor.metaSupplier(
+                ringName, src, StartFrom.earliest(), 1L, SrsReadCursorPublisherFactory.NONE,
+                order -> new Watermark(order.seq(), (byte) 7)));
+        Vertex record = dag.newVertex("record", ProcessorMetaSupplier.forceTotalParallelismOne(
+                ProcessorSupplier.of(RecordingBounds::new)));
+        Vertex sink = dag.newVertex("sink", SinkProcessors.writeListP(sinkName)).localParallelism(1);
+        dag.edge(between(source, record).setConfig(new EdgeConfig().setQueueSize(queueSize)))
+                .edge(between(record, sink));
+        return dag;
+    }
+
+    /** What one vertex was handed, in arrival order: {@code i:<id>} for a change, {@code b:<axis>:<bound>}. */
+    private static final List<String> SEEN = new CopyOnWriteArrayList<>();
+
+    /** Records every change and every bound that reaches it, passing the changes on so the sink can be awaited. */
+    private static final class RecordingBounds extends AbstractProcessor {
+
+        @Override
+        protected boolean tryProcess(int ordinal, Object item) {
+            Envelope event = (Envelope) item;
+            SEEN.add("i:" + event.after().get("id"));
+            return tryEmit(String.valueOf(event.after().get("id")));
+        }
+
+        @Override
+        public boolean tryProcessWatermark(int ordinal, Watermark watermark) {
+            SEEN.add("b:" + watermark.key() + ":" + watermark.timestamp());
+            return true;
+        }
+
+        @Override
+        public boolean tryProcessWatermark(Watermark watermark) {
+            return true;
+        }
     }
 
     /** Runs source -> project-to-string -> list with a bounded edge queue, waiting until {@code size} arrive. */
