@@ -304,14 +304,26 @@ public final class RowExpressionTypeRules {
         Set<String> sourcesReaching(FromClause from) {
             Set<String> reached = new LinkedHashSet<>();
             collect(from, reached, new HashSet<>());
-            return reached;
+            return attributed(reached);
         }
 
         /** A serve or view block is wired by a single reference rather than a list of them. */
         Set<String> sourcesReaching(FromRef ref) {
             Set<String> reached = new LinkedHashSet<>();
             collect(ref, reached, new HashSet<>());
-            return reached;
+            return attributed(reached);
+        }
+
+        /**
+         * Reaching nothing is not the same as reading nothing. Wiring that closes on itself - a step
+         * whose chain of references leads back to a step already being followed - runs out of nodes
+         * before it reaches a source, and every node in that chain still reads whatever the pipeline
+         * reads. Answering "no sources" there would drop the discovery obligation and leave every
+         * column untyped, so the expression would pass unexamined; the whole set is the same answer an
+         * unattributable name gets.
+         */
+        private Set<String> attributed(Set<String> reached) {
+            return reached.isEmpty() ? allSources : reached;
         }
 
         private void collect(FromClause from, Set<String> reached, Set<String> visiting) {
