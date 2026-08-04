@@ -83,6 +83,26 @@ final class ControlPlane {
         expect(send(authed("/api/artifacts:apply", body)), 200, "apply " + contentBySource.keySet());
     }
 
+    /**
+     * Applies a batch the product is expected to refuse, and returns the refusal it answered with.
+     *
+     * <p>A separate verb rather than a flag on {@link #apply}, for the same reason registration has one:
+     * a caller that meant to apply and was refused has failed, and a caller that meant to witness a
+     * refusal and got an apply has failed too. One return value cannot mean both.
+     */
+    Refusal applyExpectingRefusal(Map<String, String> contentBySource) {
+        List<Map<String, String>> drafts = contentBySource.entrySet().stream()
+                .map(entry -> Map.of("source", entry.getKey(), "content", entry.getValue()))
+                .toList();
+        String body = JsonWriter.write(Map.of("drafts", drafts));
+        HttpResponse<String> response = send(authed("/api/artifacts:apply", body));
+        if (response.statusCode() == 200) {
+            throw new AssertionError(
+                    "expected " + contentBySource.keySet() + " to be refused, but it applied: " + response.body());
+        }
+        return new Refusal(response.statusCode(), codeOf(response.body()));
+    }
+
     /** The ids the server holds - read back from the server, which is the truth, not from the files sent. */
     List<String> artifactIds() {
         HttpResponse<String> response = send(authedGet("/api/artifacts"));
