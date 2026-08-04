@@ -117,6 +117,59 @@ class PdkTypeMappingTest {
                 .isEqualTo(TapstateType.INT64);
     }
 
+    /**
+     * A real connector's declaration for a binary floating point column, verbatim: it names the type
+     * and says nothing else at all — no {@code fixed}, no {@code scale}, no width, no range. Its own
+     * integer columns in the same spec do say something ({@code bit}), which is what tells them apart.
+     */
+    private static final String BARE_SPEC = """
+            {"dataTypes": {"double": {"to": "TapNumber"}, "float": {"to": "TapNumber"},\
+             "int": {"bit": 64, "to": "TapNumber"}, "long": {"bit": 64, "to": "TapNumber"}}}""";
+
+    @Test
+    void aNumberTheConnectorSaysNothingElseAboutMapsOntoUnknown() {
+        // Reading silence as "integer" is how a real double column comes out computable: the gate then
+        // admits int arithmetic over it, and what reaches the expression at run time is the Double the
+        // driver delivered - so the pipeline fails live, which is the state this check exists to end.
+        // A number is taken as an integer only where the connector said something integral about it.
+        TapField rate = filled(BARE_SPEC, "rate", "double");
+
+        assertThat(PdkTypeMapping.of(rate.getTapType()))
+                .as("a number with nothing declared about it is unresolved, never a lossless integer")
+                .isEqualTo(TapstateType.UNKNOWN);
+    }
+
+    @Test
+    void anIntegerColumnDeclaringOnlyItsWidthStillMapsOntoInt64() {
+        // The counterweight: the same connector's integer columns declare a width and nothing else,
+        // and they must stay computable - a rule that refused every unmarked number would take these
+        // with it, which is most integer columns across the connector set.
+        TapField id = filled(BARE_SPEC, "id", "long");
+
+        assertThat(PdkTypeMapping.of(id.getTapType()))
+                .as("a declared width is the connector saying this column holds a whole number")
+                .isEqualTo(TapstateType.INT64);
+    }
+
+    /**
+     * A real connector's declaration for a 64-bit integer, verbatim: no {@code fixed}, no {@code scale},
+     * no width - only the range of values it holds. Several connectors in the set describe their integer
+     * columns this way and nothing else, so the range has to count as the connector describing a whole
+     * number or their integer columns all become unresolved.
+     */
+    private static final String RANGE_ONLY_SPEC = """
+            {"dataTypes": {"long": {"to": "TapNumber",\
+             "value": [-9223372036854775808, 9223372036854775807]}}}""";
+
+    @Test
+    void anIntegerColumnDeclaringOnlyItsValueRangeStillMapsOntoInt64() {
+        TapField id = filled(RANGE_ONLY_SPEC, "id", "long");
+
+        assertThat(PdkTypeMapping.of(id.getTapType()))
+                .as("a declared range of whole numbers is the connector describing a whole number")
+                .isEqualTo(TapstateType.INT64);
+    }
+
     /** The mysql connector's own declaration for its variable-length text column type, verbatim. */
     private static final String VARCHAR_SPEC = """
             {"dataTypes": {"varchar($byte)": {"name": "varchar", "to": "TapString", "byte": 16358,\
