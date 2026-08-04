@@ -205,7 +205,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         ElementRef ref = new ElementRef(edge.pathId(), parentIdentity,
                 NestKeys.valuesOf(row, edge.elementKey()), identity);
         return new NestElement(ref, NestKeys.isDeletion(event) ? null : row,
-                NestKeys.orderOf(event), NestKeys.positionsOf(event));
+                NestKeys.orderOf(event), event.positions());
     }
 
     private ResolverState stateFor(Object key, Map<Object, ResolverState> touched) {

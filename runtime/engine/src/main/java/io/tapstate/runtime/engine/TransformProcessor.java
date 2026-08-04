@@ -48,9 +48,13 @@ public final class TransformProcessor extends AbstractProcessor {
     public TransformProcessor(TransformPort port, LevelBounds bounds) {
         Objects.requireNonNull(port, "port");
         this.bounds = bounds;
+        // A port is a pure function over rows and knows nothing about where its input sat, so what the
+        // event covered is stamped back onto everything it produced. The whole of it travels, not the
+        // token alone: a downstream frontier decides what it may pass on the order, and an output that
+        // arrived with a token but no order is one the frontier can only ignore.
         this.flatMapper = flatMapper(event ->
                 Traversers.traverseIterable(port.transform(event))
-                        .map(out -> out.withSrcPos(event.srcPos())));
+                        .map(out -> out.withPositions(event.positions())));
     }
 
     /** A meta-supplier for a vertex that propagates no frontier, for a job built without one. */

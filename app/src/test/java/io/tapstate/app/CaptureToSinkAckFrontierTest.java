@@ -432,7 +432,7 @@ class CaptureToSinkAckFrontierTest {
         @Override
         public CompletionStage<WriteResult> write(List<Envelope> records) {
             for (Envelope record : records) {
-                COLLECTED.add(record.srcPos());
+                COLLECTED.add(record.position() == null ? null : record.position().token());
             }
             return CompletableFuture.completedFuture(new WriteResult(records.size()));
         }

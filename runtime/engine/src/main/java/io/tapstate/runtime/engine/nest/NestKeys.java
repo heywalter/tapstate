@@ -46,13 +46,9 @@ final class NestKeys {
      * already there, and guessing would silently reorder data.
      */
     static SourceOrder orderOf(Envelope event) {
-        return Objects.requireNonNull(event.order(),
+        ChainPosition at = event.position();
+        return Objects.requireNonNull(at == null ? null : at.order(),
                 "event on " + event.src() + " reached a stateful node with no order");
-    }
-
-    /** Where this event sits on the chain it came from, which is what a held event reports as its bound. */
-    static Map<String, ChainPosition> positionsOf(Envelope event) {
-        return Map.of(event.src(), new ChainPosition(orderOf(event), event.srcPos()));
     }
 
     /** Whether this event removes what it names rather than putting a row there. */

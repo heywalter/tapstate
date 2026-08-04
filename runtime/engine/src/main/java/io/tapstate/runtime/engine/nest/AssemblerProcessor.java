@@ -155,7 +155,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         ElementRef ref = new ElementRef(edge.pathId(), null,
                 NestKeys.valuesOf(row, edge.elementKey()), null);
         apply(document, new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
-                NestKeys.positionsOf(event)));
+                event.positions()));
     }
 
     private static void apply(Touched document, NestElement element) {

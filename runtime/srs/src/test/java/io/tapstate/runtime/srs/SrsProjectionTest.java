@@ -24,7 +24,7 @@ class SrsProjectionTest {
     @Test
     void projectsTheSourcePositionTokenIntoTheEnvelope() {
         Envelope e = SrsProjection.toEnvelope(insert("gtid:aaa:99", Map.of("id", 1)), "orders", new SourceOrder(1L, 5L));
-        assertThat(e.srcPos()).isEqualTo("gtid:aaa:99");
+        assertThat(e.position().token()).isEqualTo("gtid:aaa:99");
     }
 
     @Test
@@ -69,8 +69,8 @@ class SrsProjectionTest {
         // Two quantities, two questions. The token says where to resume a read and the engine never parses
         // it; the order says which of two changes is later and is the only one any comparison uses. This is
         // where both enter the currency, so they are always the pair belonging to one change.
-        assertThat(e.order()).isEqualTo(new SourceOrder(7L, 42L));
-        assertThat(e.srcPos()).isEqualTo("gtid:aaa:99");
+        assertThat(e.position().order()).isEqualTo(new SourceOrder(7L, 42L));
+        assertThat(e.position().token()).isEqualTo("gtid:aaa:99");
     }
 
     @Test

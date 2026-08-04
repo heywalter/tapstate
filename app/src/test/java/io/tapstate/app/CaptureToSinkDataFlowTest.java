@@ -300,7 +300,7 @@ class CaptureToSinkDataFlowTest {
         @Override
         public CompletionStage<WriteResult> write(List<Envelope> records) {
             for (Envelope record : records) {
-                COLLECTED.add(record.src() + "|" + record.srcPos() + "|" + record.after().get("id"));
+                COLLECTED.add(record.src() + "|" + (record.position() == null ? null : record.position().token()) + "|" + record.after().get("id"));
             }
             return CompletableFuture.completedFuture(new WriteResult(records.size()));
         }

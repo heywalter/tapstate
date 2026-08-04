@@ -24,6 +24,7 @@ import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.core.processor.Processors;
 import com.hazelcast.jet.core.processor.SinkProcessors;
 import com.hazelcast.jet.core.test.TestProcessorMetaSupplierContext;
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.Op;
 import io.tapstate.core.event.SourceOrder;
@@ -446,14 +447,16 @@ class SrsSourceProcessorTest {
         return dag;
     }
 
-    /** A stable, Hazelcast-serializable projection of an envelope: {@code src|srcPos|id|epoch:seq}. */
+    /** A stable, Hazelcast-serializable projection of an envelope: {@code src|token|id|epoch:seq}. */
     private static String describe(Envelope event) {
-        return event.src() + "|" + event.srcPos() + "|" + event.after().get("id") + "|" + order(event);
+        ChainPosition at = event.position();
+        return event.src() + "|" + (at == null ? null : at.token()) + "|" + event.after().get("id")
+                + "|" + order(at);
     }
 
-    /** An envelope's order rendered {@code epoch:seq}, or {@code null} for one that carries none. */
-    private static String order(Envelope event) {
-        return event.order() == null ? "null" : event.order().epoch() + ":" + event.order().seq();
+    /** A position's order rendered {@code epoch:seq}, or {@code null} where there is none. */
+    private static String order(ChainPosition at) {
+        return at == null || at.order() == null ? "null" : at.order().epoch() + ":" + at.order().seq();
     }
 
     /** A snapshot read envelope (op r, no source position) on the {@code orders} stream. */

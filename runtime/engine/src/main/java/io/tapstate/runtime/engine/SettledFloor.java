@@ -72,18 +72,23 @@ final class SettledFloor implements SinkFrontier {
      * a batch, and a batch reduced to its highest position offers nothing beneath that bound to advance to,
      * so the frontier would sit still until the bound cleared a whole batch.
      *
+     * <p>Every chain an event covers is reported, not just the stream it arrived on: a document assembled
+     * out of several chains is the whole reason this shape exists, and taking only its own name would ack
+     * one chain and silently drop the rest.
+     *
      * <p>Taking part is decided on the order alone. A snapshot row has one and carries no token, which is
-     * the chain's cdc start being persisted for it rather than a reason to pass it over; an event with no
-     * order at all - one built by a transform, or an assembled document - cannot be placed against a bound
-     * and reports nothing here.
+     * the chain's cdc start being persisted for it rather than a reason to pass it over; a position with
+     * no order at all cannot be placed against a bound and reports nothing here.
      */
     @Override
     public List<ChainEntry> positions(List<Envelope> batch) {
         List<ChainEntry> entries = new ArrayList<>();
         for (Envelope event : batch) {
-            if (event.order() != null) {
-                entries.add(new ChainEntry(event.src(), new ChainPosition(event.order(), event.srcPos())));
-            }
+            event.positions().forEach((chain, position) -> {
+                if (position.order() != null) {
+                    entries.add(new ChainEntry(chain, position));
+                }
+            });
         }
         return entries;
     }

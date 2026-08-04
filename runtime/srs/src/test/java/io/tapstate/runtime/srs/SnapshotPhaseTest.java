@@ -122,9 +122,9 @@ class SnapshotPhaseTest {
         // A snapshot row has no position in the change stream, so nothing else can say where it sits
         // against the changes that follow. Every row of one snapshot shares the reserved sequence, which
         // puts all of them before every change of their generation.
-        assertThat(sink).extracting(Envelope::order)
+        assertThat(sink).extracting(event -> event.position().order())
                 .containsOnly(SourceOrder.snapshotRow(4L));
-        assertThat(sink).extracting(Envelope::srcPos).containsOnlyNulls();
+        assertThat(sink).extracting(event -> event.position().token()).containsOnlyNulls();
     }
 
     @Test
@@ -155,7 +155,7 @@ class SnapshotPhaseTest {
         // This is the whole reason the two generations are kept apart. Rows of a rerun that took the
         // current generation would beat every change generation 1 already applied and roll each of those
         // rows back to its snapshot value -- silently, and only while the snapshot is running.
-        assertThat(sink).extracting(Envelope::order).containsOnly(SourceOrder.snapshotRow(1L));
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(1L));
         assertThat(meta.pinnedEpoch).isEqualTo(1L);
     }
 
@@ -172,7 +172,7 @@ class SnapshotPhaseTest {
                 new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", "orders",
                 new SourcePosition("binlog.000099:1"), 2L, meta, sink::add);
 
-        assertThat(sink).extracting(Envelope::order).containsOnly(SourceOrder.snapshotRow(2L));
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(2L));
         assertThat(meta.pinnedEpoch).isEqualTo(2L);
     }
 
@@ -187,7 +187,7 @@ class SnapshotPhaseTest {
                 new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", "orders",
                 new SourcePosition("p0"), 2L, meta, sink::add);
 
-        assertThat(sink).extracting(Envelope::order).containsOnly(SourceOrder.snapshotRow(2L));
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(2L));
     }
 
     @Test

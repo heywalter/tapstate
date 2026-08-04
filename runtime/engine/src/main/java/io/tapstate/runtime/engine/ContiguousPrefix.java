@@ -41,9 +41,11 @@ final class ContiguousPrefix implements SinkFrontier {
     public List<ChainEntry> positions(List<Envelope> batch) {
         Map<String, ChainPosition> last = new LinkedHashMap<>();
         for (Envelope event : batch) {
-            if (event.order() != null && event.srcPos() != null) {
-                last.put(event.src(), new ChainPosition(event.order(), event.srcPos()));
-            }
+            event.positions().forEach((chain, position) -> {
+                if (position.order() != null && position.token() != null) {
+                    last.put(chain, position);
+                }
+            });
         }
         List<ChainEntry> entries = new ArrayList<>(last.size());
         last.forEach((chain, position) -> entries.add(new ChainEntry(chain, position)));
