@@ -46,17 +46,19 @@ public final class SrsDurableFrontier {
         if (consumers.isEmpty()) {
             return Optional.empty();
         }
-        ChainPosition frontier = null;
+        // The answer is the lowest of the reader's own position and every consumer's, so the reader's is
+        // where the search starts rather than a separate clamp afterwards - one comparison, and no step
+        // where the running lowest is still nothing.
+        ChainPosition safe = candidate;
         for (ConsumerOffset consumer : consumers) {
             ChainPosition acked = consumer.sinkAcked();
             if (acked == null) {
                 return Optional.empty();
             }
-            if (frontier == null || acked.order().compareTo(frontier.order()) < 0) {
-                frontier = acked;
+            if (acked.order().compareTo(safe.order()) < 0) {
+                safe = acked;
             }
         }
-        ChainPosition safe = candidate.order().compareTo(frontier.order()) < 0 ? candidate : frontier;
         return Optional.ofNullable(safe.token());
     }
 }
