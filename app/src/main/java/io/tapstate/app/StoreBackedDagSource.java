@@ -3,6 +3,7 @@ package io.tapstate.app;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
+import com.hazelcast.jet.core.Watermark;
 import io.tapstate.adapters.transform.MapSpec;
 import io.tapstate.adapters.transform.StatelessTransforms;
 import io.tapstate.core.model.FromClause;
@@ -12,7 +13,10 @@ import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
+import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.DagBindings;
+import io.tapstate.runtime.engine.FrontierBinding;
+import io.tapstate.runtime.engine.FrontierOrders;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
 import io.tapstate.runtime.engine.SinkAckBinding;
 import io.tapstate.runtime.engine.nest.NestBinding;
@@ -74,8 +78,25 @@ final class StoreBackedDagSource implements DagSource {
     public DAG dagFor(String pipelineId) {
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
         TargetTable target = targetModelResolver.resolve(pipeline).orElse(null);
-        return PipelineDagBuilder.build(
-                pipeline, bindings(pipeline, sourceIdByTable(pipeline), target), sinkAckBinding(pipeline, pipelineId));
+        FrontierBinding frontier = frontierBinding(pipeline);
+        return PipelineDagBuilder.build(pipeline, bindings(pipeline, sourceIdByTable(pipeline), target, frontier),
+                sinkAckBinding(pipeline, pipelineId), frontier);
+    }
+
+    /**
+     * Which chain each of the pipeline's sources reads: the table it is resolved to, which is the same
+     * stream name that source projects into every change it emits. Reading it from the same resolution the
+     * source vertex is built from is what keeps the two the same string - a chain named anything else would
+     * reach a level that was compiled to carry a different one, and the level tears the job down rather
+     * than widening itself to fit.
+     */
+    private FrontierBinding frontierBinding(PipelineResource pipeline) {
+        Map<String, String> chainBySource = new LinkedHashMap<>();
+        for (String sourceId : pipeline.sources()) {
+            chainBySource.put(sourceId,
+                    SourceCaptureResolution.of(StoredArtifacts.requireSource(artifacts(), sourceId)).table());
+        }
+        return new FrontierBinding(chainBySource);
     }
 
     /**
@@ -117,9 +138,11 @@ final class StoreBackedDagSource implements DagSource {
      * builder walks the topology; only the vertex suppliers they return travel onto the DAG, so they may
      * reach the store freely while what they produce stays serializable.
      */
-    private DagBindings bindings(PipelineResource pipeline, Map<String, String> sourceIdByTable, TargetTable target) {
+    private DagBindings bindings(PipelineResource pipeline, Map<String, String> sourceIdByTable, TargetTable target,
+            FrontierBinding frontier) {
+        ChainAxes axes = frontier.axes();
         return new DagBindings(
-                this::sourceVertex,
+                sourceId -> sourceVertex(sourceId, axes),
                 StoreBackedDagSource::transformPort,
                 element -> sinkWriter(element, target),
                 ref -> upstreams(ref, sourceIdByTable),
@@ -207,12 +230,18 @@ final class StoreBackedDagSource implements DagSource {
      * table name. Resolving the same ring identity the capture side resolves is what points the reader at the
      * ring the writer fills.
      */
-    private ProcessorMetaSupplier sourceVertex(String sourceId) {
+    private ProcessorMetaSupplier sourceVertex(String sourceId, ChainAxes axes) {
         SourceCaptureResolution resolution =
                 SourceCaptureResolution.of(StoredArtifacts.requireSource(artifacts(), sourceId));
+        // The ring knows a generation and a sequence; which axis this stream travels on and how the pair
+        // packs into the one long a bound rides are properties of the whole job, so they are closed over
+        // here rather than reached for from the source.
+        String chain = resolution.table();
+        byte axis = axes.axisOf(chain);
         return SrsSourceProcessor.metaSupplier(
                 resolution.ringName(), resolution.table(), StartFrom.earliest(),
-                ringGeneration(resolution), SrsReadCursorPublisherFactory.NONE);
+                ringGeneration(resolution), SrsReadCursorPublisherFactory.NONE,
+                order -> new Watermark(FrontierOrders.pack(chain, order), axis));
     }
 
     /**

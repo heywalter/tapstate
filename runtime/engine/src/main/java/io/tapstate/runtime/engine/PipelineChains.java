@@ -19,11 +19,9 @@ import java.util.Set;
 final class PipelineChains {
 
     private final Map<String, List<String>> byVertex = new LinkedHashMap<>();
-    private final Set<String> everyChain = new LinkedHashSet<>();
 
     /** Records that the vertex keyed {@code vertexKey} reads {@code chain} and nothing else. */
     void source(String vertexKey, String chain) {
-        everyChain.add(chain);
         byVertex.put(vertexKey, List.of(chain));
     }
 
@@ -62,10 +60,5 @@ final class PipelineChains {
             byOrdinal.put(ordinal, of(upstreamKeys.get(ordinal)));
         }
         return byOrdinal;
-    }
-
-    /** The numbering every chain this job draws from travels on. */
-    ChainAxes axes() {
-        return ChainAxes.assign(everyChain);
     }
 }

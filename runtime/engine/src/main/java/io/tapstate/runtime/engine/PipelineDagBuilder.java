@@ -76,13 +76,13 @@ public final class PipelineDagBuilder {
         for (String sourceId : pipeline.sources()) {
             byKey.put(sourceId, dag.newVertex(sourceId, bindings.sourceVertices().apply(sourceId)));
             if (chains != null) {
-                chains.source(sourceId, frontier.sourceChains().apply(sourceId));
+                chains.source(sourceId, frontier.chainOf(sourceId));
             }
         }
-        // Every chain the job draws from is known once its sources are: nothing downstream reads one they
-        // do not. Numbering them here rather than per vertex is what makes an axis mean the same thing
-        // everywhere, which is what lets bounds from different vertices be combined at all.
-        ChainAxes axes = chains == null ? null : chains.axes();
+        // The numbering comes from the binding rather than from what was accumulated here, because the
+        // assembler stamping at its sources needs the same answer: an axis meaning one chain in the graph
+        // and another at a source would have unrelated promises combined as though they were one.
+        ChainAxes axes = frontier == null ? null : frontier.axes();
 
         if (pipeline.transforms() != null) {
             for (Step step : pipeline.transforms()) {
