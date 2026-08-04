@@ -87,6 +87,8 @@ public final class SrsSourceProcessor extends AbstractProcessor {
     public boolean complete() {
         // Emit anything held back by earlier backpressure before reading more: the cursor only advances as
         // fill reads, so a change the outbox refused stays buffered until it is taken, never re-read nor lost.
+        // A bound the outbox refused is offered again the same way, before anything more is read: it was
+        // already recorded as announced, so it has to leave rather than be worked out afresh.
         if (!emitPending() || !announce()) {
             return false;
         }
