@@ -47,14 +47,25 @@ final class PdkTypeMapping {
     }
 
     /**
-     * Splits a number by how the source holds it. A connector declares the split itself: a type it marks
-     * fixed is exact and scaled, one it marks not fixed is binary floating point, and one it marks neither
-     * carries no scale at all - an integer.
+     * Splits a number by how the source holds it. Where a connector marks the split itself it is taken as
+     * stated: a type marked fixed is exact and scaled, one marked not fixed is binary floating point.
+     *
+     * <p>Marking it is optional, and a great many connectors do not - so the absence cannot be read as
+     * "integer". A type that declares a scale is scaled whatever else it left out, and which of the two
+     * scaled kinds it is nobody said: calling it exact would refuse arithmetic that is fine, calling it
+     * approximate would permit arithmetic that drops digits. Unknown is the only answer that neither
+     * guesses nor silently permits - it is refused by name and the author rules on it. Only a number that
+     * declares no scale at all is taken as an integer.
      */
     private static TapstateType number(TapNumber number) {
-        if (number.getFixed() == null) {
-            return TapstateType.INT64;
+        Boolean fixed = number.getFixed();
+        if (fixed != null) {
+            return fixed ? TapstateType.DECIMAL : TapstateType.DOUBLE;
         }
-        return number.getFixed() ? TapstateType.DECIMAL : TapstateType.DOUBLE;
+        Integer scale = number.getScale();
+        if (scale != null && scale != 0) {
+            return TapstateType.UNKNOWN;
+        }
+        return TapstateType.INT64;
     }
 }

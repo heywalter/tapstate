@@ -76,6 +76,47 @@ class PdkTypeMappingTest {
                 .isEqualTo(TapstateType.DOUBLE);
     }
 
+    /**
+     * A real connector's own declaration for a scaled numeric column, verbatim from its spec. It states
+     * a scale and says nothing about {@code fixed} - which most connectors declaring a number do not, so
+     * the absence is the ordinary case rather than a malformed one.
+     */
+    private static final String UNMARKED_SCALED_SPEC = """
+            {"dataTypes": {"FLOAT": {"to": "TapNumber", "value": ["-3.4E38", "3.4E38"],\
+             "scale": 2, "precision": 39}}}""";
+
+    @Test
+    void aScaledColumnTheConnectorDidNotMarkEitherWayMapsOntoUnknown() {
+        // Reading the absence as "integer" is how a real decimal column comes out computable: the gate
+        // then admits arithmetic over it, and the value that reaches the expression at run time is the
+        // exact decimal the driver delivered - so the pipeline fails live, which is the state this
+        // whole check exists to end. A declared scale is the column saying it is scaled; which scaled
+        // kind it is nobody said, and unknown is what says so.
+        TapField amount = filled(UNMARKED_SCALED_SPEC, "amount", "FLOAT");
+
+        assertThat(PdkTypeMapping.of(amount.getTapType()))
+                .as("a scale with no exact/approximate marking is unresolved, never a lossless integer")
+                .isEqualTo(TapstateType.UNKNOWN);
+    }
+
+    /**
+     * A connector's own declaration for a plain 64-bit integer, verbatim: it marks {@code scale} as
+     * zero and says nothing about {@code fixed} either. Zero scale is a column stating it holds no
+     * fractional part, which is the one thing that tells an unmarked integer from an unmarked decimal.
+     */
+    private static final String ZERO_SCALE_LONG_SPEC = """
+            {"dataTypes": {"Long": {"to": "TapNumber", "scale": 0, "bit": 64,\
+             "value": [-9223372036854775808, 9223372036854775807]}}}""";
+
+    @Test
+    void anIntegerColumnDeclaringAZeroScaleStillMapsOntoInt64() {
+        TapField id = filled(ZERO_SCALE_LONG_SPEC, "id", "Long");
+
+        assertThat(PdkTypeMapping.of(id.getTapType()))
+                .as("a stated scale of zero is no scale, so the column stays the integer it is")
+                .isEqualTo(TapstateType.INT64);
+    }
+
     /** The mysql connector's own declaration for its variable-length text column type, verbatim. */
     private static final String VARCHAR_SPEC = """
             {"dataTypes": {"varchar($byte)": {"name": "varchar", "to": "TapString", "byte": 16358,\
