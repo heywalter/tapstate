@@ -16,6 +16,7 @@ import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.nest.NestDag;
+import io.tapstate.runtime.engine.nest.NestFrontier;
 import io.tapstate.runtime.engine.nest.NestTopology;
 import io.tapstate.spi.sink.SinkWriter;
 import java.util.ArrayList;
@@ -97,7 +98,9 @@ public final class PipelineDagBuilder {
                             step.id(), nest.root().from(), step.id(),
                             alias -> verticesOf(aliasUpstream(inline.from(), alias, bindings), byKey),
                             bindings.nest(),
-                            vertex -> outboundOrdinal.merge(vertex, 1, Integer::sum) - 1));
+                            vertex -> outboundOrdinal.merge(vertex, 1, Integer::sum) - 1,
+                            chains == null ? null : new NestFrontier(axes,
+                                    alias -> chains.union(aliasUpstream(inline.from(), alias, bindings)))));
                     if (chains != null) {
                         chains.derived(step.id(), nestUpstream(inline.from(), bindings));
                     }

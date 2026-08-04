@@ -5,6 +5,8 @@ import com.hazelcast.jet.core.Inbox;
 import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.SourceOrder;
+import io.tapstate.runtime.engine.ChainAxes;
+import io.tapstate.runtime.engine.LevelBounds;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -40,11 +42,25 @@ public final class ResolverProcessor extends AbstractProcessor {
     private final NestStore<ResolverState> store;
     private final NestDeadLetter deadLetter;
     private final Deque<Object> outgoing = new ArrayDeque<>();
+    private final ChainBounds held = new ChainBounds();
+    private final LevelBounds bounds;
 
+    /** A resolver in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter) {
+        this(vertex, store, deadLetter, null, null);
+    }
+
+    /**
+     * A resolver that also passes a frontier on. {@code chainsByOrdinal} says which chains each of its
+     * edges is compiled to carry - all of them must have promised before it says anything about one - and
+     * what it is itself holding tightens the answer further.
+     */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.store = Objects.requireNonNull(store, "store");
         this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
+        this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         if (vertex.isAssembler()) {
             throw new IllegalArgumentException("the assembler is not a resolver: " + vertex.name());
         }
@@ -70,13 +86,46 @@ public final class ResolverProcessor extends AbstractProcessor {
                     return;
                 }
                 if (touched.size() >= DrainFolding.MAX_KEYS_HELD) {
-                    touched.forEach(store::save);
+                    settle(touched);
                     touched.clear();
                 }
             }
         } finally {
-            touched.forEach(store::save);
+            settle(touched);
         }
+    }
+
+    /**
+     * Stores every entry this drain touched and re-reads what each is now holding, which is what keeps the
+     * bound below a child that has been taken off the stream. Read from the state rather than accumulated
+     * as events go by: the state is what actually holds the child, and after a restart it is the only
+     * thing that still knows.
+     */
+    private void settle(Map<Object, ResolverState> touched) {
+        touched.forEach((key, state) -> {
+            store.save(key, state);
+            if (bounds != null) {
+                held.holding(key, state.lowestHeldByChain());
+            }
+        });
+    }
+
+    /**
+     * Works out what this level may promise on the chain the bound travels on, and passes that on rather
+     * than the bound itself. Whatever is waiting here for a parent keeps the answer below it.
+     *
+     * <p>Anything already worked out goes first: a bound emitted ahead of the changes queued behind it
+     * would claim they had left, and they are still right here.
+     */
+    @Override
+    public boolean tryProcessWatermark(int ordinal, Watermark watermark) {
+        if (bounds == null) {
+            return true;
+        }
+        if (!flush()) {
+            return false;
+        }
+        return bounds.advance(ordinal, watermark, this::tryEmit);
     }
 
     /**

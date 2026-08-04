@@ -9,10 +9,13 @@ import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.Vertex;
 import com.hazelcast.jet.core.processor.Processors;
 import io.tapstate.core.event.Envelope;
+import io.tapstate.runtime.engine.ChainAxes;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.ToIntFunction;
 
@@ -43,7 +46,7 @@ public final class NestDag {
      */
     public static Vertex attach(DAG dag, NestTopology topology, String nodeId, String rootAlias,
             String outputStream, Function<String, List<Vertex>> upstream, NestBinding binding,
-            ToIntFunction<Vertex> nextOutbound) {
+            ToIntFunction<Vertex> nextOutbound, NestFrontier frontier) {
         if (topology.isPassthrough()) {
             Vertex passthrough = dag.newVertex(nodeId, ProcessorMetaSupplier.forceTotalParallelismOne(
                     ProcessorSupplier.of(Processors.mapP(FunctionEx.identity()))));
@@ -55,9 +58,11 @@ public final class NestDag {
         }
 
         Map<List<String>, Vertex> built = new LinkedHashMap<>();
+        Map<List<String>, List<String>> carried = new LinkedHashMap<>();
         Vertex assembler = null;
         for (NestVertex spec : topology.vertices()) {
-            Vertex vertex = dag.newVertex(spec.name(), processorFor(spec, topology, binding, outputStream));
+            Vertex vertex = dag.newVertex(spec.name(), processorFor(spec, topology, binding, outputStream,
+                    frontier, chainsInto(spec, carried, frontier)));
             built.put(spec.pathId(), vertex);
             for (NestInbound edge : spec.inbound()) {
                 connect(dag, vertex, edge, built, upstream, nextOutbound);
@@ -65,6 +70,39 @@ public final class NestDag {
             assembler = vertex;
         }
         return assembler;
+    }
+
+    /**
+     * Which chains arrive on each of {@code spec}'s inbound ordinals, and - recorded into {@code carried} -
+     * which reach the vertex at all. An edge from a source carries whatever its alias reads; a cascading
+     * edge carries everything its whole subtree does, which is why a vertex can only be worked out after
+     * the ones feeding it and why the compiled order matters here as much as it does for drawing edges.
+     *
+     * <p>This is what a level waits on before it promises anything about a chain. It is taken from the
+     * compiled tree rather than from what arrives, because an edge that has not spoken yet and one that
+     * never carries the chain are indistinguishable at runtime, and treating the first as the second
+     * promises changes that are still in flight.
+     */
+    private static Map<Integer, List<String>> chainsInto(NestVertex spec,
+            Map<List<String>, List<String>> carried, NestFrontier frontier) {
+        if (frontier == null) {
+            return null;
+        }
+        Map<Integer, List<String>> byOrdinal = new LinkedHashMap<>();
+        Set<String> reaching = new LinkedHashSet<>();
+        for (NestInbound edge : spec.inbound()) {
+            List<String> chains = edge.isCascade()
+                    ? carried.get(edge.pathId())
+                    : frontier.chainsOfAlias().apply(edge.alias());
+            if (chains == null) {
+                throw new IllegalStateException("cascade into " + spec.name() + " knows no chain for "
+                        + edge.pathId() + "; it is being wired before the vertex that feeds it");
+            }
+            byOrdinal.put(edge.ordinal(), chains);
+            reaching.addAll(chains);
+        }
+        carried.put(spec.pathId(), List.copyOf(reaching));
+        return byOrdinal;
     }
 
     private static void connect(DAG dag, Vertex destination, NestInbound edge, Map<List<String>, Vertex> built,
@@ -111,13 +149,17 @@ public final class NestDag {
     }
 
     private static ProcessorMetaSupplier processorFor(NestVertex spec, NestTopology topology,
-            NestBinding binding, String outputStream) {
+            NestBinding binding, String outputStream, NestFrontier frontier,
+            Map<Integer, List<String>> chainsByOrdinal) {
         NestBinding.NestStores stores = binding.stores();
         NestDeadLetter deadLetter = binding.deadLetter();
         List<EmbedSlot> slots = topology.slots();
+        ChainAxes axes = frontier == null ? null : frontier.axes();
         com.hazelcast.function.SupplierEx<Processor> supplier = spec.isAssembler()
-                ? () -> new AssemblerProcessor(spec, slots, stores.forAssembler(spec), outputStream)
-                : () -> new ResolverProcessor(spec, stores.forResolver(spec), deadLetter);
+                ? () -> new AssemblerProcessor(spec, slots, stores.forAssembler(spec), outputStream,
+                        axes, chainsByOrdinal)
+                : () -> new ResolverProcessor(spec, stores.forResolver(spec), deadLetter,
+                        axes, chainsByOrdinal);
         return ProcessorMetaSupplier.of(ProcessorSupplier.of(supplier));
     }
 

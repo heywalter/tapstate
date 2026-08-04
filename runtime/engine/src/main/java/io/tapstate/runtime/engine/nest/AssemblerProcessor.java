@@ -5,6 +5,8 @@ import com.hazelcast.jet.core.Inbox;
 import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.SourceOrder;
+import io.tapstate.runtime.engine.ChainAxes;
+import io.tapstate.runtime.engine.LevelBounds;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -35,13 +37,27 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final NestStore<RootAssembly> store;
     private final String outputStream;
     private final Deque<Object> outgoing = new ArrayDeque<>();
+    private final ChainBounds held = new ChainBounds();
+    private final LevelBounds bounds;
 
+    /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream) {
+        this(vertex, slots, store, outputStream, null, null);
+    }
+
+    /**
+     * An assembler that also passes a frontier on. {@code chainsByOrdinal} says which chains each of its
+     * edges is compiled to carry - all of them must have promised before it says anything about one - and
+     * everything its documents are still holding tightens the answer further.
+     */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
+        this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -79,6 +95,24 @@ public final class AssemblerProcessor extends AbstractProcessor {
             settle(touched);
         }
         flush();
+    }
+
+    /**
+     * Works out what this level may promise on the chain the bound travels on, and passes that on rather
+     * than the bound itself. Everything its documents have taken in and not sent keeps the answer below it.
+     *
+     * <p>Anything already worked out goes first: a bound emitted ahead of the documents queued behind it
+     * would claim they had left, and they are still right here.
+     */
+    @Override
+    public boolean tryProcessWatermark(int ordinal, Watermark watermark) {
+        if (bounds == null) {
+            return true;
+        }
+        if (!flush()) {
+            return false;
+        }
+        return bounds.advance(ordinal, watermark, this::tryEmit);
     }
 
     /**
@@ -159,6 +193,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
                         }
                     });
             store.save(key, document.assembly);
+            if (bounds != null) {
+                held.holding(key, document.assembly.lowestHeldByChain());
+            }
         });
     }
 
