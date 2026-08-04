@@ -1,5 +1,7 @@
 package io.tapstate.adapters.mongostore;
 
+import io.tapstate.core.event.ChainPosition;
+import io.tapstate.core.event.SourceOrder;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
@@ -88,7 +90,7 @@ class MongoSrsMetaStoreIT {
 
             store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 10L), null));
             store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p2", Map.of("orders", 20L), null));
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 99L), "gtid:aaa-1:99"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 99L), new ChainPosition(new SourceOrder(1, 99), "gtid:aaa-1:99")));
 
             List<ConsumerOffset> cursors = store.read(CHAIN).orElseThrow().consumerOffsets();
             assertThat(cursors).extracting(ConsumerOffset::pipelineId).containsExactlyInAnyOrder("p1", "p2");
@@ -105,7 +107,7 @@ class MongoSrsMetaStoreIT {
             // The sink has acked a position for p1's cursor; the reader then advances its per-table read
             // cursor. The read cursor and the sink-ack are independent writers of one consumer record, so
             // the reader's advance must leave the acked position untouched.
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 5L), "gtid:aaa-1:100"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 5L), new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100")));
 
             store.advanceConsumerReadSeq(CHAIN, "p1", "orders", 42L);
 
@@ -138,7 +140,7 @@ class MongoSrsMetaStoreIT {
             // must leave the read cursor untouched.
             store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 42L), null));
 
-            store.advanceSinkAckedSrcpos(CHAIN, "p1", "gtid:aaa-1:100");
+            store.advanceSinkAcked(CHAIN, "p1", new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100"));
 
             ConsumerOffset p1 = onlyConsumer(store);
             assertThat(p1.sinkAckedSrcpos()).isEqualTo("gtid:aaa-1:100");
@@ -147,12 +149,12 @@ class MongoSrsMetaStoreIT {
     }
 
     @Test
-    void advanceSinkAckedSrcposCreatesTheConsumerWhenItHasNoneYet() {
+    void advanceSinkAckedCreatesTheConsumerWhenItHasNoneYet() {
         withStore(store -> {
             store.create(CHAIN, null);
             // A sink may ack before the reader publishes any cursor: the deep set creates the consumer entry,
             // and its read cursor stays empty until a reader writes one.
-            store.advanceSinkAckedSrcpos(CHAIN, "p1", "gtid:aaa-1:7");
+            store.advanceSinkAcked(CHAIN, "p1", new ChainPosition(new SourceOrder(1, 7), "gtid:aaa-1:7"));
 
             ConsumerOffset p1 = onlyConsumer(store);
             assertThat(p1.sinkAckedSrcpos()).isEqualTo("gtid:aaa-1:7");
@@ -261,7 +263,7 @@ class MongoSrsMetaStoreIT {
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.advanceConsumerReadSeq("nope", "p", "orders", 1L))
                     .isInstanceOf(IllegalStateException.class);
-            assertThatThrownBy(() -> store.advanceSinkAckedSrcpos("nope", "p", "gtid:aaa-1:1"))
+            assertThatThrownBy(() -> store.advanceSinkAcked("nope", "p", new ChainPosition(new SourceOrder(1, 1), "gtid:aaa-1:1")))
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.setCdcStart("nope", "x", 1L))
                     .isInstanceOf(IllegalStateException.class);

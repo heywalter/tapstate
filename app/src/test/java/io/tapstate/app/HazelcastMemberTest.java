@@ -1,5 +1,6 @@
 package io.tapstate.app;
 
+import io.tapstate.core.event.ChainPosition;
 import com.hazelcast.config.Config;
 import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.JoinConfig;
@@ -248,7 +249,7 @@ class HazelcastMemberTest {
             throw new UnsupportedOperationException();
         }
 
-        @Override public void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
+        @Override public void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition position) {
             throw new UnsupportedOperationException();
         }
 

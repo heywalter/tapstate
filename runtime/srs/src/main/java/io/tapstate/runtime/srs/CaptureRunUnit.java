@@ -105,8 +105,7 @@ public final class CaptureRunUnit {
             coordinator.attachConsumer(chainId, spec.pipelineId());
             String ringName = SrsRingbuffer.ringName(cid, tbl);
             SrsWriteGate gate = new SrsWriteGate(new SrsRingbuffer(hz.getRingbuffer(ringName)));
-            CdcChain chain = new CdcChain(
-                    gate, meta, cid, spec.watermark(), spec.positionOrder(), spec.schemaVer());
+            CdcChain chain = new CdcChain(gate, meta, cid, spec.watermark(), epoch, spec.schemaVer());
             LongSupplier minConsumerReadSeq = () -> minConsumerReadSeq(meta, cid, tbl);
             Supplier<Collection<ConsumerOffset>> consumers =
                     () -> meta.read(cid).map(SrsMeta::consumerOffsets).orElse(List.of());

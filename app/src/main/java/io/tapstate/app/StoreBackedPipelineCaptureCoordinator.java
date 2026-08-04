@@ -125,8 +125,7 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
                 MOCK_CDC_START,
                 retention,
                 MOCK_SCHEMA_VER,
-                monotonicWatermark(),
-                MockPositionOrder.INSTANCE);
+                monotonicWatermark());
     }
 
     @Override

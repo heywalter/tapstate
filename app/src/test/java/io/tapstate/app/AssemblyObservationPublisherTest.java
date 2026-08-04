@@ -1,5 +1,7 @@
 package io.tapstate.app;
 
+import io.tapstate.core.event.ChainPosition;
+import io.tapstate.core.event.SourceOrder;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.entry;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -46,7 +48,7 @@ class AssemblyObservationPublisherTest {
         InMemoryStorePort store = new InMemoryStorePort(artifacts);
         String chain = SourceCaptureResolution.of(source).chainId().value();
         store.meta().create(chain, null);
-        store.meta().advanceSinkAckedSrcpos(chain, PIPELINE, "w7");
+        store.meta().advanceSinkAcked(chain, PIPELINE, new ChainPosition(new SourceOrder(1, 7), "w7"));
         store.state().create(PIPELINE, StateJson.of(PipelineState.RUNNING), T0);
 
         // An engine whose member reports no live job, so recordCount resolves absent.

@@ -1,5 +1,6 @@
 package io.tapstate.runtime.srs;
 
+import io.tapstate.core.event.ChainPosition;
 import com.hazelcast.collection.IList;
 import com.hazelcast.config.Config;
 import com.hazelcast.config.InMemoryFormat;
@@ -211,7 +212,7 @@ class CaptureRunUnitJetSmokeTest {
     private static CaptureRunSpec spec(ReadMode mode, String srsKey) {
         return new CaptureRunSpec(
                 config(), mode, srsKey, true, "src-1", "pipe-1", StartFrom.earliest(),
-                new SourcePosition("cdc-start-0"), null, 0L, monotonicWatermark(), NUMERIC_ORDER);
+                new SourcePosition("cdc-start-0"), null, 0L, monotonicWatermark());
     }
 
     private static CaptureConfig config() {
@@ -368,7 +369,7 @@ class CaptureRunUnitJetSmokeTest {
             }
             Map<String, Long> perTable = new LinkedHashMap<>(existing == null ? Map.of() : existing.perTableSeq());
             perTable.put(table, lastReadSeq);
-            String ack = existing == null ? null : existing.sinkAckedSrcpos();
+            ChainPosition ack = existing == null ? null : existing.sinkAcked();
             next.add(new ConsumerOffset(pipelineId, perTable, ack));
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
@@ -376,7 +377,7 @@ class CaptureRunUnitJetSmokeTest {
         }
 
         @Override
-        public synchronized void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
+        public synchronized void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition position) {
             SrsMeta m = require(miningChainId);
             List<ConsumerOffset> next = new ArrayList<>();
             ConsumerOffset existing = null;
@@ -388,7 +389,7 @@ class CaptureRunUnitJetSmokeTest {
                 }
             }
             Map<String, Long> perTable = existing == null ? Map.of() : existing.perTableSeq();
-            next.add(new ConsumerOffset(pipelineId, perTable, srcpos));
+            next.add(new ConsumerOffset(pipelineId, perTable, position));
             records.put(miningChainId, new SrsMeta(
                     m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
                     m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), m.epoch(), m.snapshotEpoch()));

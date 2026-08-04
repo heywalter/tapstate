@@ -1,5 +1,7 @@
 package io.tapstate.spi.store;
 
+import io.tapstate.core.event.SourceOrder;
+import io.tapstate.core.event.ChainPosition;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -12,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SrsMetaTest {
 
     private static ConsumerOffset consumer() {
-        return new ConsumerOffset("orders-pipeline", Map.of("orders", 42L), "gtid:aaa-1:100");
+        return new ConsumerOffset("orders-pipeline", Map.of("orders", 42L), new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100"));
     }
 
     private static SchemaVersion schema() {

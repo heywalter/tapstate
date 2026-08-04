@@ -8,6 +8,8 @@ import com.mongodb.client.model.FindOneAndUpdateOptions;
 import com.mongodb.client.model.ReturnDocument;
 import com.mongodb.client.result.UpdateResult;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.event.ChainPosition;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.SchemaVersion;
@@ -87,8 +89,8 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
     }
 
     @Override
-    public void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
-        update(miningChainId, sinkAckedSrcposUpdate(pipelineId, srcpos));
+    public void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition position) {
+        update(miningChainId, sinkAckedUpdate(pipelineId, position));
     }
 
     /**
@@ -108,16 +110,27 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
 
     /**
      * The path-scoped update that advances one consumer's durable sink-acked position: a {@code $set} on
-     * {@code consumerOffsets.<pipelineId>.sinkAckedSrcpos}, so the reader's per-table cursor is left
-     * untouched by a sink-ack advance. The pipeline id is a resource id the grammar forbids a dot in, so
-     * the dotted path addresses exactly one field. A deep {@code $set} creates the intermediate objects, so
-     * a sink may ack before the consumer has any other cursor state.
+     * {@code consumerOffsets.<pipelineId>.sinkAckedSrcpos} and the two fields carrying the order it sat
+     * at, so the reader's per-table cursor is left untouched by a sink-ack advance. The pipeline id is a
+     * resource id the grammar forbids a dot in, so each dotted path addresses exactly one field. A deep
+     * {@code $set} creates the intermediate objects, so a sink may ack before the consumer has any other
+     * cursor state.
+     *
+     * <p>The three fields move together in one update. A token stored without its order can no longer be
+     * ranked against anything, and an order stored without its token is nothing a read can resume from;
+     * either alone would be a record no later comparison can use.
      */
-    static Document sinkAckedSrcposUpdate(String pipelineId, String srcpos) {
+    static Document sinkAckedUpdate(String pipelineId, ChainPosition position) {
         Objects.requireNonNull(pipelineId, "pipelineId");
-        Objects.requireNonNull(srcpos, "srcpos");
-        return new Document("$set",
-                new Document("consumerOffsets." + pipelineId + ".sinkAckedSrcpos", srcpos));
+        Objects.requireNonNull(position, "position");
+        Objects.requireNonNull(position.order(), "position order");
+        String path = "consumerOffsets." + pipelineId + ".";
+        Document fields = new Document(path + "sinkAckedEpoch", position.order().epoch())
+                .append(path + "sinkAckedSeq", position.order().seq());
+        if (position.token() != null) {
+            fields.append(path + "sinkAckedSrcpos", position.token());
+        }
+        return new Document("$set", fields);
     }
 
     @Override
@@ -299,7 +312,7 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
             // empty cursor rather than as corruption.
             throw new TapstateException(IoError.DOCUMENT_UNREADABLE, Map.of("id", pipelineId), null);
         }
-        return new ConsumerOffset(pipelineId, perTableSeq, document.getString("sinkAckedSrcpos"));
+        return new ConsumerOffset(pipelineId, perTableSeq, sinkAckedFrom(document));
     }
 
     /** Reconstructs one schema version from its stored sub-document. */
@@ -321,6 +334,23 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
         throw new TapstateException(IoError.DOCUMENT_UNREADABLE, Map.of("id", miningChainId), null);
     }
 
+    /**
+     * The acked position a consumer document carries, or null when it has none. A record whose token was
+     * written without the order it sat at cannot be ranked against the reader's position, and reads back as
+     * nothing acked: that pins a source-read advance where it stands, which only ever costs re-mining
+     * changes already read - the direction that keeps them re-minable at all.
+     */
+    private static ChainPosition sinkAckedFrom(Document document) {
+        Object epoch = document.get("sinkAckedEpoch");
+        Object seq = document.get("sinkAckedSeq");
+        if (!(epoch instanceof Number) || !(seq instanceof Number)) {
+            return null;
+        }
+        return new ChainPosition(
+                new SourceOrder(((Number) epoch).longValue(), ((Number) seq).longValue()),
+                document.getString("sinkAckedSrcpos"));
+    }
+
     /** Maps one consumer cursor to its stored sub-document (the per-table read cursor plus the acked position). */
     private static Document consumerToDocument(ConsumerOffset offset) {
         Document perTable = new Document();
@@ -328,8 +358,12 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
             perTable.append(entry.getKey(), entry.getValue());
         }
         Document document = new Document("perTableSeq", perTable);
-        if (offset.sinkAckedSrcpos() != null) {
-            document.append("sinkAckedSrcpos", offset.sinkAckedSrcpos());
+        if (offset.sinkAcked() != null) {
+            document.append("sinkAckedEpoch", offset.sinkAcked().order().epoch())
+                    .append("sinkAckedSeq", offset.sinkAcked().order().seq());
+            if (offset.sinkAcked().token() != null) {
+                document.append("sinkAckedSrcpos", offset.sinkAcked().token());
+            }
         }
         return document;
     }

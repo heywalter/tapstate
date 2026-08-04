@@ -1,5 +1,7 @@
 package io.tapstate.spi.store;
 
+import io.tapstate.core.event.SourceOrder;
+import io.tapstate.core.event.ChainPosition;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -515,7 +517,7 @@ class StorePortTest {
 
         meta.upsertConsumerOffset("chain", new ConsumerOffset("p1", Map.of("orders", 10L), null));
         meta.upsertConsumerOffset("chain", new ConsumerOffset("p2", Map.of("orders", 20L), null));
-        meta.upsertConsumerOffset("chain", new ConsumerOffset("p1", Map.of("orders", 99L), "gtid:aaa-1:99"));
+        meta.upsertConsumerOffset("chain", new ConsumerOffset("p1", Map.of("orders", 99L), new ChainPosition(new SourceOrder(1, 99), "gtid:aaa-1:99")));
 
         List<ConsumerOffset> cursors = meta.read("chain").orElseThrow().consumerOffsets();
         assertThat(cursors).extracting(ConsumerOffset::pipelineId).containsExactly("p1", "p2");
@@ -946,7 +948,7 @@ class StorePortTest {
                             Map<String, Long> perTable = new HashMap<>(existing.perTableSeq());
                             perTable.put(table, lastReadSeq);
                             // Advance the read cursor only; the consumer's sink-acked position is untouched.
-                            merged.add(new ConsumerOffset(pipelineId, perTable, existing.sinkAckedSrcpos()));
+                            merged.add(new ConsumerOffset(pipelineId, perTable, existing.sinkAcked()));
                             advanced = true;
                         } else {
                             merged.add(existing);
@@ -962,14 +964,14 @@ class StorePortTest {
                 }
 
                 @Override
-                public void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
+                public void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition position) {
                     SrsMeta current = require(miningChainId);
                     List<ConsumerOffset> merged = new ArrayList<>();
                     boolean advanced = false;
                     for (ConsumerOffset existing : current.consumerOffsets()) {
                         if (existing.pipelineId().equals(pipelineId)) {
                             // Advance the sink-acked position only; the consumer's read cursor is untouched.
-                            merged.add(new ConsumerOffset(pipelineId, existing.perTableSeq(), srcpos));
+                            merged.add(new ConsumerOffset(pipelineId, existing.perTableSeq(), position));
                             advanced = true;
                         } else {
                             merged.add(existing);
@@ -977,7 +979,7 @@ class StorePortTest {
                     }
                     if (!advanced) {
                         // A sink may ack before the reader first publishes a cursor: create the entry, cursor empty.
-                        merged.add(new ConsumerOffset(pipelineId, Map.of(), srcpos));
+                        merged.add(new ConsumerOffset(pipelineId, Map.of(), position));
                     }
                     srsMeta.put(miningChainId, new SrsMeta(current.miningChainId(), current.sourceReadOffset(),
                             merged, current.cdcStartPosition(), current.schemaHistory(), current.retention(),

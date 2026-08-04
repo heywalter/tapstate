@@ -1,5 +1,6 @@
 package io.tapstate.spi.store;
 
+import io.tapstate.core.event.ChainPosition;
 import java.util.Optional;
 
 /**
@@ -61,11 +62,15 @@ public interface SrsMetaStore {
      * never clobbers the {@code perTableSeq} read cursor the pipeline's reader writes to the same consumer
      * record: the sink-ack and the read cursor are independent writers of one consumer, of different
      * lifetime. It creates the consumer entry when the pipeline has none yet, so a sink may ack before the
-     * reader first publishes a cursor. The caller advances a monotonically non-decreasing position (the
-     * sink's contiguous acked prefix); this store persists the value the caller resolved. A mutate on an
-     * unseeded chain is a caller ordering error.
+     * reader first publishes a cursor. The caller only ever advances, never lowers; this store persists the
+     * position the caller resolved. A mutate on an unseeded chain is a caller ordering error.
+     *
+     * <p>Both halves of the position are persisted. The token is what a read resumes from; the order is
+     * what the next comparison runs on, and a stored token without it can no longer be ranked against the
+     * reader's own position — which is the comparison that keeps a source read from passing the slowest
+     * sink.
      */
-    void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos);
+    void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition position);
 
     /**
      * Records the chain's snapshot-to-cdc seam: the opaque position the cdc tail starts from, together

@@ -1,6 +1,7 @@
 package io.tapstate.app;
 
 import com.hazelcast.core.HazelcastInstance;
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.runtime.engine.SinkAck;
 import io.tapstate.runtime.engine.SinkAckFactory;
 import io.tapstate.runtime.srs.CaptureRunUnit;
@@ -52,7 +53,7 @@ final class StoreBackedSinkAckFactory implements SinkAckFactory {
                         "sink acked a chain the pipeline never sourced: '" + chain + "'");
             }
             String token = position.token() != null ? position.token() : cdcStart(meta, miningChainId);
-            meta.advanceSinkAckedSrcpos(miningChainId, pipelineId, token);
+            meta.advanceSinkAcked(miningChainId, pipelineId, new ChainPosition(position.order(), token));
         };
     }
 

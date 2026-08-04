@@ -1,5 +1,6 @@
 package io.tapstate.app;
 
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.SchemaVersion;
 import io.tapstate.spi.store.SrsMeta;
@@ -68,7 +69,7 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
         }
         Map<String, Long> perTable = new LinkedHashMap<>(existing == null ? Map.of() : existing.perTableSeq());
         perTable.put(table, lastReadSeq);
-        String ack = existing == null ? null : existing.sinkAckedSrcpos();
+        ChainPosition ack = existing == null ? null : existing.sinkAcked();
         next.add(new ConsumerOffset(pipelineId, perTable, ack));
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
@@ -76,7 +77,7 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
     }
 
     @Override
-    public synchronized void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
+    public synchronized void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition position) {
         SrsMeta m = require(miningChainId);
         List<ConsumerOffset> next = new ArrayList<>();
         ConsumerOffset existing = null;
@@ -88,7 +89,7 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
             }
         }
         Map<String, Long> perTable = existing == null ? Map.of() : existing.perTableSeq();
-        next.add(new ConsumerOffset(pipelineId, perTable, srcpos));
+        next.add(new ConsumerOffset(pipelineId, perTable, position));
         records.put(miningChainId, new SrsMeta(
                 m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
                 m.schemaHistory(), m.retention(), m.snapshotCompletedTables(), m.epoch(), m.snapshotEpoch()));
