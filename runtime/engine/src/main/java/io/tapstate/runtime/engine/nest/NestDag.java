@@ -7,7 +7,6 @@ import com.hazelcast.jet.core.Processor;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.Vertex;
-import com.hazelcast.jet.core.processor.Processors;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.PassthroughProcessor;
