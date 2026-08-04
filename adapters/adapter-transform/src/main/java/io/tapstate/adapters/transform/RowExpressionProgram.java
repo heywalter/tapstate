@@ -1,13 +1,19 @@
 package io.tapstate.adapters.transform;
 
+import com.google.protobuf.ByteString;
 import dev.cel.common.CelAbstractSyntaxTree;
 import dev.cel.runtime.CelEvaluationException;
 import dev.cel.runtime.CelRuntime;
 import dev.cel.runtime.CelRuntimeFactory;
 import io.tapstate.core.dsl.RowExpressions;
 import io.tapstate.core.event.Envelope;
+import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.function.UnaryOperator;
 
 /**
  * One compiled row expression, ready to evaluate against an event. The compiler environment is the
@@ -61,16 +67,88 @@ final class RowExpressionProgram {
         vars.put("op", event.op().symbol());
         vars.put("ts", event.ts());
         vars.put("src", event.src());
-        vars.put("before", event.before() == null ? Map.of() : event.before());
-        vars.put("after", event.after() == null ? Map.of() : event.after());
-        vars.put("schema", event.schema() == null ? Map.of() : event.schema());
+        vars.put("before", bind(event.before()));
+        vars.put("after", bind(event.after()));
+        vars.put("schema", bind(event.schema()));
         try {
-            return program.eval(vars);
+            return unbound(program.eval(vars));
         } catch (CelEvaluationException e) {
             // A row-level evaluation failure (a missing field, a type clash on a dyn value, a function
             // that type-checks but is unbound at runtime) is a user-diagnosable condition: surface it
             // as a coded diagnostic naming the expression, not a bare crash that fails the job opaquely.
             throw TransformErrors.expressionFailed(expr, e);
         }
+    }
+
+    // A row image as the expression sees it. An absent map binds empty, so a present-field test is
+    // well defined rather than a null dereference.
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> bind(Map<String, Object> row) {
+        return row == null ? Map.of() : (Map<String, Object>) bound(row);
+    }
+
+    // A connector hands over whatever type its driver uses, which is not always one the expression
+    // language has: an int column may arrive in any integral box, a real one as a float, a binary one
+    // as a byte array. Each becomes the type the language does have, so an operation apply already
+    // judged safe can actually run instead of failing once the pipeline is live. Every conversion
+    // here widens or re-wraps and none of them rounds, so no value changes on the way in.
+    //
+    // Only a value the target type actually holds is converted. A wider integer is left as it came:
+    // the expression then refuses it by name, where narrowing it would hand the expression a
+    // different number and report the result as a success.
+    //
+    // Nested values are converted too, since a document's own fields and an array's elements are as
+    // reachable from an expression as a top-level column. A container whose contents all pass through
+    // unchanged is returned as it is, so the common row costs no copy.
+    private static Object bound(Object value) {
+        if (value instanceof Integer || value instanceof Short || value instanceof Byte) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof Float f) {
+            return f.doubleValue();
+        }
+        if (value instanceof BigInteger big && big.bitLength() < Long.SIZE) {
+            return big.longValue();
+        }
+        if (value instanceof byte[] bytes) {
+            return ByteString.copyFrom(bytes);
+        }
+        return mapped(value, RowExpressionProgram::bound);
+    }
+
+    // The reverse, for what an expression hands back. The byte string is the expression language's
+    // own wrapper; a sink is owed the row's bytes, so a value that merely travelled through an
+    // expression leaves as the kind of value it arrived as.
+    private static Object unbound(Object value) {
+        if (value instanceof ByteString bytes) {
+            return bytes.toByteArray();
+        }
+        return mapped(value, RowExpressionProgram::unbound);
+    }
+
+    // Applies a conversion through a map or a list, returning the original container when nothing
+    // inside it changed. Any other value is its own conversion.
+    private static Object mapped(Object value, UnaryOperator<Object> conversion) {
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> converted = new LinkedHashMap<>(map.size());
+            boolean changed = false;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                Object element = conversion.apply(entry.getValue());
+                changed |= element != entry.getValue();
+                converted.put(entry.getKey(), element);
+            }
+            return changed ? converted : map;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> converted = new ArrayList<>(list.size());
+            boolean changed = false;
+            for (Object element : list) {
+                Object next = conversion.apply(element);
+                changed |= next != element;
+                converted.add(next);
+            }
+            return changed ? converted : list;
+        }
+        return value;
     }
 }
