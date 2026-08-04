@@ -243,12 +243,12 @@ class AssemblerProcessorTest {
 
         feed(FROM_POLICIES, claimElement(5, "C1", "P1", "CL1", "t5"));
 
-        assertThat(store.load(key).lowestPendingByChain())
+        assertThat(store.load(key).lowestHeldByChain())
                 .containsExactly(Map.entry("claim", new ChainPosition(at(5), "t5")));
 
         feed(FROM_POLICIES, policyElement(6, "C1", "P1"));
 
-        assertThat(store.load(key).lowestPendingByChain())
+        assertThat(store.load(key).lowestHeldByChain())
                 .describedAs("the parent arrived, the child is in the document, nothing is held back")
                 .isEmpty();
     }
@@ -258,6 +258,34 @@ class AssemblerProcessorTest {
         assertThat(feed(FROM_POLICIES, policyElement(2, "C9", "P9")))
                 .describedAs("nothing was ever emitted for it, so there is nothing to tell a sink to remove")
                 .isEmpty();
+    }
+
+    /**
+     * The easier half of the frontier's debt to miss. This element is not waiting for anything - it is
+     * attached exactly where it belongs, and looks for all the world like it has been dealt with - but
+     * nothing went out, because a document with no root is a ghost downstream. Let the bound past it and a
+     * restart neither replays the change nor finds it in a state that did not survive.
+     */
+    @Test
+    void anElementOfARootThatHasNotArrivedGoesOnHoldingTheFrontierBack() {
+        feed(FROM_POLICIES, policyElement(2, "C9", "P9"));
+
+        assertThat(store.load(List.of("C9")).lowestHeldByChain())
+                .containsExactly(Map.entry("policy", new ChainPosition(at(2), null)));
+    }
+
+    @Test
+    void aDeletionGoingOutForARootReleasesNothingThatArrivedBeneathIt() {
+        feed(FROM_POLICIES, policyElement(2, "C9", "P9"));
+
+        List<Envelope> out = feed(ROOT_ROWS,
+                Envelope.delete(3, "customer", row("customer_id", "C9"), null).withOrder(at(3)));
+
+        assertThat(out).singleElement()
+                .satisfies(sent -> assertThat(sent.op()).isEqualTo(Op.DELETE));
+        assertThat(store.load(List.of("C9")).lowestHeldByChain())
+                .describedAs("what goes out for a deleted root is its key, which carries no element with it")
+                .containsExactly(Map.entry("policy", new ChainPosition(at(2), null)));
     }
 
     @Test

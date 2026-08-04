@@ -34,7 +34,7 @@ import java.util.Objects;
  * here" a question with one answer.
  *
  * <p><b>A held child keeps the position it arrived with.</b> It has been consumed and not emitted, so
- * the durable frontier must stay below it; {@link #lowestPendingByChain()} is what a vertex reports so
+ * the durable frontier must stay below it; {@link #lowestHeldByChain()} is what a vertex reports so
  * that can be enforced. Both halves of a position are kept: the order to compare on, the token to
  * persist and hand back to the connector.
  *
@@ -116,7 +116,7 @@ public final class ResolverState implements Serializable {
      * The lowest position held per chain — the bound below which the durable frontier must stay for the
      * events waiting here. Chains with nothing waiting do not appear.
      */
-    public Map<String, ChainPosition> lowestPendingByChain() {
+    public Map<String, ChainPosition> lowestHeldByChain() {
         Map<String, ChainPosition> lowest = new LinkedHashMap<>();
         for (NestElement child : waiting) {
             child.positions().forEach((chain, position) -> lowest.merge(chain, position,

@@ -41,10 +41,15 @@ import java.util.Optional;
  * survive being stored and restored, and a delete held that way still wins over an insert replayed
  * from beneath it.
  *
- * <p><b>A held child keeps the position it arrived with.</b> It has been taken off the stream and put
- * where no sink can see it, so the durable frontier must stay below it; {@link #lowestPendingByChain()}
- * is what a vertex reports so that can be enforced. Let the frontier past it and a restart neither
- * replays that change nor finds it, leaving the document an element short with nothing to signal it.
+ * <p><b>Every change taken in is held until a document carrying it goes out</b>, and
+ * {@link #lowestHeldByChain()} is what a vertex reports so the durable frontier can be kept below it.
+ * Let the frontier past a change that is still here and a restart neither replays it nor finds it,
+ * leaving the document an element short with nothing anywhere to signal it. Two quite different things
+ * are held that way: a child whose ancestor has not arrived, put where no sink can see it; and anything
+ * absorbed into a document that did not go out — while the root is absent nothing is rendered at all, so
+ * an element can be attached, in its right place, and still have been shown to nobody. {@link
+ * #documentSent()} is what releases them, and only a whole document does: what goes out for a deleted
+ * root is its key, which carries no element with it.
  *
  * <p><b>A document is rendered only while the root is present.</b> Until the root arrives, and again
  * once it is deleted, there is no document at all, whatever triggered the render — a child arriving, an
@@ -80,6 +85,9 @@ public final class RootAssembly implements Serializable {
 
     /** Children whose parent row has not arrived yet, by the parent they are waiting for. */
     private final Map<WaitingOn, List<Pending>> waiting = new LinkedHashMap<>();
+
+    /** The lowest position taken in per chain since the last document went out — cleared when one does. */
+    private final Map<String, ChainPosition> unsent = new LinkedHashMap<>();
 
     /** Whether the root row is currently in the document — false before it arrives and after it is deleted. */
     public boolean rootPresent() {
@@ -168,6 +176,7 @@ public final class RootAssembly implements Serializable {
         }
         slot.remove(from.elementKey());
         moved.set(copyOf(fields), order);
+        absorbed(positions);
         Map<String, Map<List<Object>, ElementNode>> target = containerFor(to);
         if (target == null) {
             waiting.computeIfAbsent(new WaitingOn(to.parentPathId(), to.parentIdentity()), on -> new ArrayList<>())
@@ -179,19 +188,28 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
-     * The lowest position held per chain — the bound the durable frontier must stay below for the elements
-     * waiting here for an ancestor that has not arrived. Chains with nothing waiting do not appear, and a
-     * chain's two halves are reported as they arrived: the order to compare on, the token to persist.
+     * The lowest position held per chain — the bound the durable frontier must stay below for everything
+     * this assembly has taken in and not sent on: the elements waiting for an ancestor that has not
+     * arrived, and whatever has been absorbed since the last document went out. Chains holding nothing do
+     * not appear, and a chain's two halves are reported as they arrived: the order to compare on, the
+     * token to persist.
      */
-    public Map<String, ChainPosition> lowestPendingByChain() {
-        Map<String, ChainPosition> lowest = new LinkedHashMap<>();
+    public Map<String, ChainPosition> lowestHeldByChain() {
+        Map<String, ChainPosition> lowest = new LinkedHashMap<>(unsent);
         for (List<Pending> held : waiting.values()) {
             for (Pending pending : held) {
-                pending.positions().forEach((chain, position) -> lowest.merge(chain, position,
-                        (kept, candidate) -> candidate.order().compareTo(kept.order()) < 0 ? candidate : kept));
+                lowest(lowest, pending.positions());
             }
         }
         return lowest;
+    }
+
+    /**
+     * Records that a document carrying everything absorbed so far has gone downstream, releasing it. What
+     * is still waiting for an ancestor was in no document and keeps holding the frontier back.
+     */
+    public void documentSent() {
+        unsent.clear();
     }
 
     /**
@@ -216,6 +234,8 @@ public final class RootAssembly implements Serializable {
         Objects.requireNonNull(positions, "positions");
         Map<String, Map<List<Object>, ElementNode>> container = containerFor(ref);
         if (container == null) {
+            // Not recorded as absorbed: what waits keeps its own position and is reported from there, and
+            // it goes on being reported after a document has released everything absorbed.
             waiting.computeIfAbsent(new WaitingOn(ref.parentPathId(), ref.parentIdentity()), on -> new ArrayList<>())
                     .add(Pending.of(ref, fields, order, positions));
             return true;
@@ -227,10 +247,12 @@ public final class RootAssembly implements Serializable {
                 return false;
             }
             held.set(fields, order);
+            absorbed(positions);
             return true;
         }
         ElementNode element = new ElementNode(fields, order);
         slot.put(ref.elementKey(), element);
+        absorbed(positions);
         if (ref.identity() != null) {
             byIdentity.computeIfAbsent(ref.pathId(), path -> new LinkedHashMap<>()).put(ref.identity(), element);
             release(ref.pathId(), ref.identity());
@@ -255,8 +277,21 @@ public final class RootAssembly implements Serializable {
                         containerFor(ref), "a held child is released only once its parent is present");
                 parent.computeIfAbsent(ref.field(), field -> new LinkedHashMap<>())
                         .put(ref.elementKey(), pending.node());
+                // Off the waiting bucket and into the tree, which is not the same as out of here: until a
+                // document carries it away it is as unsent as it was while it waited.
+                absorbed(pending.positions());
             }
         }
+    }
+
+    /** Takes note of where a change taken in came from, so the frontier is kept below it until it leaves. */
+    private void absorbed(Map<String, ChainPosition> positions) {
+        lowest(unsent, positions);
+    }
+
+    private static void lowest(Map<String, ChainPosition> into, Map<String, ChainPosition> positions) {
+        positions.forEach((chain, position) -> into.merge(chain, position,
+                (kept, candidate) -> candidate.order().compareTo(kept.order()) < 0 ? candidate : kept));
     }
 
     /** Where {@code ref}'s embed lives, or null while the parent row it names has not arrived. */

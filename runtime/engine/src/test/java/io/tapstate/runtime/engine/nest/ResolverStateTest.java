@@ -129,7 +129,7 @@ class ResolverStateTest {
         state.resolve(child("items", 4, "t4", "sku", "b"));
         state.resolve(child("prices", 9, "t9", "amount", 1));
 
-        assertThat(state.lowestPendingByChain()).containsExactly(
+        assertThat(state.lowestHeldByChain()).containsExactly(
                 Map.entry("items", new ChainPosition(at(4), "t4")),
                 Map.entry("prices", new ChainPosition(at(9), "t9")));
     }

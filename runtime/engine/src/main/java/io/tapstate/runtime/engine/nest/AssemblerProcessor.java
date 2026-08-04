@@ -140,17 +140,25 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * change: there is no before image to offer - the elements that moved came from other rows entirely -
      * and a sink handed a change with no before image matches nothing, so it writes nothing and reports
      * nothing wrong.
+     *
+     * <p>A document going out is also what releases the changes it carried, and only a document does: what
+     * goes out for a deleted root is its key, so an element absorbed alongside that deletion has still been
+     * shown to nobody and goes on holding the frontier back. The state is stored after that, so what is
+     * written down is what is still owed rather than what has just been paid.
      */
     private void settle(Map<Object, Touched> touched) {
         touched.forEach((key, document) -> {
-            store.save(key, document.assembly);
             document.assembly.render(slots).ifPresentOrElse(
-                    rendered -> outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null)),
+                    rendered -> {
+                        outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null));
+                        document.assembly.documentSent();
+                    },
                     () -> {
                         if (document.rootDeleted) {
                             outgoing.add(Envelope.delete(document.ts, outputStream, keyRow(key), null));
                         }
                     });
+            store.save(key, document.assembly);
         });
     }
 
