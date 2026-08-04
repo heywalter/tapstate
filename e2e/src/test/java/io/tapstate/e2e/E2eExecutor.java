@@ -41,26 +41,43 @@ public final class E2eExecutor {
         // Discovery trails the seed: a source model is read out of what the source holds, and the seed is
         // what puts it there.
         envelope.setup().discover().forEach(binding::discoverSchema);
+        applyResources(envelope.setup());
         for (Step step : envelope.steps()) {
             execute(step, pipelineId);
         }
     }
 
     /**
-     * Strict order: a resource may not be applied before the connector it names is registered. The
-     * resources themselves go in one batch, because that is the closure the product resolves references
-     * within.
+     * Strict order: register, read, seed, discover, apply. Each step is where it is because the one
+     * before it is what makes it answerable.
      *
-     * <p>The third bootstrap verb, {@code discover}, is deliberately not here. Its dependency is not on the
-     * apply alone but on the data: a model is discovered from what the source holds, and the harness's seed
-     * is what materializes the table - it drops and rewrites it, so before a seed there is nothing to
-     * discover. Running discovery first reads an absent table, returns an empty model, and leaves the sink
-     * with no target and no key to upsert on - quietly, because an empty model is what an empty source
-     * honestly looks like. So the executor keeps the envelope's three-key ordering and runs the discovery
-     * once the data it describes exists.
+     * <p>A resource may not be applied before the connector it names is registered. The resources
+     * themselves go in one batch, because that is the closure the product resolves references within.
+     *
+     * <p>Discovery sits between the seed and the apply, pinned from both sides. It cannot precede the
+     * seed: a model is discovered from what the source holds, and the harness's seed is what
+     * materializes the table - it drops and rewrites it, so before a seed there is nothing to discover.
+     * Discovering an absent table returns an empty model and leaves the sink with no target and no key
+     * to upsert on, quietly, because an empty model is what an empty source honestly looks like. And it
+     * cannot follow the apply: a pipeline whose expression reads a row field is refused unless the
+     * sources feeding it were discovered first, so an apply that ran before the discovery would be
+     * refused rather than applied.
+     *
+     * <p>Which is why reading the resources is its own step. The seed dials the source's own address and
+     * the discovery names its connector and settings - both stated only in the resource files, and both
+     * needed before the product has been told anything at all.
      */
     private void provision(Setup setup) {
         setup.connectors().forEach(binding::registerConnector);
+        if (!setup.apply().isEmpty()) {
+            // Read, do not apply. What the resources declare is needed before the product is told
+            // anything: the seed dials the source's own address, and a discovery is asked for with the
+            // connector and settings the source states.
+            binding.readResources(setup.apply());
+        }
+    }
+
+    private void applyResources(Setup setup) {
         if (!setup.apply().isEmpty()) {
             // A specification that applies nothing gets no apply: an empty batch would be a round trip
             // that asks the product for nothing.

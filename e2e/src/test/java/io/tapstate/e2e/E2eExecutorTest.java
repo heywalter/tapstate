@@ -38,7 +38,7 @@ class E2eExecutorTest {
      * and no key to upsert on. Discovering last is what makes the discovery real.
      */
     @Test
-    void provisionsInDependencyOrderAndDiscoversWhatTheSeedPutThere() {
+    void discoversBetweenTheSeedThatFeedsItAndTheApplyThatRequiresIt() {
         execute(
                 """
                 name: n
@@ -53,14 +53,20 @@ class E2eExecutorTest {
                   - start
                 """);
 
+        // Discovery is pinned from both sides, and this order is the whole assertion. It cannot precede
+        // the seed, which is what materializes the table it reads. It cannot follow the apply, because a
+        // pipeline whose expression reads a row field is refused unless its sources were discovered
+        // first. Reading the resources is therefore its own step: the seed needs the source's address
+        // and the discovery needs its connector and settings, both before the product is told anything.
         assertThat(binding.calls)
                 .containsExactly(
                         "register:mongodb",
+                        "read:[src_mongo.tap.yml, tgt_mongo.tap.yml]",
+                        "seed:src_mongo.orders=3",
+                        "discover:src_mongo",
                         // One apply, not one per file: the product resolves references within the set
                         // submitted together, so a pipeline and its source must arrive in the same batch.
                         "apply:[src_mongo.tap.yml, tgt_mongo.tap.yml]",
-                        "seed:src_mongo.orders=3",
-                        "discover:src_mongo",
                         "drive:START");
     }
 
@@ -322,6 +328,11 @@ class E2eExecutorTest {
         @Override
         public void applyResources(List<String> resourceFiles) {
             calls.add("apply:" + resourceFiles);
+        }
+
+        @Override
+        public void readResources(List<String> resourceFiles) {
+            calls.add("read:" + resourceFiles);
         }
 
         @Override
