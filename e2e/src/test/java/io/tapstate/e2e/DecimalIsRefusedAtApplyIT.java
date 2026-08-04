@@ -25,7 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Asserting only that the apply failed is satisfied by any failure at all, including a connector that
  * would not load; asserting only the code leaves "refused, having already filed the pipeline"
  * indistinguishable from a clean refusal, and a half-applied workspace is the state an author would
- * then have to unpick by hand.
+ * then have to unpick by hand. The listing is read over every artifact the batch submitted rather than
+ * the pipeline alone: the source and target are the ones written first, so a batch that filed half of
+ * itself is half-filed in exactly the artifacts a pipeline-only assertion never looks at.
  *
  * <p>Discovery runs before the apply, not after it, which is the order the obligation on reading a row
  * field imposes. So the refusal here cannot be the absent-schema refusal wearing a different name: the
@@ -83,9 +85,9 @@ class DecimalIsRefusedAtApplyIT {
                                 + "language has no lossless equivalent for")
                         .isEqualTo(TYPE_UNSUPPORTED);
                 assertThat(control.artifactIds())
-                        .as("what the server holds after refusing the batch - a refusal that filed the "
-                                + "pipeline anyway leaves the author a workspace to unpick by hand")
-                        .doesNotContain(PIPELINE_ID);
+                        .as("what the server holds after refusing the batch - a refusal that filed any "
+                                + "of it leaves the author a workspace to unpick by hand")
+                        .doesNotContain(NumericSource.SOURCE_ID, NumericSource.TARGET_ID, PIPELINE_ID);
             }
         }
     }

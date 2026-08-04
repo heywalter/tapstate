@@ -41,7 +41,7 @@ public final class E2eExecutor {
         // Discovery trails the seed: a source model is read out of what the source holds, and the seed is
         // what puts it there.
         envelope.setup().discover().forEach(binding::discoverSchema);
-        applyResources(envelope.setup());
+        applyResources(envelope.setup(), envelope.pipeline());
         for (Step step : envelope.steps()) {
             execute(step, pipelineId);
         }
@@ -77,12 +77,31 @@ public final class E2eExecutor {
         }
     }
 
-    private void applyResources(Setup setup) {
-        if (!setup.apply().isEmpty()) {
-            // A specification that applies nothing gets no apply: an empty batch would be a round trip
-            // that asks the product for nothing.
-            binding.applyResources(setup.apply());
+    /**
+     * The batch is the setup's resources plus the pipeline the envelope names. The pipeline is not
+     * optional to apply: every specification declares one, and every specification drives it - so a run
+     * that applied only what {@code setup.apply} listed would leave the steps addressing a pipeline the
+     * product was never told about, and the specification would fail at its first verb over a resource
+     * that reads perfectly correct.
+     *
+     * <p>Listing it under {@code setup.apply} anyway is allowed and is what the checked-in examples do,
+     * so it is added only when absent: the batch is a closure the product resolves ids within, and one
+     * id submitted twice is not a closure. Which spelling an author picks cannot change what is sent.
+     *
+     * <p>One batch, not two. The pipeline names its source and target by id, and the product resolves
+     * references within the set submitted together - so applying it after its endpoints, in a round trip
+     * of its own, is a pipeline referencing ids that are not in its own batch.
+     *
+     * <p>The pipeline is applied but never read in {@link #provision}: the read is there to learn an
+     * endpoint's own address and settings before the product has been told anything, and a pipeline
+     * states neither.
+     */
+    private void applyResources(Setup setup, String pipeline) {
+        List<String> resources = new ArrayList<>(setup.apply());
+        if (!resources.contains(pipeline)) {
+            resources.add(pipeline);
         }
+        binding.applyResources(resources);
     }
 
     private void execute(Step step, String pipelineId) {

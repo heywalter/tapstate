@@ -31,7 +31,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The refusal is asserted by its code and by the server's own artifact listing, not by the code
  * alone: "refused, having already filed half the batch" and a clean refusal answer the same code, and
- * only the listing tells them apart.
+ * only the listing tells them apart. The listing is read over every artifact the batch submitted rather
+ * than the pipeline alone: the source and target are the ones written first, so a batch that filed half
+ * of itself is half-filed in exactly the artifacts a pipeline-only assertion never looks at.
  *
  * <p>Runs on the harness's own connector, so it needs Docker for the store and nothing else. That is
  * deliberate. The obligation's subject is whether an expression reads a row, which no real database is
@@ -40,6 +42,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class RowExpressionWithoutDiscoveryIsRefusedIT {
 
+    private static final String SOURCE_ID = "src_file";
+    private static final String TARGET_ID = "tgt_file";
     private static final String PIPELINE_ID = "row_expression_pipeline";
     private static final String NEEDS_DISCOVERY = "dsl.row-expression-needs-discovery";
 
@@ -62,9 +66,9 @@ class RowExpressionWithoutDiscoveryIsRefusedIT {
                     .as("the code refusing a row expression over a source that was never discovered")
                     .isEqualTo(NEEDS_DISCOVERY);
             assertThat(control.artifactIds())
-                    .as("what the server holds after refusing the batch - a refusal that filed the "
-                            + "pipeline anyway is not a refusal")
-                    .doesNotContain(PIPELINE_ID);
+                    .as("what the server holds after refusing the batch - a refusal that filed any of "
+                            + "it is not a refusal")
+                    .doesNotContain(SOURCE_ID, TARGET_ID, PIPELINE_ID);
         }
     }
 

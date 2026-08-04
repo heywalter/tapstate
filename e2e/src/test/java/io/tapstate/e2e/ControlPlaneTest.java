@@ -142,6 +142,47 @@ class ControlPlaneTest {
                 .hasMessageContaining("carried no errorCount");
     }
 
+    // A verb the harness expects to be refused reads its answer the same way: the product declining a
+    // request is the outcome under test, and everything else - it succeeding, or the server failing - is
+    // the specification's own failure and has to stay loud. Only the client-error range is a refusal; a
+    // 5xx is the server unable to answer at all, which says nothing about whether the request was
+    // acceptable, and reading it as the expected refusal is how a real regression goes green.
+
+    @Test
+    void readsAClientErrorAsTheRefusalItIs() {
+        assertThat(ControlPlane.interpretRefusal(400, coded("dsl.row-expression-type-unsupported"), "the batch"))
+                .isEqualTo(new ControlPlane.Refusal(400, "dsl.row-expression-type-unsupported"));
+    }
+
+    /** Every 4xx, not only the one the product happens to use today. */
+    @Test
+    void readsAnyClientErrorAsARefusal() {
+        assertThat(ControlPlane.interpretRefusal(409, coded("lifecycle.forbidden"), "the batch").status())
+                .isEqualTo(409);
+    }
+
+    @Test
+    void keepsAVerbThatWasNotRefusedAtAllLoud() {
+        assertThatThrownBy(() -> ControlPlane.interpretRefusal(200, "{}", "the batch"))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("the batch");
+    }
+
+    @Test
+    void keepsAServerFailureLoudRatherThanReadingItAsARefusal() {
+        assertThatThrownBy(() -> ControlPlane.interpretRefusal(500, "boom", "the batch"))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("500");
+    }
+
+    /** A redirect is not the product declining anything either. */
+    @Test
+    void keepsARedirectLoud() {
+        assertThatThrownBy(() -> ControlPlane.interpretRefusal(302, "", "the batch"))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("302");
+    }
+
     private static String status(String state) {
         return JsonWriter.write(Map.of("pipelineId", PIPELINE, "state", state));
     }
