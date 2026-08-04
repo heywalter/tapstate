@@ -142,10 +142,10 @@ public final class AssemblerProcessor extends AbstractProcessor {
             Touched document = touched(key, touched);
             document.ts = event.ts();
             if (NestKeys.isDeletion(event)) {
-                document.assembly.deleteRoot(order);
+                document.assembly.deleteRoot(order, event.positions());
                 document.rootDeleted = true;
             } else {
-                document.assembly.applyRoot(row, order);
+                document.assembly.applyRoot(row, order, event.positions());
             }
             return;
         }
@@ -175,21 +175,26 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * and a sink handed a change with no before image matches nothing, so it writes nothing and reports
      * nothing wrong.
      *
-     * <p>A document going out is also what releases the changes it carried, and only a document does: what
-     * goes out for a deleted root is its key, so an element absorbed alongside that deletion has still been
-     * shown to nobody and goes on holding the frontier back. The state is stored after that, so what is
-     * written down is what is still owed rather than what has just been paid.
+     * <p>A document going out is also what releases the changes it carried, and it goes out saying which
+     * chains it drew on and how far - the only thing that ever leaves here, so a sink that is told nothing
+     * can never ack a chain that ran through a nest. A deleted root's key row says the same of the deletion
+     * alone: it carries no element, so an element absorbed alongside that deletion has still been shown to
+     * nobody and goes on holding the frontier back. The state is stored after that, so what is written down
+     * is what is still owed rather than what has just been paid.
      */
     private void settle(Map<Object, Touched> touched) {
         touched.forEach((key, document) -> {
             document.assembly.render(slots).ifPresentOrElse(
                     rendered -> {
-                        outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null));
+                        outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null)
+                                .withPositions(document.assembly.covered()));
                         document.assembly.documentSent();
                     },
                     () -> {
                         if (document.rootDeleted) {
-                            outgoing.add(Envelope.delete(document.ts, outputStream, keyRow(key), null));
+                            outgoing.add(Envelope.delete(document.ts, outputStream, keyRow(key), null)
+                                    .withPositions(document.assembly.coveredByADeletion()));
+                            document.assembly.deletionSent();
                         }
                     });
             store.save(key, document.assembly);

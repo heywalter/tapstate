@@ -86,8 +86,14 @@ public final class RootAssembly implements Serializable {
     /** Children whose parent row has not arrived yet, by the parent they are waiting for. */
     private final Map<WaitingOn, List<Pending>> waiting = new LinkedHashMap<>();
 
-    /** The lowest position taken in per chain since the last document went out — cleared when one does. */
-    private final Map<String, ChainPosition> unsent = new LinkedHashMap<>();
+    /**
+     * What has been taken in since the last thing went out, kept apart by what carries it out again. A
+     * rendered document carries the root row and every element, so both are released by one; the key row
+     * of a deleted root carries the root's own change alone, and releasing the elements with it would say
+     * they had been shown when a key row holds none of them.
+     */
+    private final Absorbed fromRoot = new Absorbed();
+    private final Absorbed fromElements = new Absorbed();
 
     /** Whether the root row is currently in the document — false before it arrives and after it is deleted. */
     public boolean rootPresent() {
@@ -99,14 +105,26 @@ public final class RootAssembly implements Serializable {
      * an order at or beneath the root's own is refused.
      */
     public boolean applyRoot(Map<String, Object> fields, SourceOrder order) {
+        return applyRoot(fields, order, Map.of());
+    }
+
+    /**
+     * The same, taking note of where the change came from so the frontier stays below it until a document
+     * carrying it goes out. A change refused as too old takes no note: whoever sent the one that beat it
+     * has already shown this spot, and holding for a change that will never be rendered pins the chain.
+     */
+    public boolean applyRoot(Map<String, Object> fields, SourceOrder order,
+            Map<String, ChainPosition> positions) {
         Objects.requireNonNull(fields, "fields");
         Objects.requireNonNull(order, "order");
+        Objects.requireNonNull(positions, "positions");
         if (!wins(order, rootOrder)) {
             return false;
         }
         rootFields = copyOf(fields);
         rootOrder = order;
         rootPresent = true;
+        fromRoot.add(positions);
         return true;
     }
 
@@ -115,13 +133,20 @@ public final class RootAssembly implements Serializable {
      * Returns whether the assembly changed.
      */
     public boolean deleteRoot(SourceOrder order) {
+        return deleteRoot(order, Map.of());
+    }
+
+    /** The same, taking note of where the deletion came from — see {@link #applyRoot}. */
+    public boolean deleteRoot(SourceOrder order, Map<String, ChainPosition> positions) {
         Objects.requireNonNull(order, "order");
+        Objects.requireNonNull(positions, "positions");
         if (!wins(order, rootOrder)) {
             return false;
         }
         rootFields = null;
         rootOrder = order;
         rootPresent = false;
+        fromRoot.add(positions);
         return true;
     }
 
@@ -195,7 +220,8 @@ public final class RootAssembly implements Serializable {
      * token to persist.
      */
     public Map<String, ChainPosition> lowestHeldByChain() {
-        Map<String, ChainPosition> lowest = new LinkedHashMap<>(unsent);
+        Map<String, ChainPosition> lowest = new LinkedHashMap<>(fromRoot.lowest);
+        lowest(lowest, fromElements.lowest);
         for (List<Pending> held : waiting.values()) {
             for (Pending pending : held) {
                 lowest(lowest, pending.positions());
@@ -205,11 +231,45 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
+     * What a document going out now covers, chain by chain: the highest position it has taken in and not
+     * yet sent on. The highest and not the lowest, because the document carries every one of them — report
+     * the lowest and the ones above it are reported by nobody and trailed for good.
+     *
+     * <p>Nothing here weighs what is still held beneath: a position covered is a candidate, and how far a
+     * frontier may really go is decided by the bound combined across every instance, which is exactly what
+     * everything still held keeps down. An element that has not found its ancestor is in no document and
+     * so is covered by nothing.
+     */
+    public Map<String, ChainPosition> covered() {
+        Map<String, ChainPosition> highest = new LinkedHashMap<>(fromRoot.highest);
+        highest(highest, fromElements.highest);
+        return highest;
+    }
+
+    /**
+     * What the key row of a deleted root covers: the root's own change and nothing else. A key row carries
+     * no element, so whatever was absorbed alongside the deletion has still been shown to nobody.
+     */
+    public Map<String, ChainPosition> coveredByADeletion() {
+        return new LinkedHashMap<>(fromRoot.highest);
+    }
+
+    /**
      * Records that a document carrying everything absorbed so far has gone downstream, releasing it. What
      * is still waiting for an ancestor was in no document and keeps holding the frontier back.
      */
     public void documentSent() {
-        unsent.clear();
+        fromRoot.clear();
+        fromElements.clear();
+    }
+
+    /**
+     * Records that the key row of a deleted root has gone downstream. It releases the root's own change
+     * alone — without this a root deleted and never seen again would pin its chain for as long as the job
+     * runs, and with any more than this the elements it left behind would be reported as shown.
+     */
+    public void deletionSent() {
+        fromRoot.clear();
     }
 
     /**
@@ -286,12 +346,39 @@ public final class RootAssembly implements Serializable {
 
     /** Takes note of where a change taken in came from, so the frontier is kept below it until it leaves. */
     private void absorbed(Map<String, ChainPosition> positions) {
-        lowest(unsent, positions);
+        fromElements.add(positions);
     }
 
     private static void lowest(Map<String, ChainPosition> into, Map<String, ChainPosition> positions) {
         positions.forEach((chain, position) -> into.merge(chain, position,
                 (kept, candidate) -> candidate.order().compareTo(kept.order()) < 0 ? candidate : kept));
+    }
+
+    private static void highest(Map<String, ChainPosition> into, Map<String, ChainPosition> positions) {
+        positions.forEach((chain, position) -> into.merge(chain, position,
+                (kept, candidate) -> candidate.order().compareTo(kept.order()) > 0 ? candidate : kept));
+    }
+
+    /**
+     * What one kind of change has contributed since the last thing carrying it went out, from both ends:
+     * the lowest is what the frontier must stay below while it is still here, the highest is what goes out
+     * with it. Both are positions that really arrived — a frontier is persisted with the token that came
+     * with the order, so a value made up between two of them could never be written down.
+     */
+    private static final class Absorbed implements Serializable {
+
+        private final Map<String, ChainPosition> lowest = new LinkedHashMap<>();
+        private final Map<String, ChainPosition> highest = new LinkedHashMap<>();
+
+        void add(Map<String, ChainPosition> positions) {
+            RootAssembly.lowest(lowest, positions);
+            RootAssembly.highest(highest, positions);
+        }
+
+        void clear() {
+            lowest.clear();
+            highest.clear();
+        }
     }
 
     /** Where {@code ref}'s embed lives, or null while the parent row it names has not arrived. */

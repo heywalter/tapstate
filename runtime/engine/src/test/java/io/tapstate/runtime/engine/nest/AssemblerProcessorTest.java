@@ -289,6 +289,66 @@ class AssemblerProcessorTest {
     }
 
     @Test
+    void aDocumentGoesOutSayingHowFarEachChainItDrewOnHasGot() {
+        // A document is the only thing that ever leaves here, so it is the only place a chain that ran
+        // through a nest can be reported at all. Saying nothing leaves every such chain unackable.
+        feed(ROOT_ROWS, customer(1, "C1", "Ada"));
+
+        List<Envelope> out = feed(FROM_POLICIES,
+                policyElement(4, "C1", "P1"), claimElement(9, "C1", "P1", "CL1", "t9"));
+
+        assertThat(out).singleElement().satisfies(document -> assertThat(document.positions())
+                .describedAs("the highest of each chain, because the document carries every one of them")
+                .containsOnly(
+                        Map.entry("policy", new ChainPosition(at(4), null)),
+                        Map.entry("claim", new ChainPosition(at(9), "t9"))));
+    }
+
+    @Test
+    void aDocumentSaysNothingOfWhatAnEarlierOneAlreadyCarriedOut() {
+        feed(ROOT_ROWS, customer(1, "C1", "Ada"));
+
+        List<Envelope> out = feed(ROOT_ROWS, customer(2, "C1", "Ada Lovelace"));
+
+        assertThat(out).singleElement().satisfies(document -> assertThat(document.positions())
+                .describedAs("covering a position twice would have a sink ack it twice over")
+                .containsExactly(Map.entry("customer", new ChainPosition(at(2), null))));
+    }
+
+    @Test
+    void aDocumentCoveringOnlyAnElementNobodyCanSeeYetSaysNothingAtAll() {
+        feed(ROOT_ROWS, customer(1, "C1", "Ada"));
+
+        // The claim hangs under a policy that has not arrived, so it is taken off the stream and put where
+        // no sink can see it. The document that goes out is the customer as it already stood.
+        List<Envelope> out = feed(FROM_POLICIES, claimElement(9, "C1", "P404", "CL1", "t9"));
+
+        assertThat(out).singleElement()
+                .satisfies(document -> assertThat(document.positions()).isEmpty());
+        assertThat(store.load(List.of("C1")).lowestHeldByChain())
+                .containsExactly(Map.entry("claim", new ChainPosition(at(9), "t9")));
+    }
+
+    @Test
+    void aDeletedRootsKeyRowSaysHowFarItsOwnChainGotAndNothingMore() {
+        feed(ROOT_ROWS, customer(1, "C1", "Ada"));
+        feed(FROM_POLICIES, claimElement(9, "C1", "P404", "CL1", "t9"));
+
+        List<Envelope> out = feed(ROOT_ROWS,
+                Envelope.delete(12, "customer", row("customer_id", "C1"), null).withOrder(at(12)));
+
+        assertThat(out).singleElement().satisfies(sent -> {
+            assertThat(sent.op()).isEqualTo(Op.DELETE);
+            assertThat(sent.positions())
+                    .describedAs("a key row carries no element, and a root deleted for good would "
+                            + "otherwise pin its own chain for as long as the job runs")
+                    .containsExactly(Map.entry("customer", new ChainPosition(at(12), null)));
+        });
+        assertThat(store.load(List.of("C1")).lowestHeldByChain())
+                .containsExactly(Map.entry("claim", new ChainPosition(at(9), "t9")));
+    }
+
+    @Test
     void isNotCooperativeBecauseItsStoreMayBlock() {
         assertThat(processor.isCooperative()).isFalse();
     }
