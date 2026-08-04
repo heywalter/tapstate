@@ -79,7 +79,7 @@ class ControlPlaneAssemblyIT {
         assertThat(context.getBeansOfType(SourceService.class)).hasSize(1);
         assertThat(context.getBeansOfType(AuditedSourceService.class)).hasSize(1);
         assertThat(context.getBeansOfType(StorePort.class)).hasSize(1);
-        assertThat(context.getBeansOfType(ArtifactStore.class)).isEmpty();
+        assertThat(context.getBeansOfType(ArtifactStore.class)).hasSize(1);
 
         // Anonymous: the verb surface is guarded from the first request.
         HttpStatusCode anonymous = client.get().uri("/api/artifacts")
@@ -191,8 +191,9 @@ class ControlPlaneAssemblyIT {
 
     private static Map<String, Object> sourceDraft(String host, boolean includePassword) {
         Map<String, Object> config = includePassword
-                ? Map.of("host", host, "password", "not-returned")
-                : Map.of("host", host);
+                ? Map.of("host", host, "port", 3306, "database", "orders", "username", "app",
+                        "password", "not-returned")
+                : Map.of("host", host, "port", 3306, "database", "orders", "username", "app");
         return Map.of(
                 "id", "frontend_source",
                 "connector", "mysql",
@@ -223,13 +224,13 @@ class ControlPlaneAssemblyIT {
         Map<?, ?> body = client.post().uri("/api/connections:test")
                 .header("Authorization", "Bearer " + token)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(Map.of("id", "conn_x", "connectorId", "never_registered", "settings", Map.of()))
+                .body(Map.of("id", "conn_x", "connectorId", "mysql", "settings", mysqlConnectionSettings()))
                 .exchange((request, response) -> {
                     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
                     return response.bodyTo(Map.class);
                 });
         assertThat(body.get("code")).isEqualTo("connector.not-registered");
-        assertThat(((Map<?, ?>) body.get("params")).get("connector")).isEqualTo("never_registered");
+        assertThat(((Map<?, ?>) body.get("params")).get("connector")).isEqualTo("mysql");
     }
 
     @Test
@@ -250,19 +251,23 @@ class ControlPlaneAssemblyIT {
         Map<?, ?> body = client.post().uri("/api/connections:discover-schema")
                 .header("Authorization", "Bearer " + token)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(Map.of("id", "conn_x", "connectorId", "never_registered", "settings", Map.of()))
+                .body(Map.of("id", "conn_x", "connectorId", "mysql", "settings", mysqlConnectionSettings()))
                 .exchange((request, response) -> {
                     assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
                     return response.bodyTo(Map.class);
                 });
         assertThat(body.get("code")).isEqualTo("connector.not-registered");
-        assertThat(((Map<?, ?>) body.get("params")).get("connector")).isEqualTo("never_registered");
+        assertThat(((Map<?, ?>) body.get("params")).get("connector")).isEqualTo("mysql");
 
         // The read face renders the never-discovered state as a 404, through the same assembled store.
         HttpStatus schemaStatus = (HttpStatus) client.get().uri("/api/connections/conn_x/schema")
                 .header("Authorization", "Bearer " + token)
                 .exchange((request, response) -> response.getStatusCode());
         assertThat(schemaStatus).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    private static Map<String, Object> mysqlConnectionSettings() {
+        return Map.of("host", "127.0.0.1", "port", 3306, "database", "orders", "username", "app");
     }
 
     @Test

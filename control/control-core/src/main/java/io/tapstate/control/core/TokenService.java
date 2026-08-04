@@ -49,10 +49,21 @@ public final class TokenService {
      * it must issue a fresh token, never recover this one.
      */
     public String create(Scope scope) {
+        return persist(prepare(scope));
+    }
+
+    /** Prepares a token so an audited caller can record its id before the store mutation. */
+    PendingToken prepare(Scope scope) {
         Objects.requireNonNull(scope, "scope");
-        GeneratedSecret minted = secrets.generate();
+        return new PendingToken(scope, secrets.generate(), clock.instant());
+    }
+
+    /** Persists a prepared token and returns its one-time bearer credential. */
+    String persist(PendingToken pending) {
+        Objects.requireNonNull(pending, "pending");
+        GeneratedSecret minted = pending.secret();
         tokenStore.save(new TokenRecord(
-                minted.tokenId(), scope.name(), minted.secretHash(), false, clock.instant()));
+                minted.tokenId(), pending.scope().name(), minted.secretHash(), false, pending.createdAt()));
         return TOKEN_PREFIX + minted.tokenId() + SEPARATOR + minted.secret();
     }
 
@@ -115,6 +126,18 @@ public final class TokenService {
             return Scope.valueOf(scope);
         } catch (IllegalArgumentException unknown) {
             throw new IllegalStateException("unrecognized stored token scope: " + scope, unknown);
+        }
+    }
+
+    record PendingToken(Scope scope, GeneratedSecret secret, java.time.Instant createdAt) {
+        PendingToken {
+            Objects.requireNonNull(scope, "scope");
+            Objects.requireNonNull(secret, "secret");
+            Objects.requireNonNull(createdAt, "createdAt");
+        }
+
+        String tokenId() {
+            return secret.tokenId();
         }
     }
 }

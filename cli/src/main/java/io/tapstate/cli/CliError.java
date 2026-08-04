@@ -44,7 +44,10 @@ enum CliError implements TapstateErrorCode {
     VERB_NOT_IMPLEMENTED("cli.verb-not-implemented", Set.of("verb")),
 
     /** A REPL builtin typed as a one-shot command, where it does not exist; {@code verb} names it. */
-    REPL_BUILTIN_ONLY("cli.repl-builtin-only", Set.of("verb"));
+    REPL_BUILTIN_ONLY("cli.repl-builtin-only", Set.of("verb")),
+
+    /** The installed MCP sidecar or its required Java runtime cannot be launched. */
+    MCP_UNAVAILABLE("cli.mcp-unavailable", Set.of("reason"));
 
     private final String code;
     private final Set<String> placeholders;

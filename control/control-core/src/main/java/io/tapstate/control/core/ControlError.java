@@ -63,6 +63,9 @@ public enum ControlError implements TapstateErrorCode {
      */
     UNAUTHENTICATED("control.unauthenticated", Set.of()),
 
+    /** The HTTP control service could not be reached within the configured request budget. */
+    UNREACHABLE("control.unreachable", Set.of()),
+
     /**
      * An authenticated caller's credential does not carry the capability grade the operation requires;
      * {@code op} is the operation id and {@code required} the grade it needs. Distinct from

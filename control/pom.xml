@@ -6,8 +6,8 @@
   state, the runtime watches and converges — they decouple through the store). The sole exception
   is the synchronous probe whitelist (io.tapstate:runtime-probe), a closed set of two that
   control-core may depend on; the runtime's execution modules (engine / scheduler), Hazelcast, the
-  PDK and every adapter stay banned. Spring is allowed in rest-api (the HTTP presentation face)
-  only; control-core stays framework-free. The coarse enforcer gate below bans the runtime engine /
+  PDK and every adapter stay banned. Spring is allowed in the rest-api and mcp-server presentation
+  faces only; control-core and control-client stay framework-free. The coarse enforcer gate below bans the runtime engine /
   scheduler / Hazelcast / PDK / adapters ring-wide; the precise per-module checks (rest-api must not
   depend on spi directly; control-core must not depend on Spring) are the ArchUnit R5 rules.
 -->
@@ -27,8 +27,10 @@
   <name>Tapstate :: Control Ring</name>
 
   <modules>
+    <module>control-client</module>
     <module>control-core</module>
     <module>rest-api</module>
+    <module>mcp-server</module>
   </modules>
 
   <dependencyManagement>
@@ -48,7 +50,7 @@
       <!-- Coarse ring gate (R5 / R9): the control ring reaches the runtime only through the store,
            save the probe whitelist (io.tapstate:runtime-probe, a closed set of two). The
            runtime engine / scheduler, Hazelcast, the PDK and every adapter stay banned. Spring is
-           allowed in rest-api only. The precise per-module checks (incl. control-core must not depend
+           allowed in presentation faces only. The precise per-module checks (incl. control-core must not depend
            on Spring) are the ArchUnit R5 rules. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -74,7 +76,7 @@ Forbidden dependency in the Control ring (rules R5 / R9). Control reaches the ru
 through the store (control writes desired state, the runtime watches and converges), save the
 synchronous probe whitelist (io.tapstate:runtime-probe, a closed set of two). The
 runtime engine / scheduler, Hazelcast, the PDK and every adapter stay banned. Spring is allowed
-in rest-api only; control-core stays framework-free. The precise per-module checks are the
+in presentation faces only; control-core and control-client stay framework-free. The precise per-module checks are the
 ArchUnit R5 rules.
                   </message>
                 </bannedDependencies>

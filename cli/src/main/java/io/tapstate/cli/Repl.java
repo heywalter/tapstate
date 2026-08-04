@@ -67,7 +67,7 @@ final class Repl {
      */
     private static final List<String> ONLINE_VERBS = List.of(
             "apply", "get", "ls", "start", "stop", "pause", "resume", "status", "metrics", "snapshot",
-            "logs", "test", "test-result", "discover-schema", "schema", "register", "connectors");
+            "logs", "test", "test-result", "discover-schema", "schema", "register", "connectors", "token");
 
     private final CommandLine commandLine;
 
@@ -338,6 +338,9 @@ final class Repl {
         if (words.get(0).equals("connectors")) {
             return connectorsOnline(words);
         }
+        if (words.get(0).equals("token")) {
+            return tokenOnline(words);
+        }
         // The two streaming sugars ride the read verbs over the websocket channel: `status --watch` and
         // `logs --follow`. They are the only dash-options a connected verb accepts, and only on their verb.
         if (words.get(0).equals("status") && words.contains("--watch")) {
@@ -366,6 +369,175 @@ final class Repl {
             case "logs" -> logsOnline(words);
             default -> throw new IllegalStateException("not an online verb: " + words.get(0));
         };
+    }
+
+    /** Dispatches machine-token administration while keeping bearer creation a one-time output. */
+    private int tokenOnline(List<String> words) {
+        if (words.size() < 2) {
+            return tokenUsage("missing action (usage: token <create|list|revoke> [ARGS...] [-o text|json|yaml])");
+        }
+        return switch (words.get(1)) {
+            case "create" -> tokenCreate(words);
+            case "list" -> tokenList(words);
+            case "revoke" -> tokenRevoke(words);
+            default -> tokenUsage("unknown action '" + words.get(1)
+                    + "' (usage: token <create|list|revoke> [ARGS...] [-o text|json|yaml])");
+        };
+    }
+
+    private int tokenCreate(List<String> words) {
+        String scope = null;
+        OutputFormat format = OutputFormat.TEXT;
+        for (int i = 2; i < words.size(); i++) {
+            String word = words.get(i);
+            if (word.equals("--scope") && i + 1 < words.size()) {
+                scope = words.get(++i).toLowerCase(Locale.ROOT);
+            } else if ((word.equals("-o") || word.equals("--output")) && i + 1 < words.size()) {
+                format = outputFormat(words.get(++i));
+                if (format == null) {
+                    return tokenUsage("unknown output format '" + words.get(i)
+                            + "' (expected text|json|yaml)");
+                }
+            } else {
+                return tokenUsage("unknown or incomplete option '" + word + "'");
+            }
+        }
+        if (scope == null || !List.of("read", "write", "admin").contains(scope)) {
+            return tokenUsage("--scope must be read, write, or admin");
+        }
+        final String requestedScope = scope;
+        TokenCreateOutcome outcome = withFailover(() -> controlPlane.tokenCreate(
+                session.landingNode(), session.credential(), requestedScope),
+                o -> o instanceof TokenCreateOutcome.Unreachable);
+        return switch (outcome) {
+            case TokenCreateOutcome.Issued issued -> {
+                renderCreatedToken(issued.token(), format);
+                yield Cli.EXIT_OK;
+            }
+            case TokenCreateOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
+            case TokenCreateOutcome.Unreachable ignored -> reportRequestFailed();
+        };
+    }
+
+    private int tokenList(List<String> words) {
+        OutputFormat format = parseTokenFormat(words, 2);
+        if (format == null) {
+            return Cli.EXIT_USAGE;
+        }
+        TokenListOutcome outcome = withFailover(() -> controlPlane.tokenList(
+                session.landingNode(), session.credential()),
+                o -> o instanceof TokenListOutcome.Unreachable);
+        return switch (outcome) {
+            case TokenListOutcome.Listed listed -> {
+                renderTokens(listed.tokens(), format);
+                yield Cli.EXIT_OK;
+            }
+            case TokenListOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
+            case TokenListOutcome.Unreachable ignored -> reportRequestFailed();
+        };
+    }
+
+    private int tokenRevoke(List<String> words) {
+        if (words.size() < 3 || words.get(2).isBlank() || words.get(2).startsWith("-")) {
+            return tokenUsage("missing token id (usage: token revoke <id> [-o text|json|yaml])");
+        }
+        String tokenId = words.get(2);
+        OutputFormat format = parseTokenFormat(words, 3);
+        if (format == null) {
+            return Cli.EXIT_USAGE;
+        }
+        TokenRevokeOutcome outcome = withFailover(() -> controlPlane.tokenRevoke(
+                session.landingNode(), session.credential(), tokenId),
+                o -> o instanceof TokenRevokeOutcome.Unreachable);
+        return switch (outcome) {
+            case TokenRevokeOutcome.Revoked ignored -> {
+                renderRevokedToken(tokenId, format);
+                yield Cli.EXIT_OK;
+            }
+            case TokenRevokeOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
+            case TokenRevokeOutcome.Unreachable ignored -> reportRequestFailed();
+        };
+    }
+
+    private OutputFormat parseTokenFormat(List<String> words, int start) {
+        OutputFormat format = OutputFormat.TEXT;
+        for (int i = start; i < words.size(); i++) {
+            String word = words.get(i);
+            if ((word.equals("-o") || word.equals("--output")) && i + 1 < words.size()) {
+                format = outputFormat(words.get(++i));
+                if (format == null) {
+                    tokenUsage("unknown output format '" + words.get(i)
+                            + "' (expected text|json|yaml)");
+                    return null;
+                }
+            } else {
+                tokenUsage("unknown or incomplete option '" + word + "'");
+                return null;
+            }
+        }
+        return format;
+    }
+
+    private int tokenUsage(String message) {
+        PrintWriter err = commandLine.getErr();
+        err.println("token: " + message);
+        err.flush();
+        return Cli.EXIT_USAGE;
+    }
+
+    private void renderCreatedToken(RemoteCreatedToken token, OutputFormat format) {
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("tokenId", token.tokenId());
+        document.put("scope", token.scope());
+        document.put("token", token.token());
+        document.put("createdAt", token.createdAt());
+        renderTokenDocument(document, format, "created " + token.tokenId() + " " + token.scope()
+                + System.lineSeparator() + "token " + token.token());
+    }
+
+    private void renderTokens(List<RemoteToken> tokens, OutputFormat format) {
+        List<Object> rows = tokens.stream().map(Repl::tokenDocument).map(value -> (Object) value).toList();
+        if (format == OutputFormat.TEXT) {
+            PrintWriter out = commandLine.getOut();
+            if (tokens.isEmpty()) {
+                out.println("no machine tokens");
+            }
+            for (RemoteToken token : tokens) {
+                out.println(token.tokenId() + "  " + token.scope() + "  "
+                        + (token.revoked() ? "revoked" : "active") + "  " + token.createdAt());
+            }
+            out.flush();
+            return;
+        }
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("tokens", rows);
+        renderTokenDocument(document, format, "");
+    }
+
+    private static Map<String, Object> tokenDocument(RemoteToken token) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("tokenId", token.tokenId());
+        row.put("scope", token.scope());
+        row.put("revoked", token.revoked());
+        row.put("createdAt", token.createdAt());
+        return row;
+    }
+
+    private void renderRevokedToken(String tokenId, OutputFormat format) {
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("tokenId", tokenId);
+        document.put("revoked", true);
+        renderTokenDocument(document, format, "revoked " + tokenId);
+    }
+
+    private void renderTokenDocument(Map<String, Object> document, OutputFormat format, String text) {
+        PrintWriter out = commandLine.getOut();
+        out.println(switch (format) {
+            case TEXT -> text;
+            case JSON -> JsonOut.write(document);
+            case YAML -> YamlOut.write(document);
+        });
+        out.flush();
     }
 
     /**

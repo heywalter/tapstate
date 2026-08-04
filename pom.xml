@@ -42,6 +42,8 @@
     <module>tools/catalog-assembler</module>
     <!-- cli is the surface ring: the offline CLI product front-end (depends only on the core ring) -->
     <module>cli</module>
+    <!-- release-only assembly of the native CLI and its MCP sidecar -->
+    <module>distribution/cli-bundle</module>
     <!-- e2e is the declarative test-specification framework: test-scope only, outside the six
          rings, drives the product black-box; declared after everything it exercises -->
     <module>e2e</module>
@@ -61,6 +63,7 @@
          spring-boot-maven-plugin that repackages the app fat-jar. A bump moves both together.
          4.1.x rides Spring Framework 7 (Jakarta EE 11 / Jackson 3 default) and runs on JDK 21. -->
     <spring.boot.version>4.1.0</spring.boot.version>
+    <spring-ai.version>2.0.0</spring-ai.version>
 
     <!-- All plugin versions pinned (enforced by requirePluginVersions) -->
     <plugin.assembly.version>3.7.1</plugin.assembly.version>

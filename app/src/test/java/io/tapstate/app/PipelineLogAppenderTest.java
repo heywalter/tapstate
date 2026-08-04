@@ -3,6 +3,7 @@ package io.tapstate.app;
 import ch.qos.logback.classic.Logger;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.RingBufferLogSink;
+import io.tapstate.core.logging.SecretRedactor;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -21,7 +22,7 @@ class PipelineLogAppenderTest {
     /** Runs {@code body} with the appender attached to a private logger, then detaches and cleans up. */
     private void withAppender(RingBufferLogSink sink, String loggerName, java.util.function.Consumer<Logger> body) {
         Logger logger = (Logger) LoggerFactory.getLogger(loggerName);
-        PipelineLogAppender appender = new PipelineLogAppender(sink);
+        PipelineLogAppender appender = new PipelineLogAppender(sink, new SecretRedactor());
         appender.setContext(logger.getLoggerContext());
         appender.start();
         logger.addAppender(appender);
@@ -88,5 +89,30 @@ class PipelineLogAppenderTest {
             assertThat(line.message()).contains("converge failed");
             assertThat(line.message()).contains("IllegalStateException").contains("boom");
         });
+    }
+
+    @Test
+    void redactsRegisteredSecretsBeforeWritingToTheSink() {
+        RingBufferLogSink sink = new RingBufferLogSink(8, 8);
+        SecretRedactor redactor = new SecretRedactor();
+        redactor.replace("source-orders", java.util.List.of("sentinel-password"));
+        Logger logger = (Logger) LoggerFactory.getLogger("test.logs.redacted");
+        PipelineLogAppender appender = new PipelineLogAppender(sink, redactor);
+        appender.setContext(logger.getLoggerContext());
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            MDC.put(MDC_KEY, "orders");
+            logger.warn("connector rejected {}", "sentinel-password");
+        } finally {
+            MDC.remove(MDC_KEY);
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(sink.tail("orders")).singleElement().satisfies(line ->
+                assertThat(line.message())
+                        .isEqualTo("connector rejected ********")
+                        .doesNotContain("sentinel-password"));
     }
 }

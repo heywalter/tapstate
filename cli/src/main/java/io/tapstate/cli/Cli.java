@@ -25,7 +25,8 @@ import java.util.function.Supplier;
  * Tapstate over HTTP only (rule R6).
  */
 @Command(name = "tapstate", mixinStandardHelpOptions = true, version = Cli.VERSION,
-        subcommands = {ValidateCmd.class, NewCmd.class, ExplainCmd.class, LsCmd.class, DescCmd.class},
+        subcommands = {
+                ValidateCmd.class, NewCmd.class, ExplainCmd.class, LsCmd.class, DescCmd.class, McpCmd.class},
         // the second line is indented by hand under the "Usage: " heading picocli prints before the first
         customSynopsis = {
                 "tapstate [LAUNCH]                   open a session (interactive)",
@@ -107,6 +108,7 @@ public final class Cli implements Runnable {
      */
     public static final Map<String, String> VERB_BY_OPERATION = Map.ofEntries(
             Map.entry("artifact.apply", "apply"),
+            Map.entry("artifact.validate", "validate"),
             Map.entry("artifact.get", "get"),
             Map.entry("artifact.list", "ls"),
             Map.entry("connection.test", "test"),
@@ -115,6 +117,9 @@ public final class Cli implements Runnable {
             Map.entry("connection.schema", "schema"),
             Map.entry("connector.register", "register"),
             Map.entry("connector.list", "connectors"),
+            Map.entry("token.create", "token"),
+            Map.entry("token.list", "token"),
+            Map.entry("token.revoke", "token"),
             Map.entry("pipeline.start", "start"),
             Map.entry("pipeline.stop", "stop"),
             Map.entry("pipeline.pause", "pause"),
@@ -142,6 +147,7 @@ public final class Cli implements Runnable {
      */
     static final List<String> CONNECTED_VERBS = VERB_BY_OPERATION.values().stream()
             .filter(verb -> !OFFLINE_VERBS.contains(verb))
+            .distinct()
             .sorted()
             .toList();
 
@@ -185,6 +191,8 @@ public final class Cli implements Runnable {
                     "Discover a connection's source schema and store it.")),
             Map.entry("schema", new VerbHelp("<id> [table] [-o text|json|yaml]",
                     "Show a connection's discovered schema, or one table of it.")),
+            Map.entry("token", new VerbHelp("<create|list|revoke> [ARGS...] [-o text|json|yaml]",
+                    "Create, list, or revoke machine tokens.")),
             Map.entry("start", new VerbHelp("<pipeline-id>",
                     "Start a pipeline.")),
             Map.entry("stop", new VerbHelp("<pipeline-id>",
@@ -220,7 +228,7 @@ public final class Cli implements Runnable {
      * so appear on the table, but they project no operation and belong to no whitelist — the guard that
      * pins registered verbs to the offline whitelist reads this to tell "meta" from "undeclared".
      */
-    static final List<String> META_VERBS = List.of("help");
+    static final List<String> META_VERBS = List.of("help", "mcp");
 
     /**
      * Help for the words the REPL handles itself. They are deliberately not subcommands — a connection
@@ -389,19 +397,23 @@ public final class Cli implements Runnable {
      */
     static int runSession(LaunchOptions launch, ControlPlaneClient controlPlane,
                           Supplier<Prompter> prompter) {
-        Repl repl = new Repl(newCommandLine(), launch.root(), controlPlane);
-        if (launch.connects()) {
-            int established = repl.signIn(launch.connect(), launch.user(),
-                    () -> launch.resolvePassword(prompter), launch.isOneShot());
-            if (established != EXIT_OK) {
-                return established;
+        try {
+            Repl repl = new Repl(newCommandLine(), launch.root(), controlPlane);
+            if (launch.connects()) {
+                int established = repl.signIn(launch.connect(), launch.user(),
+                        () -> launch.resolvePassword(prompter), launch.isOneShot());
+                if (established != EXIT_OK) {
+                    return established;
+                }
             }
+            if (launch.isOneShot()) {
+                repl.dispatch(launch.command());
+                return repl.lastExitCode();
+            }
+            repl.run();
+            return EXIT_OK;
+        } finally {
+            controlPlane.close();
         }
-        if (launch.isOneShot()) {
-            repl.dispatch(launch.command());
-            return repl.lastExitCode();
-        }
-        repl.run();
-        return EXIT_OK;
     }
 }

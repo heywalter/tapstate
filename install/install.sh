@@ -1,7 +1,8 @@
 #!/bin/sh
 #
-# tapstate installer — downloads the prebuilt native CLI for this platform, verifies it, and drops it
-# into a bin directory. It never uses sudo, never edits a shell rc file, and never guesses: an
+# tapstate installer — downloads the prebuilt CLI bundle for this platform, verifies it, and installs
+# a versioned CLI plus its sibling MCP sidecar behind a stable entry point. It never uses sudo, never
+# edits a shell rc file, and never guesses: an
 # unsupported platform (Windows shells, musl libc, or an unknown OS/arch) fails loudly before anything
 # is downloaded, so nothing is left behind.
 #
@@ -10,7 +11,7 @@
 #
 # Environment seams:
 #   TAPSTATE_VERSION       install a specific version (e.g. 0.1.0); default is the pinned release below.
-#   TAPSTATE_INSTALL_DIR   where to place the binary; default $HOME/.tapstate/bin. This is the seam the
+#   TAPSTATE_INSTALL_DIR   where to place the stable entry and versioned bundles; default $HOME/.tapstate/bin. This is the seam the
 #                          demo bootstrap reuses to install in place (TAPSTATE_INSTALL_DIR=.), so the
 #                          binary never enters PATH and `rm -rf` of the demo directory removes it.
 #   TAPSTATE_BASE_URL      release base URL; default https://github.com/tapstate/tapstate/releases
@@ -187,17 +188,42 @@ verify_sha256() {
     fi
 }
 
-# Extract the archive and atomically place the binary. Staging inside the destination makes the final
-# rename a same-filesystem move, so a reader never sees a half-written binary; a re-run just replaces it.
-install_binary() {
+# Extract and install a complete bundle. The version directory is fully populated before the stable
+# symlink changes, so an MCP host never observes a CLI without its sibling sidecar.
+install_bundle() {
     tar -xzf "$tmp/$asset" -C "$tmp"
-    [ -f "$tmp/tapstate" ] || die "the downloaded archive did not contain a tapstate binary."
+    bundle_root="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -name 'tapstate-cli-*' | head -n 1)"
+    [ -n "$bundle_root" ] || die "the downloaded archive did not contain a tapstate CLI bundle."
+    [ -x "$bundle_root/bin/tapstate" ] \
+        || die "the downloaded bundle did not contain an executable bin/tapstate."
+    if [ ! -x "$bundle_root/libexec/tapstate-mcp" ] \
+       && [ ! -f "$bundle_root/libexec/tapstate-mcp.jar" ]; then
+        die "the downloaded bundle did not contain an MCP sidecar."
+    fi
     mkdir -p "$install_dir"
-    staged="$install_dir/.tapstate.$$"
-    cp "$tmp/tapstate" "$staged"
-    chmod +x "$staged"
-    mv "$staged" "$install_dir/tapstate"
+    mkdir -p "$install_dir/versions"
+    staged="$install_dir/versions/.tapstate-$version.$$"
+    mkdir "$staged"
+    cp -R "$bundle_root/bin" "$staged/bin"
+    cp -R "$bundle_root/libexec" "$staged/libexec"
+    [ ! -f "$bundle_root/LICENSE" ] || cp "$bundle_root/LICENSE" "$staged/LICENSE"
+    [ ! -f "$bundle_root/NOTICE" ] || cp "$bundle_root/NOTICE" "$staged/NOTICE"
+    final="$install_dir/versions/$version"
+    if [ -d "$final" ] \
+       && [ -x "$final/bin/tapstate" ] \
+       && { [ -x "$final/libexec/tapstate-mcp" ] || [ -f "$final/libexec/tapstate-mcp.jar" ]; }; then
+        rm -rf "$staged"
+    else
+        if [ -e "$final" ] || [ -L "$final" ]; then
+            rm -rf "$final"
+        fi
+        mv "$staged" "$final"
+    fi
     staged=""
+    staged_link="$install_dir/.tapstate.$$"
+    ln -s "versions/$version/bin/tapstate" "$staged_link"
+    mv -f "$staged_link" "$install_dir/tapstate"
+    staged_link=""
 }
 
 main() {
@@ -218,13 +244,14 @@ main() {
 
     tmp="$(mktemp -d)"
     staged=""
-    trap 'rm -rf "$tmp" ${staged:+"$staged"}' EXIT INT TERM
+    staged_link=""
+    trap 'rm -rf "$tmp" ${staged:+"$staged"} ${staged_link:+"$staged_link"}' EXIT INT TERM
 
     note_recommended_platform
     fetch "$url" "$tmp/$asset"
     fetch "${url}.sha256" "$tmp/${asset}.sha256"
     verify_sha256 "$tmp/$asset" "$tmp/${asset}.sha256"
-    install_binary
+    install_bundle
 
     printf 'tapstate %s installed to %s/tapstate\n' "$version" "$install_dir"
     on_path=yes

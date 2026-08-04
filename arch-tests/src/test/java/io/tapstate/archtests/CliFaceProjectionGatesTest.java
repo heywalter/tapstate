@@ -82,7 +82,7 @@ class CliFaceProjectionGatesTest {
             "connector.get",
             "cluster.members",
             "source.create", "source.delete", "source.get", "source.list", "source.update",
-            "user.create", "user.passwd", "user.list", "token.create", "token.revoke", "token.list");
+            "user.create", "user.passwd", "user.list");
 
     @Test
     @DisplayName("every registered operation is reachable from the CLI, bar the deferred ones")

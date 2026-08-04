@@ -244,4 +244,71 @@ class CapabilityRulesTest {
         assertThatCode(() -> CapabilityRules.validate(List.of(tgt), catalog))
                 .doesNotThrowAnyException();
     }
+
+    @Test
+    void onlineValidationRejectsMissingStaticRequiredConfig() {
+        Resource src = parse("""
+                version: tapstate/v1
+                kind: source
+                id: src_my
+                connector: mysql
+                config: { host: 10.0.0.1, port: 3306, username: u }
+                mode: snapshot
+                tables: [ orders ]
+                """);
+
+        assertThatThrownBy(() -> CapabilityRules.validateOnline((io.tapstate.core.model.SourceResource) src, catalog))
+                .isInstanceOf(DslException.class)
+                .extracting(e -> ((DslException) e).code())
+                .isEqualTo(DslError.CONFIG_REQUIRED);
+    }
+
+    @Test
+    void onlineValidationUsesConnectorVisibilityForMongoConnectionModes() {
+        Resource uri = parse("""
+                version: tapstate/v1
+                kind: source
+                id: src_uri
+                connector: mongodb
+                config: { isUri: true, host: ignored }
+                mode: snapshot
+                tables: [ orders ]
+                """);
+        assertThatThrownBy(() -> CapabilityRules.validateOnline((io.tapstate.core.model.SourceResource) uri, catalog))
+                .isInstanceOf(DslException.class)
+                .extracting(e -> ((DslException) e).code())
+                .isEqualTo(DslError.CONFIG_REQUIRED);
+
+        Resource standard = parse("""
+                version: tapstate/v1
+                kind: source
+                id: src_standard
+                connector: mongodb
+                config: { isUri: false, host: localhost, database: orders }
+                mode: snapshot
+                tables: [ orders ]
+                """);
+        assertThatCode(() -> CapabilityRules.validateOnline(
+                (io.tapstate.core.model.SourceResource) standard, catalog))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void onlineValidationRejectsNullRequiredValues() {
+        Resource src = parse("""
+                version: tapstate/v1
+                kind: source
+                id: src_null
+                connector: mongodb
+                config: { isUri: false, host: null, database: orders }
+                mode: snapshot
+                tables: [ orders ]
+                """);
+
+        assertThatThrownBy(() -> CapabilityRules.validateOnline(
+                (io.tapstate.core.model.SourceResource) src, catalog))
+                .isInstanceOf(DslException.class)
+                .extracting(e -> ((DslException) e).code())
+                .isEqualTo(DslError.CONFIG_TYPE_MISMATCH);
+    }
 }
