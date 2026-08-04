@@ -2,6 +2,7 @@ package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
+import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.SourceOrder;
 
@@ -78,6 +79,19 @@ public final class AssemblerProcessor extends AbstractProcessor {
             settle(touched);
         }
         flush();
+    }
+
+    /**
+     * Refuses to pass on a bound that arrived with no edge attached to it. Such a bound has already been
+     * combined across every edge feeding this vertex, so sending it on would say "everything at or below
+     * this has left here" — while the orphans held for a root that has not arrived, and the documents
+     * touched but not yet rendered, sit below that value and have gone nowhere. The engine forwards it by
+     * default, silently, which is why saying otherwise is explicit. What this vertex does promise is
+     * worked out from the bounds arriving per edge and sent on its own.
+     */
+    @Override
+    public boolean tryProcessWatermark(Watermark watermark) {
+        return true;
     }
 
     private void handle(NestInbound edge, Object item, Map<Object, Touched> touched) {

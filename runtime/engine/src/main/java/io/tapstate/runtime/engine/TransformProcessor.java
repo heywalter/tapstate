@@ -6,6 +6,7 @@ import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Processor;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.jet.core.ProcessorSupplier;
+import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.spi.transform.TransformPort;
 import java.util.Objects;
@@ -54,5 +55,17 @@ public final class TransformProcessor extends AbstractProcessor {
     @Override
     protected boolean tryProcess(int ordinal, Object item) {
         return flatMapper.tryProcess((Envelope) item);
+    }
+
+    /**
+     * Refuses to pass on a bound that arrived with no edge attached to it. This adapter holds nothing, so
+     * such a bound is not wrong about it — but it has already been combined across every edge feeding the
+     * vertex, and repeating it here would make this vertex's promise a copy of a value it never worked out
+     * rather than the lowest of what each of its edges promised. The engine forwards it by default,
+     * silently, which is why saying otherwise is explicit.
+     */
+    @Override
+    public boolean tryProcessWatermark(Watermark watermark) {
+        return true;
     }
 }

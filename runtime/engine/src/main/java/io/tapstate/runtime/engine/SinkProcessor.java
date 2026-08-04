@@ -7,6 +7,7 @@ import com.hazelcast.jet.core.Inbox;
 import com.hazelcast.jet.core.Processor;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.jet.core.ProcessorSupplier;
+import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.WriteResult;
@@ -151,6 +152,17 @@ public final class SinkProcessor extends AbstractProcessor {
     @Override
     public boolean tryProcess() {
         reapSettled();
+        return true;
+    }
+
+    /**
+     * Refuses to pass on a bound that arrived with no edge attached to it. This is the end of the line for
+     * a bound: what it tells this processor is how far every edge has promised, and anything emitted from
+     * here would be offered to the target as a record. The engine forwards it by default, silently, which
+     * is why saying otherwise is explicit.
+     */
+    @Override
+    public boolean tryProcessWatermark(Watermark watermark) {
         return true;
     }
 
