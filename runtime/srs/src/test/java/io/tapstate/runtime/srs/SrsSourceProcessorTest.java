@@ -211,6 +211,37 @@ class SrsSourceProcessorTest {
     }
 
     @Test
+    void staysLiveOnceItsRowsAreOutAndItsRingIsOneNobodyFills() throws InterruptedException {
+        // A source reading no chain of its own - its rows come from the snapshot buffer and its ring is one
+        // nobody fills - has nothing left to do the moment the buffer is drained. It must keep running
+        // anyway, because a source finishing is what lets every vertex behind it finish in turn, and a
+        // vertex finishing is the one event that raises a bound above what an instance promised: with no
+        // queue left to hold the bound down, the engine offers the highest value any of them ever reported.
+        // A frontier handed that carries over whatever a finishing vertex was still holding and had never
+        // sent, and nothing anywhere reports it. Nothing else in this vertex enforces that, so a bounded
+        // read added later - the very shape this one stands in for - would take the property away silently.
+        SnapshotBuffer buffer = new SnapshotBuffer();
+        buffer.append("srs.chain.nofinish", snapshotRow(100));
+        buffer.append("srs.chain.nofinish", snapshotRow(101));
+        hz.getUserContext().put(SnapshotBuffer.USER_CONTEXT_KEY, buffer);
+
+        Job job = hz.getJet().newJob(projectedDag(
+                "srs.chain.nofinish", "orders", "out-nofinish", 1024, SrsReadCursorPublisherFactory.NONE, 0L));
+        try {
+            awaitSize(hz.getList("out-nofinish"), 2);
+            Thread.sleep(500);
+
+            assertThat(job.getStatus())
+                    .describedAs("the source finished once it had nothing left to read, which finishes every "
+                            + "vertex behind it and hands the sink a bound nobody stands behind")
+                    .isEqualTo(JobStatus.RUNNING);
+        } finally {
+            job.cancel();
+            hz.getUserContext().remove(SnapshotBuffer.USER_CONTEXT_KEY);
+        }
+    }
+
+    @Test
     void refusesAChangeFoundOnARingWhoseChainHasNoGenerationOpen() throws InterruptedException {
         // A source with no generation reads no chain of its own, so its ring is one nobody fills. A change
         // sitting on it means a capture is writing a chain that was never opened -- and the alternative to
@@ -398,9 +429,15 @@ class SrsSourceProcessorTest {
      */
     private static DAG projectedDag(String ringName, String src, String sinkName, int queueSize,
             SrsReadCursorPublisherFactory publisherFactory) {
+        return projectedDag(ringName, src, sinkName, queueSize, publisherFactory, 1L);
+    }
+
+    /** The same graph over a source opened under {@code epoch}; zero is a source reading no chain of its own. */
+    private static DAG projectedDag(String ringName, String src, String sinkName, int queueSize,
+            SrsReadCursorPublisherFactory publisherFactory, long epoch) {
         DAG dag = new DAG();
         Vertex source = dag.newVertex("source",
-                SrsSourceProcessor.metaSupplier(ringName, src, StartFrom.earliest(), 1L, publisherFactory));
+                SrsSourceProcessor.metaSupplier(ringName, src, StartFrom.earliest(), epoch, publisherFactory));
         Vertex project = dag.newVertex("project", Processors.mapP(SrsSourceProcessorTest::describe))
                 .localParallelism(1);
         Vertex sink = dag.newVertex("sink", SinkProcessors.writeListP(sinkName)).localParallelism(1);
