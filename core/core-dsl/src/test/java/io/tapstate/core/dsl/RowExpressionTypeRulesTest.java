@@ -59,12 +59,17 @@ class RowExpressionTypeRulesTest {
                 """.formatted(expr);
     }
 
-    private static Map<String, Map<String, TapstateType>> model(Object... columnsAndTypes) {
+    /** The source's one discovered table, {@code orders}, holding the given columns. */
+    private static Map<String, List<DiscoveredTable>> model(Object... columnsAndTypes) {
+        return Map.of("src_orders", List.of(new DiscoveredTable("orders", columns(columnsAndTypes))));
+    }
+
+    private static Map<String, TapstateType> columns(Object... columnsAndTypes) {
         Map<String, TapstateType> columns = new LinkedHashMap<>();
         for (int i = 0; i < columnsAndTypes.length; i += 2) {
             columns.put((String) columnsAndTypes[i], (TapstateType) columnsAndTypes[i + 1]);
         }
-        return Map.of("src_orders", columns);
+        return columns;
     }
 
     // ---- a column whose type cannot survive the expression ------------------------------
@@ -123,12 +128,16 @@ class RowExpressionTypeRulesTest {
 
         assertThat(thrown.code())
                 .isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNKNOWN);
-        assertThat(thrown.args()).containsEntry("column", "amount");
+        assertThat(thrown.args()).containsEntry("column", "amount").containsEntry("table", "orders");
     }
 
     @Test
-    @DisplayName("one column resolving to two types across sources is as good as unresolved, and refused")
-    void conflictingTypesAcrossSourcesAreRefused() {
+    @DisplayName("a column two upstreams type differently is refused for the upstream it is wrong on")
+    void anUpstreamTheExpressionIsWrongAboutIsRefused() {
+        // The expression genuinely runs on both tables, so it has to hold on both. Judging them apart
+        // rather than pooling their columns is what makes the refusal say which one it failed on and
+        // why: pooled, the only thing that could be said is that the column has no resolved type,
+        // which is not true of either table and tells the author nothing to act on.
         String secondSource = """
                 version: tapstate/v1
                 kind: source
@@ -149,15 +158,62 @@ class RowExpressionTypeRulesTest {
                   from: keep
                   sync: [ { id: out, source: src_orders, write_mode: upsert } ]
                 """;
-        Map<String, Map<String, TapstateType>> columns = new LinkedHashMap<>();
-        columns.put("src_orders", Map.of("amount", TapstateType.INT64));
-        columns.put("src_archive", Map.of("amount", TapstateType.STRING));
+        Map<String, List<DiscoveredTable>> tables = new LinkedHashMap<>();
+        tables.put("src_orders", List.of(new DiscoveredTable("orders", columns("amount", TapstateType.INT64))));
+        tables.put("src_archive", List.of(new DiscoveredTable("archive", columns("amount", TapstateType.STRING))));
 
         DslException thrown = catchThrowableOfType(DslException.class,
-                () -> RowExpressionTypeRules.validate(batch(secondSource, pipeline), columns));
+                () -> RowExpressionTypeRules.validate(batch(secondSource, pipeline), tables));
 
-        assertThat(thrown.code())
-                .isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNKNOWN);
+        // The archive table types the column as text, and comparing text to a number is an ordinary
+        // wrong expression - the offline layer would say the same thing if it had the types.
+        assertThat(thrown.code()).isEqualTo(DslError.ILLEGAL_EXPRESSION);
+    }
+
+    @Test
+    @DisplayName("two tables of one source naming a column differently do not pool into an unresolved one")
+    void columnsAreNotPooledAcrossTheTablesOfOneSource() {
+        // One database naming a column id in two unrelated tables, typed differently, is the ordinary
+        // shape of a database. Pooled, the column would be unresolved and every expression reading it
+        // refused - on most real databases, for most expressions.
+        String source = """
+                version: tapstate/v1
+                kind: source
+                id: src_shop
+                connector: mysql
+                config: { host: 10.10.0.7, username: u, password: p }
+                mode: cdc
+                tables: [ orders, customers ]
+                """;
+        Map<String, List<DiscoveredTable>> tables = Map.of("src_shop", List.of(
+                new DiscoveredTable("orders", columns("id", TapstateType.INT64)),
+                new DiscoveredTable("customers", columns("id", TapstateType.STRING))));
+
+        assertThatCode(() -> RowExpressionTypeRules.validate(
+                batch(source, shopPipeline("customers", "after.id != ''")), tables))
+                .as("the step reads customers, where id is text and the comparison holds")
+                .doesNotThrowAnyException();
+
+        // The same expression against the other table is still refused, so the narrowing is not the
+        // gate quietly standing down.
+        DslException thrown = catchThrowableOfType(DslException.class, () -> RowExpressionTypeRules.validate(
+                batch(source, shopPipeline("orders", "after.id != ''")), tables));
+        assertThat(thrown.code()).isEqualTo(DslError.ILLEGAL_EXPRESSION);
+    }
+
+    /** A pipeline over {@code src_shop} whose filter reads one named table. */
+    private static String shopPipeline(String table, String expr) {
+        return """
+                version: tapstate/v1
+                kind: pipeline
+                id: shop_out
+                source: src_shop
+                transforms:
+                  - { id: keep, from: [%s], type: filter, expr: "%s" }
+                serve:
+                  from: keep
+                  sync: [ { id: out, source: src_shop, write_mode: upsert } ]
+                """.formatted(table, expr);
     }
 
     // ---- what the gate must leave alone --------------------------------------------------

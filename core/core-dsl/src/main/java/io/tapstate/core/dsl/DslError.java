@@ -79,15 +79,19 @@ public enum DslError implements TapstateErrorCode {
             "dsl.row-expression-needs-discovery", Set.of("expr", "source", "path")),
     /** A row expression computing on a column whose type cannot survive the operation — an exact
      *  fixed-point number, a temporal value, a shape only known to be JSON. {@code column} names the
-     *  column and {@code type} what it resolved to. Post-semantic: it needs a discovered source model,
-     *  which no offline artifact carries, so it has no corpus witness and is proven by a direct test. */
+     *  column, {@code type} what it resolved to, and {@code table} the discovered table it resolved to
+     *  that there - an expression reading several is judged against each, so which one refused it is
+     *  the difference between a fixable diagnostic and a puzzle. Post-semantic: it needs a discovered
+     *  source model, which no offline artifact carries, so it has no corpus witness and is proven by a
+     *  direct test. */
     ROW_EXPRESSION_TYPE_UNSUPPORTED(
-            "dsl.row-expression-type-unsupported", Set.of("expr", "column", "type", "path")),
-    /** A row expression reading a column nothing resolved a type for — either the source declared a
-     *  type outside the tapstate namespace, or two upstream sources resolved the same column name to
-     *  different types, which is as good as unresolved. Post-semantic and without a corpus witness,
-     *  for the same reason as {@link #ROW_EXPRESSION_TYPE_UNSUPPORTED}. */
-    ROW_EXPRESSION_TYPE_UNKNOWN("dsl.row-expression-type-unknown", Set.of("expr", "column", "path"));
+            "dsl.row-expression-type-unsupported", Set.of("expr", "column", "type", "table", "path")),
+    /** A row expression reading a column the source declared a type outside the tapstate namespace
+     *  for, so nothing resolved what it holds. {@code table} names the discovered table the column was
+     *  read from. Post-semantic and without a corpus witness, for the same reason as
+     *  {@link #ROW_EXPRESSION_TYPE_UNSUPPORTED}. */
+    ROW_EXPRESSION_TYPE_UNKNOWN(
+            "dsl.row-expression-type-unknown", Set.of("expr", "column", "table", "path"));
 
     private final String code;
     private final Set<String> placeholders;

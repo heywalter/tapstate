@@ -215,17 +215,24 @@ class ApplyServiceRowExpressionTypeTest {
         assertThat(schemas.reads).isZero();
     }
 
+    /**
+     * Two tables of one source typing a column differently is not a conflict to resolve — it is two
+     * tables, each with its own column. The step reads {@code orders}, where the column is a number
+     * and the comparison holds, and nothing about the archive table bears on it. Pooling them would
+     * have to call the column unresolved and refuse this, which is the shape most real databases take
+     * (one name, two tables, two types) rather than a corner of it.
+     */
     @Test
-    @DisplayName("one column discovered as two types across a source's tables is refused as unresolved")
-    void conflictingTypesAcrossTablesAreRefused() {
+    @DisplayName("two tables of one source typing a column differently do not pool into an unresolved one")
+    void columnsAreNotPooledAcrossTheTablesOfOneSource() {
         discovered("src_orders",
                 table("orders", "amount", TapstateType.INT64),
                 table("orders_archive", "amount", TapstateType.STRING));
 
-        DslException thrown = catchThrowableOfType(DslException.class,
-                () -> service.apply("tester", batch(source("[ orders, orders_archive ]"), "after.amount > 0")));
-
-        assertThat(thrown.code()).isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNKNOWN);
+        assertThatCode(() -> service.apply(
+                "tester", batch(source("[ orders, orders_archive ]"), "after.amount > 0")))
+                .doesNotThrowAnyException();
+        assertThat(artifacts.get("orders_out")).isPresent();
     }
 
     /**
@@ -250,21 +257,19 @@ class ApplyServiceRowExpressionTypeTest {
     }
 
     /**
-     * A selector naming nothing the model carries cannot be lined up against it — the connector may
-     * report qualified names, or the model may predate the selector — so nothing is ruled out and the
-     * whole model still answers. The alternative is worse than a false refusal: narrowing to an empty
-     * set would leave every column absent from the model, and an absent column stays untyped and
-     * passes, so the gate would quietly stop refusing anything at all for that source.
+     * A selector naming nothing the model carries contributes nothing, the same reading a table absent
+     * from the model gets anywhere else: the model is what the last discovery found, and what it does
+     * not carry is not evidence of a problem. Falling back to the whole model instead would let the
+     * tables this source did not select decide the fate of an expression over the one it did — the
+     * pooled view again, arriving through the back door.
      */
     @Test
-    @DisplayName("a selector matching no discovered table narrows nothing, rather than emptying the model")
-    void aSelectorMatchingNoDiscoveredTableStillJudgesAgainstTheModel() {
+    @DisplayName("a selector matching no discovered table contributes no table to judge against")
+    void aSelectorMatchingNoDiscoveredTableJudgesAgainstNothing() {
         discovered("src_orders", table("legacy_orders", "amount", TapstateType.DECIMAL));
 
-        DslException thrown = catchThrowableOfType(DslException.class,
-                () -> service.apply("tester", batch("after.amount * 2 > 0")));
-
-        assertThat(thrown.code()).isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED);
+        assertThatCode(() -> service.apply("tester", batch("after.amount * 2 > 0")))
+                .doesNotThrowAnyException();
     }
 
     @Test

@@ -57,13 +57,19 @@ class RowExpressionDiscoveryRulesTest {
         return resources;
     }
 
-    /** Sources named here have been discovered; any other source in the batch has not. */
-    private static Map<String, Map<String, TapstateType>> discovered(String... sourceIds) {
-        Map<String, Map<String, TapstateType>> columns = new LinkedHashMap<>();
+    /**
+     * Sources named here have been discovered; any other source in the batch has not. Each holds the
+     * one table its own selector names, so what is being tested is which sources the obligation
+     * reaches rather than any type verdict — every column here is computable.
+     */
+    private static Map<String, List<DiscoveredTable>> discovered(String... sourceIds) {
+        Map<String, List<DiscoveredTable>> tables = new LinkedHashMap<>();
         for (String sourceId : sourceIds) {
-            columns.put(sourceId, Map.of("amount", TapstateType.INT64));
+            String table = sourceId.equals("src_a") ? "orders" : "archive";
+            tables.put(sourceId, List.of(
+                    new DiscoveredTable(table, Map.of("amount", TapstateType.INT64))));
         }
-        return columns;
+        return tables;
     }
 
     private static String singleSourcePipeline(String expr) {

@@ -5,6 +5,7 @@ import io.tapstate.core.common.TapstateType;
 import io.tapstate.core.dsl.DslException;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.dsl.DslParser;
+import io.tapstate.core.dsl.DiscoveredTable;
 import io.tapstate.core.dsl.RowExpressionTypeRules;
 import io.tapstate.core.dsl.Workspace;
 import io.tapstate.core.model.PipelineResource;
@@ -32,8 +33,8 @@ import java.util.regex.PatternSyntaxException;
  * The resource-type-agnostic apply pipeline. {@link #plan} is the front half — validate -> canonical
  * -> hash: it parses each draft (structural + expression checks), validates the whole batch as one
  * closure (duplicate ids, reference closure, mode rules, and the connector capability matrix against
- * the catalog), judges the batch's row expressions against the columns its sources were discovered to
- * hold, then emits each resource's canonical form and content hash. It writes nothing, and the only
+ * the catalog), judges the batch's row expressions against the columns of the tables its sources were
+ * discovered to hold, then emits each resource's canonical form and content hash. It writes nothing, and the only
  * store it reads is the schema store — an observation of what discovery found, never the config truth
  * layer, which apply is the one writer of.
  * {@link #apply} runs a plan and then upserts each artifact into the store by its id, skipping the
@@ -85,7 +86,7 @@ public final class ApplyService {
             resources.add(parse(draft));
         }
         Workspace workspace = Workspace.of(resources, catalog.get());
-        RowExpressionTypeRules.validate(resources, discoveredColumns(resources));
+        RowExpressionTypeRules.validate(resources, discoveredTables(resources));
         List<PreparedArtifact> prepared = new ArrayList<>();
         for (Resource resource : workspace.resources()) {
             String canonicalForm = writer.write(resource);
@@ -151,15 +152,16 @@ public final class ApplyService {
     }
 
     /**
-     * The columns each source in the batch was discovered to hold, keyed by the source's id — which is
+     * The tables each source in the batch was discovered to hold, keyed by the source's id — which is
      * also the connection id its discovery is stored under. A source that has never been discovered is
      * absent from the result rather than present and empty, so the rules can tell "discovered nothing"
      * apart from "not discovered".
      *
-     * <p>The tables this source selects are merged the same way the rules merge across sources: one
-     * column name two of them resolved to different types is left unresolved, never silently taken from
-     * one of them. The merge covers what the source selects rather than the whole model, per
-     * {@link #selectedTables}.
+     * <p>Each table keeps its own columns. Pooling a source's tables into one column list would have to
+     * call a column two of them type differently unresolved, and one database naming a column
+     * {@code id} in two unrelated tables, typed differently, is the ordinary shape of a database rather
+     * than a corner of it — pooled, the gate would refuse most expressions on most real databases. The
+     * rules judge an expression against the table it reads, so the tables are handed over apart.
      *
      * <p>A model counts only when it was discovered through the connector this source now names. Types
      * are resolved against the declaring connector's own vocabulary, so a model another connector
@@ -179,8 +181,8 @@ public final class ApplyService {
      * of endpoints alone is an ordinary thing to apply, which would otherwise pay a store round trip
      * per source for an answer nobody consults.
      */
-    private Map<String, Map<String, TapstateType>> discoveredColumns(List<Resource> resources) {
-        Map<String, Map<String, TapstateType>> bySource = new LinkedHashMap<>();
+    private Map<String, List<DiscoveredTable>> discoveredTables(List<Resource> resources) {
+        Map<String, List<DiscoveredTable>> bySource = new LinkedHashMap<>();
         if (resources.stream().noneMatch(PipelineResource.class::isInstance)) {
             return bySource;
         }
@@ -191,13 +193,15 @@ public final class ApplyService {
             schemas.get(source.id())
                     .filter(discovered -> discovered.connectorId().equals(source.connector()))
                     .ifPresent(discovered -> {
-                        Map<String, TapstateType> columns = new LinkedHashMap<>();
+                        List<DiscoveredTable> tables = new ArrayList<>();
                         for (SourceTable table : selectedTables(source, discovered.model().tables())) {
+                            Map<String, TapstateType> columns = new LinkedHashMap<>();
                             for (SourceField field : table.fields()) {
-                                RowExpressionTypeRules.mergeColumn(columns, field.name(), field.type());
+                                columns.put(field.name(), field.type());
                             }
+                            tables.add(new DiscoveredTable(table.name(), columns));
                         }
-                        bySource.put(source.id(), columns);
+                        bySource.put(source.id(), tables);
                     });
         }
         return bySource;
@@ -206,16 +210,14 @@ public final class ApplyService {
     /**
      * The discovered tables {@code source} reads. Discovery runs per connection, so the stored model
      * carries every table the connection can see - including the ones this source's selector leaves
-     * out. Folding those in would let a table the source never reads decide the type of a column it
-     * does, and that is the ordinary case rather than a corner: one database naming a column {@code id}
-     * in two unrelated tables, typed differently, is normal, and it would refuse most expressions on
-     * most real databases.
+     * out. Those are not this source's to answer for, and the wiring can point an expression at a table
+     * only through the source that selects it.
      *
-     * <p>A selector matching nothing in the model narrows nothing - the names cannot be lined up, so no
-     * table is ruled out. Narrowing to the empty set is the direction that would hurt: a column absent
-     * from the model stays untyped and passes, so the gate would quietly stop refusing anything at all
-     * for that source. A pattern that will not compile is treated the same way, matching nothing on its
-     * own rather than failing the apply.
+     * <p>A selector matching nothing in the model narrows to nothing, and nothing is what this source
+     * then contributes. That is the same reading a table absent from the model gets everywhere else:
+     * the model is what the last discovery found, and what it does not carry is not evidence of a
+     * problem. A pattern that will not compile matches nothing on its own rather than failing the
+     * apply.
      */
     private static List<SourceTable> selectedTables(SourceResource source, List<SourceTable> discovered) {
         List<TableRef> selectors = source.tables();
@@ -228,7 +230,7 @@ public final class ApplyService {
                 selected.add(table);
             }
         }
-        return selected.isEmpty() ? discovered : selected;
+        return selected;
     }
 
     /** Whether one {@code tables} entry selects the named discovered table. */

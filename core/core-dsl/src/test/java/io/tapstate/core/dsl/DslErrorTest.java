@@ -72,13 +72,14 @@ class DslErrorTest {
         assertThat(DslError.UNDEFINED_VARIABLE.placeholders()).containsExactlyInAnyOrder("name");
         assertThat(DslError.MALFORMED_INTERPOLATION.placeholders()).containsExactlyInAnyOrder("ref");
         // the row-expression type codes name the column the verdict is about, so the author is told
-        // which one to change rather than only that the expression was refused
+        // which one to change rather than only that the expression was refused - and the table it was
+        // read from, since an expression reading several is judged against each of them in turn
         assertThat(DslError.ROW_EXPRESSION_NEEDS_DISCOVERY.placeholders())
                 .containsExactlyInAnyOrder("expr", "source", "path");
         assertThat(DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED.placeholders())
-                .containsExactlyInAnyOrder("expr", "column", "type", "path");
+                .containsExactlyInAnyOrder("expr", "column", "type", "table", "path");
         assertThat(DslError.ROW_EXPRESSION_TYPE_UNKNOWN.placeholders())
-                .containsExactlyInAnyOrder("expr", "column", "path");
+                .containsExactlyInAnyOrder("expr", "column", "table", "path");
     }
 
     @Test
