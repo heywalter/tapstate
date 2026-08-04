@@ -17,10 +17,18 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * What a row expression may compute on, and what it must leave alone. A connector delivers a column
- * as whatever Java type its driver uses; the expression runtime sees those values directly. An
- * integral column has to arrive as something the expression can do arithmetic on, and an exact
- * fixed-point column has to arrive — and leave — bit for bit as the source stated it.
+ * What a row expression may compute on, and what it must leave alone.
+ *
+ * <p>The rows here are the rows the chain actually carries: a driver's own boxing became the value
+ * model at the boundary where the column's type was resolved, so an integral column reaches an
+ * expression as the one integer width and nothing downstream re-decides that. Which boxes widen into
+ * which is that boundary's contract, pinned where it happens, not here.
+ *
+ * <p>What is left for this seam is the pair of things the expression runtime itself owes: a value it
+ * cannot represent must be refused by name rather than quietly turned into a different one, and a
+ * value that merely travels through an expression must leave as the kind of value the row holds —
+ * above all an exact fixed-point column, which has to arrive and leave bit for bit as the source
+ * stated it.
  */
 class RowExpressionValueBindingTest {
 
@@ -36,9 +44,9 @@ class RowExpressionValueBindingTest {
     }
 
     @Test
-    @DisplayName("computes on an int column the connector delivered as an Integer")
-    void computesOnIntegerColumn() {
-        Map<String, Object> after = compute("doubled", "after.qty * 2", Map.of("qty", 7));
+    @DisplayName("computes on an integral column, which the row holds as the one integer width")
+    void computesOnIntegralColumn() {
+        Map<String, Object> after = compute("doubled", "after.qty * 2", Map.of("qty", 7L));
 
         assertThat(after).containsEntry("doubled", 14L);
     }
@@ -64,33 +72,14 @@ class RowExpressionValueBindingTest {
     }
 
     @Test
-    @DisplayName("computes on a wide integral column whose value still fits an int64")
-    void computesOnWideIntegralColumnInRange() {
-        // An unsigned bigint arrives as an arbitrary-precision integer even when the value is small.
-        Map<String, Object> after =
-                compute("next", "after.id + 1", Map.of("id", new BigInteger("42")));
-
-        assertThat(after).containsEntry("next", 43L);
-    }
-
-    @Test
-    @DisplayName("computes on a narrow integral column a driver delivered as a Short")
-    void computesOnNarrowIntegralColumn() {
-        // The gate calls every integral column the one integer type, whichever width the source
-        // declared, so every width a driver may hand over has to reach the expression as that type.
-        Map<String, Object> after =
-                compute("next", "after.level + 1", Map.of("level", (short) 3));
-
-        assertThat(after).containsEntry("next", 4L);
-    }
-
-    @Test
     @DisplayName("refuses an integral value too large for an int64 rather than wrapping it")
     void refusesIntegralValueBeyondInt64() {
-        // The gate types the column, not the value, so a column whose type is computable can still
-        // hold a value the expression language cannot represent. Refusing names it; the obvious
-        // adaptation - asking any Number for its long - would silently hand the expression a
-        // different number and let a corrupted value through as a success.
+        // A value this wide is one the value model names no lossless target for, so it reaches the
+        // expression exactly as the source holds it. The gate types the column, not the value, so a
+        // column whose type is computable can still hold a value the expression language cannot
+        // represent. Refusing names it; the obvious adaptation - asking any Number for its long -
+        // would silently hand the expression a different number and let a corrupted value through as
+        // a success.
         BigInteger beyond = BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE);
 
         assertThatThrownBy(() -> compute("next", "after.id + 1", Map.of("id", beyond)))
@@ -100,9 +89,9 @@ class RowExpressionValueBindingTest {
     }
 
     @Test
-    @DisplayName("computes on an approximate numeric column a driver delivered as a Float")
-    void computesOnFloatColumn() {
-        Map<String, Object> after = compute("scaled", "after.ratio * 2.0", Map.of("ratio", 1.5f));
+    @DisplayName("computes on an approximate numeric column, which the row holds as a double")
+    void computesOnApproximateNumericColumn() {
+        Map<String, Object> after = compute("scaled", "after.ratio * 2.0", Map.of("ratio", 1.5d));
 
         assertThat(after).containsEntry("scaled", 3.0d);
     }
@@ -119,8 +108,9 @@ class RowExpressionValueBindingTest {
     @DisplayName("carries a binary column through an expression as the bytes it arrived as")
     void carriesBinaryThroughAsBytes() {
         // Making bytes computable means handing the expression the byte string its language uses. That
-        // representation must not ride back out on the result: a sink is owed the row's own bytes, not
-        // the expression runtime's wrapper for them.
+        // representation is this seam's own and must not ride back out on the result: a sink is owed
+        // the row's own bytes, not the expression runtime's wrapper for them. It is also why bytes are
+        // wrapped here rather than upstream - the wrapper is a language detail, not part of the row.
         byte[] blob = {1, 2, 3};
 
         Map<String, Object> after = compute("moved", "after.blob", Map.of("blob", blob));
@@ -132,7 +122,7 @@ class RowExpressionValueBindingTest {
     @DisplayName("computes on an integral value nested inside a document")
     void computesOnIntegerInsideNestedDocument() {
         Map<String, Object> after =
-                compute("next", "after.doc.qty + 1", Map.of("doc", Map.of("qty", 7)));
+                compute("next", "after.doc.qty + 1", Map.of("doc", Map.of("qty", 7L)));
 
         assertThat(after).containsEntry("next", 8L);
     }
@@ -141,7 +131,7 @@ class RowExpressionValueBindingTest {
     @DisplayName("computes on an integral element inside an array")
     void computesOnIntegerInsideArray() {
         Map<String, Object> after =
-                compute("next", "after.tags[0] + 1", Map.of("tags", List.of(7)));
+                compute("next", "after.tags[0] + 1", Map.of("tags", List.of(7L)));
 
         assertThat(after).containsEntry("next", 8L);
     }

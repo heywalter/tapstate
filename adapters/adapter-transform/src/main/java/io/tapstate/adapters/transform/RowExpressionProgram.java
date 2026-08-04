@@ -7,7 +7,6 @@ import dev.cel.runtime.CelRuntime;
 import dev.cel.runtime.CelRuntimeFactory;
 import io.tapstate.core.dsl.RowExpressions;
 import io.tapstate.core.event.Envelope;
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -24,7 +23,9 @@ import java.util.function.UnaryOperator;
  * <p>Evaluation binds the envelope as the expression root the same way the compiler declared it:
  * {@code op} as its wire symbol, {@code ts} / {@code src} as scalars, and {@code before} / {@code
  * after} / {@code schema} as maps (an absent map binds empty, so a present-field test is well
- * defined rather than a null dereference).
+ * defined rather than a null dereference). The row's values already speak the tapstate value model,
+ * having been carried into it where the columns' types were resolved; the only thing binding adds is
+ * the byte string this language uses for bytes, which evaluation takes back off again.
  */
 final class RowExpressionProgram {
 
@@ -87,29 +88,19 @@ final class RowExpressionProgram {
         return row == null ? Map.of() : (Map<String, Object>) bound(row);
     }
 
-    // A connector hands over whatever type its driver uses, which is not always one the expression
-    // language has: an int column may arrive in any integral box, a real one as a float, a binary one
-    // as a byte array. Each becomes the type the language does have, so an operation apply already
-    // judged safe can actually run instead of failing once the pipeline is live. Every conversion
-    // here widens or re-wraps and none of them rounds, so no value changes on the way in.
+    // The row already speaks the value model — its numbers were carried into it at the boundary that
+    // resolved the columns' types, so an integral column is already the one integer width an
+    // expression can do arithmetic on. Nothing here re-decides that: a second widening would be a
+    // second opinion about what a column is, and the one thing it could add is a disagreement.
     //
-    // Only a value the target type actually holds is converted. A wider integer is left as it came:
-    // the expression then refuses it by name, where narrowing it would hand the expression a
-    // different number and report the result as a success.
+    // What is left is the one representation this language needs and the row does not have. Bytes
+    // travel as the language's own byte string, which is a wrapper rather than a value: it goes on
+    // here and comes back off in unbound, so a sink is still owed the row's own bytes.
     //
-    // Nested values are converted too, since a document's own fields and an array's elements are as
+    // Nested values are wrapped too, since a document's own fields and an array's elements are as
     // reachable from an expression as a top-level column. A container whose contents all pass through
     // unchanged is returned as it is, so the common row costs no copy.
     private static Object bound(Object value) {
-        if (value instanceof Integer || value instanceof Short || value instanceof Byte) {
-            return ((Number) value).longValue();
-        }
-        if (value instanceof Float f) {
-            return f.doubleValue();
-        }
-        if (value instanceof BigInteger big && big.bitLength() < Long.SIZE) {
-            return big.longValue();
-        }
         if (value instanceof byte[] bytes) {
             return ByteString.copyFrom(bytes);
         }

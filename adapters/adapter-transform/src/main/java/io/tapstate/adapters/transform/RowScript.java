@@ -157,8 +157,9 @@ final class RowScript {
 
     // Guest value -> Java, host-preserving. A record / array still backed by the host maps we handed in
     // is read straight from its backing, so a field the script never touched keeps its exact Java type;
-    // anything the script produced is mapped by JS shape (an integer-valued number narrows to int / long
-    // before double), and a Java value that reached the guest as an opaque host object returns as-is.
+    // anything the script produced is mapped by JS shape into the row's own currency (a whole number
+    // becomes the 64-bit integer, anything wider a double), and a Java value that reached the guest as
+    // an opaque host object returns as-is.
     private Object fromGuest(Value value) {
         if (value == null || value.isNull()) {
             return null;
@@ -182,9 +183,9 @@ final class RowScript {
             return value.asString();
         }
         if (value.isNumber()) {
-            if (value.fitsInInt()) {
-                return value.asInt();
-            }
+            // A whole number leaves in the row's own integer width rather than the narrowest box that
+            // holds it: the script writes into the same rows every other step reads, and a column
+            // whose type turned on the magnitude that happened to flow through it is not a type.
             if (value.fitsInLong()) {
                 return value.asLong();
             }
