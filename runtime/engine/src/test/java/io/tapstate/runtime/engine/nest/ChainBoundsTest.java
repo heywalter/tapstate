@@ -3,172 +3,160 @@ package io.tapstate.runtime.engine.nest;
 import io.tapstate.core.event.ChainPosition;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static io.tapstate.runtime.engine.nest.NestFixtures.at;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * How far one vertex instance lets the durable frontier go. The bound it reports is always a change that
- * really arrived, and never one with a change still held beneath it: everything at or below the bound is
- * claimed to have gone downstream, and a change held back has not.
+ * What one vertex instance is still holding, chain by chain, gathered from the state entries that hold
+ * it. Its whole job is to answer "the lowest change on this chain that has not left here", which is what
+ * a level's bound is tightened by: promise anything at or above that and a restart replays from above a
+ * change that was never delivered, so it is neither sent nor replayable and no count anywhere is wrong.
  *
- * <p>The failing shape this is here to stop is silent and only visible after a crash — a bound that runs
- * ahead of a held change means a restart replays from above that change, so it is neither delivered nor
- * replayable, and no count anywhere is wrong.
+ * <p>Each key says what it holds in full rather than by increment, so a key that has let go is impossible
+ * to forget: forgetting a release pins a chain forever, and forgetting a hold loses data — both come from
+ * the same bookkeeping and only one of them is loud.
+ *
+ * <p>This answer is free to fall. It states what is being held right now, not what has been promised;
+ * keeping a promise from being taken back belongs to the level that makes it, not here.
  */
 class ChainBoundsTest {
 
     private static final String CLAIMS = "claim";
     private static final String POLICIES = "policy";
 
-    private static Map<String, ChainPosition> on(String chain, long seq, String token) {
-        return Map.of(chain, new ChainPosition(at(seq), token));
+    private static final Object C1 = java.util.List.of("C1");
+    private static final Object C2 = java.util.List.of("C2");
+
+    private static Map<String, ChainPosition> on(String chain, long seq) {
+        return Map.of(chain, new ChainPosition(at(seq), "t" + seq));
+    }
+
+    private static Map<String, ChainPosition> on(String chain, long seq, String other, long otherSeq) {
+        Map<String, ChainPosition> positions = new LinkedHashMap<>();
+        positions.put(chain, new ChainPosition(at(seq), "t" + seq));
+        positions.put(other, new ChainPosition(at(otherSeq), "t" + otherSeq));
+        return positions;
     }
 
     @Test
-    void withNothingHeldTheBoundIsTheHighestChangeThatWentOut() {
-        ChainBounds bounds = new ChainBounds();
-
-        bounds.emitted(on(CLAIMS, 90, "t90"));
-        bounds.emitted(on(CLAIMS, 400, "t400"));
-
-        assertThat(bounds.lowerBounds())
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(400), "t400")));
+    void anInstanceHoldingNothingReportsNoBoundOnAnyChain() {
+        assertThat(new ChainBounds().lowest(CLAIMS)).isNull();
     }
 
     @Test
-    void nothingIsReportedForAChainThatHasOnlyEverHeldChangesBack() {
+    void theOneKeyHoldingSomethingIsWhatTheChainReports() {
         ChainBounds bounds = new ChainBounds();
 
-        bounds.held(on(CLAIMS, 100, "t100"));
+        bounds.holding(C1, on(CLAIMS, 100));
 
-        assertThat(bounds.lowerBounds())
-                .describedAs("there is no change below it to report, so the chain does not advance at all")
-                .isEmpty();
+        assertThat(bounds.lowest(CLAIMS)).isEqualTo(at(100));
     }
 
     @Test
-    void aChangeStillHeldKeepsTheBoundBelowIt() {
+    void theLowestOfSeveralKeysHoldingTheSameChainIsWhatIsReported() {
         ChainBounds bounds = new ChainBounds();
 
-        bounds.emitted(on(CLAIMS, 90, "t90"));
-        bounds.held(on(CLAIMS, 100, "t100"));
-        bounds.emitted(on(CLAIMS, 400, "t400"));
-        bounds.emitted(on(CLAIMS, 500, "t500"));
+        bounds.holding(C1, on(CLAIMS, 400));
+        bounds.holding(C2, on(CLAIMS, 100));
 
-        assertThat(bounds.lowerBounds())
-                .describedAs("400 and 500 went out, but claiming them would claim 100 along with them")
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(90), "t90")));
+        assertThat(bounds.lowest(CLAIMS)).isEqualTo(at(100));
     }
 
     @Test
-    void releasingWhatWasHeldLetsTheBoundReachWhatHadAlreadyGoneOut() {
+    void whenTheLowestKeyLetsGoTheNextOneUpIsReported() {
         ChainBounds bounds = new ChainBounds();
-        bounds.emitted(on(CLAIMS, 90, "t90"));
-        bounds.held(on(CLAIMS, 100, "t100"));
-        bounds.emitted(on(CLAIMS, 500, "t500"));
+        bounds.holding(C1, on(CLAIMS, 400));
+        bounds.holding(C2, on(CLAIMS, 100));
 
-        bounds.released(on(CLAIMS, 100, "t100"));
-        bounds.emitted(on(CLAIMS, 100, "t100"));
+        bounds.holding(C2, Map.of());
 
-        assertThat(bounds.lowerBounds())
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(500), "t500")));
+        assertThat(bounds.lowest(CLAIMS))
+                .describedAs("one key letting go says nothing about what the others still hold")
+                .isEqualTo(at(400));
     }
 
     @Test
-    void eachHeldChangeStopsTheBoundAtTheHighestChangeThatWentOutBeneathIt() {
+    void aChainEveryKeyHasLetGoOfIsNotHeldAtAll() {
         ChainBounds bounds = new ChainBounds();
-        bounds.emitted(on(CLAIMS, 90, "t90"));
-        bounds.emitted(on(CLAIMS, 95, "t95"));
-        bounds.held(on(CLAIMS, 100, "t100"));
-        bounds.emitted(on(CLAIMS, 200, "t200"));
-        bounds.emitted(on(CLAIMS, 250, "t250"));
-        bounds.held(on(CLAIMS, 300, "t300"));
-        bounds.emitted(on(CLAIMS, 400, "t400"));
+        bounds.holding(C1, on(CLAIMS, 400));
 
-        assertThat(bounds.lowerBounds())
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(95), "t95")));
+        bounds.holding(C1, Map.of());
 
-        bounds.released(on(CLAIMS, 100, "t100"));
-        bounds.emitted(on(CLAIMS, 100, "t100"));
-
-        assertThat(bounds.lowerBounds())
-                .describedAs("the next change still held is 300, so the bound reaches the highest below it")
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(250), "t250")));
-
-        bounds.released(on(CLAIMS, 300, "t300"));
-        bounds.emitted(on(CLAIMS, 300, "t300"));
-
-        assertThat(bounds.lowerBounds())
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(400), "t400")));
+        assertThat(bounds.lowest(CLAIMS)).isNull();
     }
 
     @Test
-    void theBoundNeverGoesBackwards() {
+    void whatOneChainHoldsSaysNothingAboutAnother() {
         ChainBounds bounds = new ChainBounds();
-        bounds.emitted(on(CLAIMS, 500, "t500"));
-        assertThat(bounds.lowerBounds())
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(500), "t500")));
 
-        bounds.held(on(CLAIMS, 600, "t600"));
+        bounds.holding(C1, on(CLAIMS, 400, POLICIES, 5));
 
-        assertThat(bounds.lowerBounds())
-                .describedAs("a bound already reported has been acted on downstream and cannot be taken back")
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(500), "t500")));
+        assertThat(bounds.lowest(CLAIMS)).isEqualTo(at(400));
+        assertThat(bounds.lowest(POLICIES)).isEqualTo(at(5));
     }
 
     @Test
-    void chainsAreTrackedApartAndNeverCompared() {
+    void aKeyThatMovesToAnotherChainLetsGoOfTheFirst() {
         ChainBounds bounds = new ChainBounds();
+        bounds.holding(C1, on(CLAIMS, 100));
 
-        bounds.emitted(on(CLAIMS, 400, "claims-400"));
-        bounds.held(on(POLICIES, 10, "policies-10"));
-        bounds.emitted(on(POLICIES, 5, "policies-5"));
+        bounds.holding(C1, on(POLICIES, 5));
 
-        assertThat(bounds.lowerBounds())
-                .describedAs("one chain being held back says nothing about how far another may go")
-                .containsOnly(
-                        Map.entry(CLAIMS, new ChainPosition(at(400), "claims-400")),
-                        Map.entry(POLICIES, new ChainPosition(at(5), "policies-5")));
+        assertThat(bounds.lowest(CLAIMS)).isNull();
+        assertThat(bounds.lowest(POLICIES)).isEqualTo(at(5));
     }
 
     @Test
-    void theTokenReportedIsTheOneThatArrivedWithThatOrder() {
+    void twoKeysHoldingTheSameOrderAreBothAccountedFor() {
         ChainBounds bounds = new ChainBounds();
+        bounds.holding(C1, on(CLAIMS, 100));
+        bounds.holding(C2, on(CLAIMS, 100));
 
-        bounds.emitted(on(CLAIMS, 90, "mysql-bin.000042:19088743"));
-        bounds.held(on(CLAIMS, 100, "mysql-bin.000042:19088999"));
-        bounds.emitted(on(CLAIMS, 400, "mysql-bin.000042:19090000"));
+        bounds.holding(C1, Map.of());
 
-        assertThat(bounds.lowerBounds().get(CLAIMS))
-                .describedAs("the two halves travel as a pair: pick a bound by order, persist its own token")
-                .isEqualTo(new ChainPosition(at(90), "mysql-bin.000042:19088743"));
+        assertThat(bounds.lowest(CLAIMS))
+                .describedAs("every row of one snapshot shares a single order, so two keys can hold the "
+                        + "same one and the first to let go must not release the other's")
+                .isEqualTo(at(100));
     }
 
     @Test
-    void aChangeCarryingNoTokenStillMovesTheBound() {
+    void sayingTheSameThingTwiceChangesNothing() {
         ChainBounds bounds = new ChainBounds();
+        bounds.holding(C1, on(CLAIMS, 100));
 
-        bounds.emitted(on(CLAIMS, 90, null));
+        // A key is re-read and reported every time its drain settles, whether or not what it holds moved.
+        bounds.holding(C1, on(CLAIMS, 100));
+        bounds.holding(C1, Map.of());
 
-        assertThat(bounds.lowerBounds())
-                .describedAs("a snapshot row is ordered but is not a spot in a change stream; skipping it "
-                        + "would leave a snapshot-only chain never advancing at all")
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(90), null)));
+        assertThat(bounds.lowest(CLAIMS))
+                .describedAs("counted twice, one release would leave the chain pinned for good")
+                .isNull();
     }
 
     @Test
-    void aChangeThatWillNeverReachADocumentDoesNotHoldTheBoundBack() {
+    void aKeyRaisingWhatItHoldsRaisesTheChain() {
         ChainBounds bounds = new ChainBounds();
-        bounds.held(on(CLAIMS, 100, "t100"));
-        bounds.emitted(on(CLAIMS, 400, "t400"));
+        bounds.holding(C1, on(CLAIMS, 100));
 
-        bounds.released(on(CLAIMS, 100, "t100"));
+        bounds.holding(C1, on(CLAIMS, 400));
 
-        assertThat(bounds.lowerBounds())
-                .describedAs("a change routed to the dead letter is accounted for there and stops pinning "
-                        + "the frontier, which is what keeps one dangling key from stalling a whole chain")
-                .containsExactly(Map.entry(CLAIMS, new ChainPosition(at(400), "t400")));
+        assertThat(bounds.lowest(CLAIMS)).isEqualTo(at(400));
+    }
+
+    @Test
+    void whatIsHeldFallsWhenAKeyTakesInSomethingLower() {
+        ChainBounds bounds = new ChainBounds();
+        bounds.holding(C1, on(CLAIMS, 400));
+
+        bounds.holding(C2, on(CLAIMS, 100));
+
+        assertThat(bounds.lowest(CLAIMS))
+                .describedAs("this is what is held right now, not a promise: only the level that promises "
+                        + "has to keep its answer from going backwards")
+                .isEqualTo(at(100));
     }
 }
