@@ -11,10 +11,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class TapstateMcpApplicationTest {
 
+    private static final String STDIO_PROPERTY = "spring.ai.mcp.server.stdio";
+
     @AfterEach
     void clearProcessProperties() {
         System.clearProperty(TapstateMcpApplication.AOT_PROCESSING_PROPERTY);
         System.clearProperty(TapstateMcpApplication.LOGBACK_STATUS_LISTENER_PROPERTY);
+        System.clearProperty(STDIO_PROPERTY);
     }
 
     @Test
@@ -35,6 +38,7 @@ class TapstateMcpApplicationTest {
 
     @Test
     void startsAsAStdioOnlyApplicationAndRegistersTheConfiguredToolSurface() {
+        System.setProperty(STDIO_PROPERTY, "false");
         try (ConfigurableApplicationContext context = TapstateMcpApplication.start(
                 new String[] {"--server", "http://127.0.0.1:1", "--allow-write"},
                 Map.of("TAPSTATE_TOKEN", "machine-token"))) {

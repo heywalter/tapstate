@@ -220,7 +220,10 @@ class AuthTest {
                 .header("Authorization", "Bearer " + admin)
                 .retrieve().body(String.class);
         assertThat(listed).contains(tokenId).contains("WRITE");
-        assertThat(listed).doesNotContain(token).doesNotContain("secretHash");
+        assertThat(listed)
+                .doesNotContain(token)
+                .doesNotContain("secretHash")
+                .doesNotContain("hash:");
 
         HttpStatusCode revoked = client().post().uri("/api/tokens/{id}:revoke", tokenId)
                 .header("Authorization", "Bearer " + admin)

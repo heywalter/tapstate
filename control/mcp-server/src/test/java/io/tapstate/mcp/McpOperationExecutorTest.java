@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -189,11 +188,10 @@ class McpOperationExecutorTest {
     }
 
     @Test
-    void unreachableServerIsReturnedAsStructuredCodedFailure() throws Exception {
-        try (ServerSocket socket = new ServerSocket(0);
-                HttpControlClient client = new HttpControlClient(Duration.ofMillis(200), Duration.ofMillis(200))) {
+    void unreachableServerIsReturnedAsStructuredCodedFailure() {
+        try (HttpControlClient client = new HttpControlClient(Duration.ofMillis(200), Duration.ofMillis(200))) {
             McpOperationExecutor executor = new McpOperationExecutor(
-                    URI.create("http://127.0.0.1:" + socket.getLocalPort()), "token", Map.of(), client);
+                    URI.create("http://127.0.0.1:0"), "token", Map.of(), client);
 
             McpResult result = executor.execute(ControlOperations.PIPELINE_STATUS, Map.of("id", "orders"));
 
