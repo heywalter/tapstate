@@ -31,6 +31,21 @@ import java.util.Optional;
  */
 public final class MongoSchemaStore implements SchemaStore {
 
+    /**
+     * The stamp every document this build writes carries, and the one thing that tells a discovery run
+     * against the current model apart from one that predates it.
+     *
+     * <p>It has to be a stamp the writer puts on rather than something read out of the content: a
+     * document from before the types were resolved is recognisable by its fields carrying no resolved
+     * type, but so is a model of a connection that legitimately holds no fields at all - and reading the
+     * second as the first would make an empty source undiscoverable no matter how often it is
+     * discovered. The stamp is present on every write, so its absence says exactly one thing.
+     */
+    static final String MODEL_VERSION = "modelVersion";
+
+    /** The model this build writes and reads: source types resolved onto the tapstate namespace. */
+    static final int RESOLVED_TYPES = 1;
+
     private final MongoCollection<Document> collection;
 
     public MongoSchemaStore(MongoCollection<Document> collection) {
@@ -52,12 +67,30 @@ public final class MongoSchemaStore implements SchemaStore {
     public Optional<DiscoveredSourceModel> get(String connectionId) {
         Objects.requireNonNull(connectionId, "connectionId");
         Document document = StoreIo.call(() -> collection.find(new Document("_id", connectionId)).first());
-        return document == null ? Optional.empty() : Optional.of(toDiscovered(document));
+        // A model written before the types were resolved answers as no model at all. Its columns would
+        // all read as having no resolved type, which is refused wherever a resolved type is needed - and
+        // refused with a diagnostic about the columns, telling the author to change an expression that
+        // is not wrong. Answering "not discovered" instead gives them the one action that fixes it, and
+        // discovering is what makes it true.
+        if (document == null || !carriesResolvedTypes(document)) {
+            return Optional.empty();
+        }
+        return Optional.of(toDiscovered(document));
     }
 
     /**
-     * Maps a discovery envelope to its stored document: the connection id as {@code _id}, the connector
-     * id and discovery time as scalars, and the model's tables as a field.
+     * Whether a stored document is a discovery of the model this build reads — that is, one whose
+     * columns carry types resolved onto the tapstate namespace. A document without the stamp predates
+     * that resolution and is answered as no discovery at all, so the author is asked to discover rather
+     * than told that every column they read has no resolved type.
+     */
+    static boolean carriesResolvedTypes(Document document) {
+        return Integer.valueOf(RESOLVED_TYPES).equals(document.getInteger(MODEL_VERSION));
+    }
+
+    /**
+     * Maps a discovery envelope to its stored document: the connection id as {@code _id}, the model
+     * version stamp, the connector id and discovery time as scalars, and the model's tables as a field.
      */
     static Document toDocument(DiscoveredSourceModel discovered) {
         List<Document> tables = new ArrayList<>();
@@ -65,6 +98,7 @@ public final class MongoSchemaStore implements SchemaStore {
             tables.add(tableDocument(table));
         }
         return new Document("_id", discovered.connectionId())
+                .append(MODEL_VERSION, RESOLVED_TYPES)
                 .append("connectorId", discovered.connectorId())
                 .append("discoveredAt", discovered.discoveredAt())
                 .append("tables", tables);
