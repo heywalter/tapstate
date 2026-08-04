@@ -54,8 +54,9 @@ final class PdkTypeMapping {
      * "integer". A type that declares a scale is scaled whatever else it left out, and which of the two
      * scaled kinds it is nobody said: calling it exact would refuse arithmetic that is fine, calling it
      * approximate would permit arithmetic that drops digits. Unknown is the only answer that neither
-     * guesses nor silently permits - it is refused by name and the author rules on it. Only a number that
-     * declares no scale at all is taken as an integer.
+     * guesses nor silently permits - it is refused by name and the author rules on it. A number is taken
+     * as an integer only where nothing says otherwise: it declares no scale, or declares a scale of zero,
+     * which is a column stating it holds no fractional part rather than a scale it is held to.
      */
     private static TapstateType number(TapNumber number) {
         Boolean fixed = number.getFixed();
