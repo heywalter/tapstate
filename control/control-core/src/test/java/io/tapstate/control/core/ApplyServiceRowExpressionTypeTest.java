@@ -60,17 +60,22 @@ class ApplyServiceRowExpressionTypeTest {
             TapstateCatalog::load, artifacts, new AuditGate(record -> { }, FIXED_CLOCK), schemas);
 
     private static String pipeline(String expr) {
+        return pipeline("orders", expr);
+    }
+
+    /** The filter step reads {@code from}, which is a table name or a regex only a connection resolves. */
+    private static String pipeline(String from, String expr) {
         return """
                 version: tapstate/v1
                 kind: pipeline
                 id: orders_out
                 source: src_orders
                 transforms:
-                  - { id: keep, from: [orders], type: filter, expr: "%s" }
+                  - { id: keep, from: [%s], type: filter, expr: "%s" }
                 serve:
                   from: keep
                   sync: [ { id: out, source: src_orders, write_mode: upsert } ]
-                """.formatted(expr);
+                """.formatted(from, expr);
     }
 
     private List<ArtifactDraft> batch(String expr) {
@@ -80,6 +85,11 @@ class ApplyServiceRowExpressionTypeTest {
     private List<ArtifactDraft> batch(String source, String expr) {
         return List.of(new ArtifactDraft("src_orders.tap.yml", source),
                 new ArtifactDraft("orders_out.tap.yml", pipeline(expr)));
+    }
+
+    private List<ArtifactDraft> batch(String source, String from, String expr) {
+        return List.of(new ArtifactDraft("src_orders.tap.yml", source),
+                new ArtifactDraft("orders_out.tap.yml", pipeline(from, expr)));
     }
 
     /** Records a whole connection's discovery: several tables, as one discovery of one connection. */
@@ -257,19 +267,36 @@ class ApplyServiceRowExpressionTypeTest {
     }
 
     /**
-     * A selector naming nothing the model carries contributes nothing, the same reading a table absent
-     * from the model gets anywhere else: the model is what the last discovery found, and what it does
-     * not carry is not evidence of a problem. Falling back to the whole model instead would let the
-     * tables this source did not select decide the fate of an expression over the one it did — the
-     * pooled view again, arriving through the back door.
+     * A step that names the table it reads is judged on that table. The model here carries no table by
+     * that name — discovery may predate it, or the connector may report qualified names — and a table
+     * the model does not carry reads the same way a column it does not carry does: the model is what
+     * the last discovery found, and its silence is not evidence of a problem.
      */
     @Test
-    @DisplayName("a selector matching no discovered table contributes no table to judge against")
-    void aSelectorMatchingNoDiscoveredTableJudgesAgainstNothing() {
+    @DisplayName("a step naming a table the model does not carry has nothing to be judged against")
+    void aStepNamingATableTheModelDoesNotCarryIsNotJudged() {
         discovered("src_orders", table("legacy_orders", "amount", TapstateType.DECIMAL));
 
         assertThatCode(() -> service.apply("tester", batch("after.amount * 2 > 0")))
                 .doesNotThrowAnyException();
+    }
+
+    /**
+     * Where the wiring cannot name the table — a regex {@code from:}, which only a connection can
+     * resolve — the whole selected model is in play, and a selector that lines up with nothing must
+     * not narrow that to the empty set. Every column would then be absent, an absent column passes,
+     * and the gate would quietly stop refusing anything at all for that source.
+     */
+    @Test
+    @DisplayName("an unresolvable from: still judges against the model when the selector lines up with none of it")
+    void anUnresolvableReferenceKeepsTheModelInPlay() {
+        discovered("src_orders", table("legacy_orders", "amount", TapstateType.DECIMAL));
+
+        DslException thrown = catchThrowableOfType(DslException.class,
+                () -> service.apply("tester", batch(source("[ orders ]"), "/.*/", "after.amount * 2 > 0")));
+
+        assertThat(thrown.code()).isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED);
+        assertThat(thrown.args()).containsEntry("table", "legacy_orders");
     }
 
     @Test

@@ -213,11 +213,14 @@ public final class ApplyService {
      * out. Those are not this source's to answer for, and the wiring can point an expression at a table
      * only through the source that selects it.
      *
-     * <p>A selector matching nothing in the model narrows to nothing, and nothing is what this source
-     * then contributes. That is the same reading a table absent from the model gets everywhere else:
-     * the model is what the last discovery found, and what it does not carry is not evidence of a
-     * problem. A pattern that will not compile matches nothing on its own rather than failing the
-     * apply.
+     * <p>A selector matching nothing in the model narrows nothing — the names cannot be lined up (the
+     * connector may report qualified names, or the model may predate the selector), so no table is
+     * ruled out. Where the wiring names the table it reads, this changes no verdict: a name absent
+     * from the model is filtered out downstream either way. Where it cannot — a regex {@code from:},
+     * which only a connection can resolve — it is what keeps the whole model in play; narrowing to
+     * the empty set there would leave every column absent, and an absent column stays untyped and
+     * passes, so the gate would quietly stop refusing anything at all for that source. A pattern that
+     * will not compile matches nothing on its own rather than failing the apply.
      */
     private static List<SourceTable> selectedTables(SourceResource source, List<SourceTable> discovered) {
         List<TableRef> selectors = source.tables();
@@ -230,7 +233,7 @@ public final class ApplyService {
                 selected.add(table);
             }
         }
-        return selected;
+        return selected.isEmpty() ? discovered : selected;
     }
 
     /** Whether one {@code tables} entry selects the named discovered table. */
