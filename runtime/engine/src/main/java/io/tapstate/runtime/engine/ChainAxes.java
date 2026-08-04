@@ -2,6 +2,7 @@ package io.tapstate.runtime.engine;
 
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.runtime.engine.nest.NestError;
+import java.io.Serializable;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,9 +22,11 @@ import java.util.Map;
  * overwritten by one of them.
  *
  * <p>Nothing here is written down. The numbering is in-flight identity only: a restart recomputes it from
- * the same names and arrives at the same answer.
+ * the same names and arrives at the same answer. It travels to the members with the graph rather than
+ * being worked out again on each of them, for the same reason it is not derived from observation: two
+ * members that disagree about which chain an axis carries would combine unrelated promises.
  */
-public final class ChainAxes {
+public final class ChainAxes implements Serializable {
 
     /** How many chains a pipeline can draw from: the byte holds 256 axes and the engine keeps the first. */
     public static final int MAX_CHAINS = 255;

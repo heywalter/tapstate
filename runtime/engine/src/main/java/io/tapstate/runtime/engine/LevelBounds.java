@@ -1,5 +1,6 @@
 package io.tapstate.runtime.engine;
 
+import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.SourceOrder;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -9,6 +10,7 @@ import java.util.Map;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * How far one instance of one level lets the frontier go, chain by chain, and when it is allowed to say
@@ -42,6 +44,7 @@ public final class LevelBounds {
     private final Function<String, SourceOrder> lowestHeld;
     private final Map<String, Map<Integer, Long>> promised = new HashMap<>();
     private final Map<String, Long> sent = new HashMap<>();
+    private Watermark held;
 
     /**
      * A level whose edge at each ordinal is expected to carry the named chains, putting its bounds on the
@@ -57,6 +60,32 @@ public final class LevelBounds {
         this.ordinalsByChain = byChain;
         this.axes = axes;
         this.lowestHeld = lowestHeld;
+    }
+
+    /**
+     * Takes in the bound that arrived at {@code ordinal} and offers whatever this level may now promise to
+     * {@code emit}, answering whether the level is done with this bound. A refusal means the outbox is
+     * full: the engine will bring the same bound back, and the value worked out for it is kept and offered
+     * again rather than worked out afresh - a second pass would find it no advance on what was already
+     * recorded as sent, and pass on nothing at all.
+     */
+    public boolean advance(int ordinal, Watermark arrived, Predicate<Watermark> emit) {
+        if (held != null) {
+            if (!emit.test(held)) {
+                return false;
+            }
+            held = null;
+        }
+        OptionalLong promise = observe(ordinal, arrived.key(), arrived.timestamp());
+        if (promise.isEmpty()) {
+            return true;
+        }
+        Watermark onward = new Watermark(promise.getAsLong(), arrived.key());
+        if (emit.test(onward)) {
+            return true;
+        }
+        held = onward;
+        return false;
     }
 
     /**

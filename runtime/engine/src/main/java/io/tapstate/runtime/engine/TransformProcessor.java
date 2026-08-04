@@ -9,6 +9,8 @@ import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.spi.transform.TransformPort;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -32,12 +34,28 @@ import java.util.Objects;
 public final class TransformProcessor extends AbstractProcessor {
 
     private final FlatMapper<Envelope, Envelope> flatMapper;
+    private final LevelBounds bounds;
 
     public TransformProcessor(TransformPort port) {
+        this(port, null);
+    }
+
+    /**
+     * An adapter that also passes a frontier on: {@code bounds} works out how far each chain has really
+     * got from what arrived on each edge. A null one propagates nothing, which is a frontier that stands
+     * still rather than one that runs ahead.
+     */
+    public TransformProcessor(TransformPort port, LevelBounds bounds) {
         Objects.requireNonNull(port, "port");
+        this.bounds = bounds;
         this.flatMapper = flatMapper(event ->
                 Traversers.traverseIterable(port.transform(event))
                         .map(out -> out.withSrcPos(event.srcPos())));
+    }
+
+    /** A meta-supplier for a vertex that propagates no frontier, for a job built without one. */
+    public static ProcessorMetaSupplier metaSupplier(SupplierEx<? extends TransformPort> portFactory) {
+        return metaSupplier(portFactory, null, null);
     }
 
     /**
@@ -45,16 +63,38 @@ public final class TransformProcessor extends AbstractProcessor {
      * factory (not a prebuilt port) is what the DAG carries, so the port is constructed on the member
      * that runs the vertex. The vertex is pinned to total parallelism one so it preserves the source
      * position order the sink acks.
+     *
+     * <p>{@code chainsByOrdinal} says which chains each inbound edge is compiled to carry, which is what
+     * the vertex waits on before promising anything about one. It travels with the graph rather than
+     * being worked out on the member, for the same reason {@code axes} does: two members that disagreed
+     * would combine promises about different chains.
      */
-    public static ProcessorMetaSupplier metaSupplier(SupplierEx<? extends TransformPort> portFactory) {
+    public static ProcessorMetaSupplier metaSupplier(SupplierEx<? extends TransformPort> portFactory,
+            ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal) {
         Objects.requireNonNull(portFactory, "portFactory");
-        SupplierEx<Processor> supplier = () -> new TransformProcessor(portFactory.get());
+        SupplierEx<Processor> supplier = axes == null
+                ? () -> new TransformProcessor(portFactory.get())
+                // Holding nothing back is the whole of this level's own contribution: what it may promise
+                // is exactly the lowest of what its edges promised.
+                : () -> new TransformProcessor(portFactory.get(),
+                        new LevelBounds(chainsByOrdinal, axes, chain -> null));
         return ProcessorMetaSupplier.forceTotalParallelismOne(ProcessorSupplier.of(supplier));
     }
 
     @Override
     protected boolean tryProcess(int ordinal, Object item) {
         return flatMapper.tryProcess((Envelope) item);
+    }
+
+    /**
+     * Works out what this level may promise on the chain the bound travels on, and passes that on rather
+     * than the bound itself. Per edge is the only variant that reaches a chain not every edge carries: the
+     * combined one is never delivered for such a chain at all, with nothing said anywhere, so a union of
+     * two streams would simply never advance.
+     */
+    @Override
+    public boolean tryProcessWatermark(int ordinal, Watermark watermark) {
+        return bounds == null || bounds.advance(ordinal, watermark, this::tryEmit);
     }
 
     /**

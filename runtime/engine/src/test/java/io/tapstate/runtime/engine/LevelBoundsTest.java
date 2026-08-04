@@ -3,11 +3,14 @@ package io.tapstate.runtime.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.SourceOrder;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -126,6 +129,26 @@ class LevelBoundsTest {
         assertThat(bounds.observe(0, AXES.axisOf(ORDERS), packed(4, 9)))
                 .describedAs("there is no value beneath the bottom of the domain to promise")
                 .isEmpty();
+    }
+
+    @Test
+    void keepsTheBoundItWorkedOutWhenTheOutboxWouldNotTakeIt() {
+        LevelBounds bounds = bounds(Map.of(0, List.of(ORDERS)));
+        List<Watermark> taken = new ArrayList<>();
+        Predicate<Watermark> outboxFull = onward -> false;
+        Watermark arrived = new Watermark(packed(1, 50), AXES.axisOf(ORDERS));
+
+        assertThat(bounds.advance(0, arrived, outboxFull))
+                .describedAs("answering false is what makes the engine bring the same bound back")
+                .isFalse();
+        assertThat(taken).isEmpty();
+
+        assertThat(bounds.advance(0, arrived, taken::add)).isTrue();
+        assertThat(taken)
+                .describedAs("working the same bound out a second time finds it no advance on what was "
+                        + "already recorded as sent, so holding it is the only way it goes anywhere")
+                .extracting(Watermark::timestamp)
+                .containsExactly(packed(1, 50));
     }
 
     @Test

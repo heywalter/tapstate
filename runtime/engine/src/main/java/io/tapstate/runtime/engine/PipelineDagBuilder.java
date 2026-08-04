@@ -52,6 +52,17 @@ public final class PipelineDagBuilder {
      * changes which sink vertex the serve block wires.
      */
     public static DAG build(PipelineResource pipeline, DagBindings bindings, SinkAckBinding sinkAck) {
+        return build(pipeline, bindings, sinkAck, null);
+    }
+
+    /**
+     * Builds the Jet DAG for a validated pipeline. When {@code frontier} is present each level is told
+     * which chains reach it over which of its edges, and so can work out how far it may let the frontier
+     * go; when it is null no level propagates a bound at all, which is a frontier that does not advance
+     * rather than one that advances too far. The topology is identical either way.
+     */
+    public static DAG build(PipelineResource pipeline, DagBindings bindings, SinkAckBinding sinkAck,
+            FrontierBinding frontier) {
         DAG dag = new DAG();
         Map<String, Vertex> byKey = new HashMap<>();
         // Jet rejects two edges that share a source or destination ordinal, so every edge takes the
@@ -59,10 +70,18 @@ public final class PipelineDagBuilder {
         // then wire without collision.
         Map<Vertex, Integer> outboundOrdinal = new HashMap<>();
         Map<Vertex, Integer> inboundOrdinal = new HashMap<>();
+        PipelineChains chains = frontier == null ? null : new PipelineChains();
 
         for (String sourceId : pipeline.sources()) {
             byKey.put(sourceId, dag.newVertex(sourceId, bindings.sourceVertices().apply(sourceId)));
+            if (chains != null) {
+                chains.source(sourceId, frontier.sourceChains().apply(sourceId));
+            }
         }
+        // Every chain the job draws from is known once its sources are: nothing downstream reads one they
+        // do not. Numbering them here rather than per vertex is what makes an axis mean the same thing
+        // everywhere, which is what lets bounds from different vertices be combined at all.
+        ChainAxes axes = chains == null ? null : chains.axes();
 
         if (pipeline.transforms() != null) {
             for (Step step : pipeline.transforms()) {
@@ -76,15 +95,22 @@ public final class PipelineDagBuilder {
                     byKey.put(step.id(), NestDag.attach(dag,
                             NestTopology.compile(pipeline.id(), step.id(), nest, bindings.nest().tables()),
                             step.id(), nest.root().from(), step.id(),
-                            alias -> aliasUpstream(inline.from(), alias, byKey, bindings),
+                            alias -> verticesOf(aliasUpstream(inline.from(), alias, bindings), byKey),
                             bindings.nest(),
                             vertex -> outboundOrdinal.merge(vertex, 1, Integer::sum) - 1));
+                    if (chains != null) {
+                        chains.derived(step.id(), nestUpstream(inline.from(), bindings));
+                    }
                     continue;
                 }
-                Vertex vertex = transformVertex(dag, step, bindings);
+                List<String> upstream = resolveClause(step.from(), bindings);
+                Vertex vertex = transformVertex(dag, step, bindings, axes,
+                        chains == null ? null : chains.perOrdinal(upstream));
                 byKey.put(step.id(), vertex);
-                connect(dag, resolveClause(step.from(), byKey, bindings), vertex,
-                        outboundOrdinal, inboundOrdinal);
+                if (chains != null) {
+                    chains.derived(step.id(), upstream);
+                }
+                connect(dag, verticesOf(upstream, byKey), vertex, outboundOrdinal, inboundOrdinal);
             }
         }
 
@@ -93,7 +119,7 @@ public final class PipelineDagBuilder {
                     "serve block is a use-reference; resolve it to an inline serve first");
         }
         if (pipeline.serve() instanceof ServeBlock.Inline serve && serve.sync() != null) {
-            List<Vertex> upstream = resolve(serve.from(), byKey, bindings);
+            List<Vertex> upstream = verticesOf(resolve(serve.from(), bindings), byKey);
             List<SyncElement> sync = serve.sync();
             for (int i = 0; i < sync.size(); i++) {
                 SyncElement element = sync.get(i);
@@ -127,7 +153,8 @@ public final class PipelineDagBuilder {
      * {@code join} or an unresolved {@code use:} reference is out of this builder's scope and is
      * refused; extending to them replaces the refusal, not the seam.
      */
-    private static Vertex transformVertex(DAG dag, Step step, DagBindings bindings) {
+    private static Vertex transformVertex(DAG dag, Step step, DagBindings bindings, ChainAxes axes,
+            Map<Integer, List<String>> chainsByOrdinal) {
         if (!(step instanceof Step.Inline inline)) {
             throw new IllegalArgumentException(
                     "transform step '" + step.id() + "' is a use-reference; resolve it to an inline step first");
@@ -144,17 +171,16 @@ public final class PipelineDagBuilder {
             return dag.newVertex(step.id(), ProcessorMetaSupplier.forceTotalParallelismOne(
                     ProcessorSupplier.of(Processors.mapP(FunctionEx.identity()))));
         }
-        return dag.newVertex(step.id(),
-                TransformProcessor.metaSupplier(bindings.transformPorts().apply(step)));
+        return dag.newVertex(step.id(), TransformProcessor.metaSupplier(
+                bindings.transformPorts().apply(step), axes, chainsByOrdinal));
     }
 
     /**
-     * The producer vertices behind one alias of a nest / join {@code from:} map. A validated pipeline
+     * The producer keys behind one alias of a nest / join {@code from:} map. A validated pipeline
      * always names a declared alias, so an unknown one is a builder invariant violation rather than a
      * user error.
      */
-    private static List<Vertex> aliasUpstream(FromClause from, String alias, Map<String, Vertex> byKey,
-            DagBindings bindings) {
+    private static List<String> aliasUpstream(FromClause from, String alias, DagBindings bindings) {
         if (!(from instanceof FromClause.Aliases aliases)) {
             throw new IllegalStateException("a nest step must carry an alias-map from:");
         }
@@ -162,36 +188,51 @@ public final class PipelineDagBuilder {
         if (ref == null) {
             throw new IllegalStateException("nest alias '" + alias + "' is not declared on the step");
         }
-        return resolve(ref, byKey, bindings);
+        return resolve(ref, bindings);
     }
 
-    /** Resolves every reference in a streaming {@code from:} list to the producer vertices upstream. */
-    private static List<Vertex> resolveClause(FromClause from, Map<String, Vertex> byKey, DagBindings bindings) {
-        List<Vertex> upstream = new ArrayList<>();
+    /** Every producer key feeding a nest step, over all of its aliases at once. */
+    private static List<String> nestUpstream(FromClause from, DagBindings bindings) {
+        List<String> keys = new ArrayList<>();
+        if (from instanceof FromClause.Aliases aliases) {
+            for (String alias : aliases.aliases().keySet()) {
+                keys.addAll(aliasUpstream(from, alias, bindings));
+            }
+        }
+        return keys;
+    }
+
+    /** Resolves every reference in a streaming {@code from:} list to the producer keys upstream. */
+    private static List<String> resolveClause(FromClause from, DagBindings bindings) {
+        List<String> upstream = new ArrayList<>();
         if (from instanceof FromClause.Flow flow) {
             for (FromRef ref : flow.refs()) {
-                upstream.addAll(resolve(ref, byKey, bindings));
+                upstream.addAll(resolve(ref, bindings));
             }
         }
         return upstream;
     }
 
     /**
-     * Resolves a {@code from:} reference to the producer vertices it names. A validated pipeline
-     * always resolves, so an empty result or a key with no vertex is a builder invariant violation,
-     * not a user error - it bare-throws rather than emitting a broken DAG.
+     * Resolves a {@code from:} reference to the producer keys it names. A validated pipeline always
+     * resolves, so an empty result is a builder invariant violation, not a user error - it bare-throws
+     * rather than emitting a broken DAG.
      */
-    private static List<Vertex> resolve(FromRef ref, Map<String, Vertex> byKey, DagBindings bindings) {
+    private static List<String> resolve(FromRef ref, DagBindings bindings) {
         List<String> keys = bindings.upstreams().apply(ref);
         if (keys == null || keys.isEmpty()) {
             throw new IllegalStateException("reference " + ref + " resolved to no upstream vertex");
         }
+        return keys;
+    }
+
+    /** The vertices those producer keys name, refusing a key no vertex was built for. */
+    private static List<Vertex> verticesOf(List<String> keys, Map<String, Vertex> byKey) {
         List<Vertex> vertices = new ArrayList<>();
         for (String key : keys) {
             Vertex vertex = byKey.get(key);
             if (vertex == null) {
-                throw new IllegalStateException(
-                        "reference " + ref + " resolved to unknown vertex '" + key + "'");
+                throw new IllegalStateException("reference resolved to unknown vertex '" + key + "'");
             }
             vertices.add(vertex);
         }

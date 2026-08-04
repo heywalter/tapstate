@@ -4,6 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.tapstate.core.common.TapstateException;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -110,6 +114,28 @@ class ChainAxesTest {
         assertThatThrownBy(() -> axes.chainOn((byte) 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .isNotInstanceOf(TapstateException.class);
+    }
+
+    @Test
+    void travelsToAMemberWithTheGraphRatherThanBeingWorkedOutAgainThere() throws Exception {
+        // Every member has to put a chain on the axis every other member puts it on. Sending the numbering
+        // rather than the recipe is what guarantees that: a member deriving it from what it can see would
+        // be numbering a different set of names.
+        ChainAxes axes = ChainAxes.assign(List.of("orders", "customers", "items"));
+
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
+            out.writeObject(axes);
+        }
+        ChainAxes arrived;
+        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+            arrived = (ChainAxes) in.readObject();
+        }
+
+        for (String chain : List.of("orders", "customers", "items")) {
+            assertThat(arrived.axisOf(chain)).isEqualTo(axes.axisOf(chain));
+            assertThat(arrived.chainOn(arrived.axisOf(chain))).isEqualTo(chain);
+        }
     }
 
     private static List<String> namedChains(int count) {
