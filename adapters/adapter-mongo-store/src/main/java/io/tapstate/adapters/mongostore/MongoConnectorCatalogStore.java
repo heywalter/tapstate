@@ -8,6 +8,7 @@ import io.tapstate.core.catalog.CatalogEntryWriter;
 import io.tapstate.core.catalog.ConnectorCatalogEntry;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 
 import java.util.ArrayList;

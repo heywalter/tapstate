@@ -34,8 +34,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * sub-stores lands in its own distinct, named storage area and reads back through that same sub-store,
  * so the artifact truth layer, the pipeline state store, the pipeline desired-state store, the
  * per-pipeline observation store, the connection catalog, the discovered source-schema store, the
- * connector distribution registry, the latest connection-test result per connection and the SRS meta
- * store never share storage. Where Docker is absent this aborts on a developer machine and fails in
+ * connector distribution registry, the stored connector spec sources, the latest connection-test result
+ * per connection and the SRS meta store never share storage. Where Docker is absent this aborts on a developer machine and fails in
  * CI, where a skip would be a green build that ran nothing.
  */
 @RequiresDocker
@@ -57,7 +57,7 @@ class MongoStorePortIT {
             """;
 
     @Test
-    void aggregatesTheNineSubStoresEachOnItsOwnStorage() {
+    void aggregatesTheTenSubStoresEachOnItsOwnStorage() {
         // The Testcontainers Mongo speaks plaintext; TLS is opt-in, so a plaintext URL connects with
         // no flag. TLS wiring itself is covered by MongoConnectionTest.
         String uri = REPLICA_SET.getReplicaSetUrl();
@@ -66,7 +66,7 @@ class MongoStorePortIT {
             connection.verify();
             MongoStorePort port = new MongoStorePort(connection);
 
-            // one write through each of the nine sub-stores
+            // one write through each of the ten sub-stores
             port.artifacts().save(PARSER.parse(ORDERS));
             port.state().create("orders_sync", "{\"phase\":\"snapshot\"}", Instant.parse("2026-07-06T00:00:00Z"));
             port.desired().save(new DesiredState("orders_sync", PipelineState.RUNNING, "rev-abc"));
@@ -77,6 +77,7 @@ class MongoStorePortIT {
                     new SourceTable("orders", List.of(), List.of(), List.of())))));
             port.connectors().register(
                     "mysql", "1.3.5", RegistrationSource.SEED, "mysql-connector-bytes".getBytes(StandardCharsets.UTF_8));
+            port.connectorSpecs().put("spec-hash", "{\"properties\":{\"id\":\"mysql\"}}".getBytes(StandardCharsets.UTF_8));
             port.connectionTestResults().save(new ConnectionTestResult(
                     "mysql-local",
                     "mysql",
@@ -94,6 +95,7 @@ class MongoStorePortIT {
             assertThat(port.catalog().get("mysql-local")).isPresent();
             assertThat(port.schemas().get("mysql-local")).isPresent();
             assertThat(port.connectors().list()).hasSize(1);
+            assertThat(port.connectorSpecs().get("spec-hash")).isPresent();
             assertThat(port.connectionTestResults().find("mysql-local")).isPresent();
             assertThat(port.meta().read("orders@mysql-1")).isPresent();
 
@@ -109,6 +111,7 @@ class MongoStorePortIT {
                 assertThat(database.getCollection(MongoStorePort.SOURCE_SCHEMAS).countDocuments()).isEqualTo(1);
                 assertThat(database.getCollection(MongoStorePort.CONNECTOR_ARTIFACTS + ".files").countDocuments())
                         .isEqualTo(1);
+                assertThat(database.getCollection(MongoStorePort.CONNECTOR_SPECS).countDocuments()).isEqualTo(1);
                 assertThat(database.getCollection(MongoStorePort.CONNECTION_TEST_RESULTS).countDocuments())
                         .isEqualTo(1);
                 assertThat(database.getCollection(MongoStorePort.SRS_META).countDocuments()).isEqualTo(1);

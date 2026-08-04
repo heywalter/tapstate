@@ -3,6 +3,7 @@ package io.tapstate.adapters.mongostore;
 import io.tapstate.core.catalog.CatalogEntryReader;
 import io.tapstate.core.catalog.ConnectorCatalogEntry;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;
 

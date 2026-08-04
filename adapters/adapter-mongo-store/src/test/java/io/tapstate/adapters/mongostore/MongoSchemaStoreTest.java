@@ -2,6 +2,7 @@ package io.tapstate.adapters.mongostore;
 
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.DiscoveredSourceModel;
+import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.SourceField;
 import io.tapstate.spi.store.SourceIndex;
 import io.tapstate.spi.store.SourceModel;

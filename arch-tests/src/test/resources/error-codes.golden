@@ -10,6 +10,7 @@ capture.start-from-unparsable
 cli.artifact-exists
 cli.connect-failed
 cli.kind-dir-mismatch
+cli.mcp-unavailable
 cli.not-authenticated
 cli.not-connected
 cli.repl-builtin-only
@@ -27,6 +28,7 @@ connector.discover-failed
 connector.load-failed
 connector.no-connector-class
 connector.not-found
+connector.not-official
 connector.not-registered
 connector.projection-failed
 connector.registration-conflict
@@ -41,8 +43,10 @@ control.bootstrap-forbidden
 control.forbidden
 control.malformed-request
 control.unauthenticated
+control.unreachable
 dsl.ambiguous-reference
 dsl.composition
+dsl.config-required
 dsl.config-type-mismatch
 dsl.duplicate-id
 dsl.forbidden-field
@@ -64,6 +68,9 @@ io.store-unavailable
 lifecycle.illegal-transition
 lifecycle.incompatible-revision
 lifecycle.unknown-pipeline
+mcp.connector-spec-unavailable
+mcp.environment-missing
+mcp.server-rejected
 monitor.no-observation
 nest.append-mode-conflicts-with-key-tracking
 nest.array-key-unresolvable

@@ -36,7 +36,7 @@ import java.util.stream.Collectors;
  *       server-side connection concern, not enforced here.</li>
  * </ul>
  */
-final class CapabilityRules {
+public final class CapabilityRules {
 
     private CapabilityRules() {
     }
@@ -44,18 +44,23 @@ final class CapabilityRules {
     static void validate(Collection<Resource> batch, TapstateCatalog catalog) {
         for (Resource r : batch) {
             if (r instanceof SourceResource s) {
-                checkSource(s, catalog);
+                checkSource(s, catalog, false);
             }
         }
     }
 
-    private static void checkSource(SourceResource s, TapstateCatalog catalog) {
+    /** Validates one online Source against the live catalog, including active required fields. */
+    public static void validateOnline(SourceResource source, TapstateCatalog catalog) {
+        checkSource(source, catalog, true);
+    }
+
+    private static void checkSource(SourceResource s, TapstateCatalog catalog, boolean requireRequired) {
         if (!catalog.ids().contains(s.connector())) {
             return;   // not in the offline catalog → connector legality is a server-side check
         }
         ConnectorCatalogEntry entry = catalog.byId(s.connector());
         checkMode(s, entry);
-        checkConfig(s, entry);
+        checkConfig(s, entry, requireRequired);
     }
 
     private static void checkMode(SourceResource s, ConnectorCatalogEntry entry) {
@@ -83,7 +88,7 @@ final class CapabilityRules {
                 || entry.provenance().modeSource().containsValue(ModeSource.DECLARED);
     }
 
-    private static void checkConfig(SourceResource s, ConnectorCatalogEntry entry) {
+    private static void checkConfig(SourceResource s, ConnectorCatalogEntry entry, boolean requireRequired) {
         Map<String, ConfigField> fields = new LinkedHashMap<>();
         for (ConfigField f : entry.config()) {
             fields.put(f.name(), f);
@@ -103,6 +108,37 @@ final class CapabilityRules {
                 }
             }
         }
+        if (requireRequired) {
+            for (ConfigField field : fields.values()) {
+                if (field.required() && isVisible(field, fields, s.config())
+                        && !hasValue(s.config(), field.name())
+                        && field.defaultValue() == null) {
+                    throw configRequired(s.connector(), field);
+                }
+            }
+        }
+    }
+
+    private static boolean isVisible(ConfigField field, Map<String, ConfigField> fields,
+                                     Map<String, Object> config) {
+        if (field.visibleWhen() == null) {
+            return true;
+        }
+        String controlling = field.visibleWhen().controllingField();
+        Object value = config.get(controlling);
+        if (value == null) {
+            ConfigField controller = fields.get(controlling);
+            value = controller == null ? null : controller.defaultValue();
+        }
+        if (isInterpolated(value)) {
+            return false;
+        }
+        return value != null && field.visibleWhen().equalsAnyOf().contains(String.valueOf(value));
+    }
+
+    private static boolean hasValue(Map<String, Object> config, String field) {
+        Object value = config.get(field);
+        return value != null && (!(value instanceof String text) || !text.isBlank());
     }
 
     /**
@@ -129,6 +165,9 @@ final class CapabilityRules {
     }
 
     private static boolean matchesType(ConfigType type, Object value) {
+        if (value == null) {
+            return false;
+        }
         return switch (type) {
             case ARRAY -> value instanceof List;
             case BOOLEAN -> value instanceof Boolean
@@ -159,6 +198,11 @@ final class CapabilityRules {
     private static DslException configTypeMismatch(String connector, ConfigField field) {
         return new DslException(DslError.CONFIG_TYPE_MISMATCH, "config." + field.name(), 0, 0, null,
                 Map.of("connector", connector, "field", field.name(), "expected", field.type().yaml()));
+    }
+
+    private static DslException configRequired(String connector, ConfigField field) {
+        return new DslException(DslError.CONFIG_REQUIRED, "config." + field.name(), 0, 0, null,
+                Map.of("connector", connector, "field", field.name()));
     }
 
     private static DslException invalidConfigValue(String connector, ConfigField field, Object value) {

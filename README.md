@@ -217,13 +217,25 @@ mvn -Pnative -pl cli -am -DskipTests package
 ```
 
 The native binary lands at **`cli/target/tapstate`** (the connector catalog,
-grammar schema, and message text are embedded). Put it on your `PATH`:
+grammar schema, and message text are embedded). That standalone file is enough
+for offline authoring. `tapstate mcp` additionally needs the sibling sidecar,
+so install the complete bundle when exposing the command globally:
 
 ```sh
-export PATH="$PWD/cli/target:$PATH"      # this shell
-# or
-ln -s "$PWD/cli/target/tapstate" ~/bin/tapstate
+# Build the native CLI and MCP sidecar, then assemble bin/ + libexec/.
+mvn -Pnative -pl cli,control/mcp-server,distribution/cli-bundle -am -DskipTests package
+tar -xzf distribution/cli-bundle/target/cli-bundle-0.1.0-native.tar.gz
+mkdir -p "$HOME/.tapstate/versions/0.1.0" "$HOME/.tapstate/bin"
+mv tapstate-cli-0.1.0/* "$HOME/.tapstate/versions/0.1.0/"
+ln -s "$HOME/.tapstate/versions/0.1.0/bin/tapstate" "$HOME/.tapstate/bin/tapstate"
+export PATH="$HOME/.tapstate/bin:$PATH"
 ```
+
+The stable entry is a symlink into the versioned bundle. The launcher resolves
+that link before locating `libexec`, so an MCP host can invoke `tapstate mcp`
+without a repository-relative path. The release installer performs this layout
+and switches the stable link atomically; it never scans Maven caches or `PATH`
+for a sidecar.
 
 Verify:
 

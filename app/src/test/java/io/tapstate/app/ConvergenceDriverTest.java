@@ -153,7 +153,7 @@ class ConvergenceDriverTest {
         // pipeline id, proving the driver sets the pipeline attribution slot around each pipeline's work.
         RingBufferLogSink sink = new RingBufferLogSink(8, 8);
         Logger driverLogger = (Logger) LoggerFactory.getLogger(ConvergenceDriver.class);
-        PipelineLogAppender appender = new PipelineLogAppender(sink);
+        PipelineLogAppender appender = new PipelineLogAppender(sink, new io.tapstate.core.logging.SecretRedactor());
         appender.setContext(driverLogger.getLoggerContext());
         appender.start();
         driverLogger.addAppender(appender);
@@ -179,7 +179,7 @@ class ConvergenceDriverTest {
         // silent "found 0" it used to be, and the observable state reflects the failure.
         RingBufferLogSink sink = new RingBufferLogSink(8, 8);
         Logger driverLogger = (Logger) LoggerFactory.getLogger(ConvergenceDriver.class);
-        PipelineLogAppender appender = new PipelineLogAppender(sink);
+        PipelineLogAppender appender = new PipelineLogAppender(sink, new io.tapstate.core.logging.SecretRedactor());
         appender.setContext(driverLogger.getLoggerContext());
         appender.start();
         driverLogger.addAppender(appender);

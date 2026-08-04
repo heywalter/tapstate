@@ -69,14 +69,17 @@ class CorpusSemanticGateTest {
     void everyCodeIsWitnessed() {
         Set<DslError> witnessed = EnumSet.noneOf(DslError.class);
         invalidCases().forEach(a -> witnessed.add(DslError.ofSymbol((String) a.get()[1])));
-        // Three codes are pre-semantic and exempt, each proven by a direct test instead.
+        // Online-only and pre-semantic codes are exempt, each proven by a direct test instead.
+        // CONFIG_REQUIRED depends on the live connector catalog and is intentionally not enforced
+        // by the offline WorkspaceLoader exercised by this corpus.
         // MALFORMED_YAML: a syntax error cannot be a well-formed corpus artifact (DslMalformedYamlTest).
         // UNDEFINED_VARIABLE / MALFORMED_INTERPOLATION: interpolation runs on raw text before the parse,
         // and whether a reference resolves depends on the environment rather than on the document — so
         // no artifact can witness them, and a corpus that tried would pass or fail by ambient state
         // (InterpolatorTest).
         Set<DslError> requiresCorpusWitness = EnumSet.complementOf(EnumSet.of(
-                DslError.MALFORMED_YAML, DslError.UNDEFINED_VARIABLE, DslError.MALFORMED_INTERPOLATION));
+                DslError.CONFIG_REQUIRED, DslError.MALFORMED_YAML,
+                DslError.UNDEFINED_VARIABLE, DslError.MALFORMED_INTERPOLATION));
         assertThat(witnessed).containsExactlyInAnyOrderElementsOf(requiresCorpusWitness);
     }
 

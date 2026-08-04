@@ -1,7 +1,9 @@
 package io.tapstate.control.core;
 
 import io.tapstate.core.logging.LogSink;
+import io.tapstate.core.logging.LogLine;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -23,5 +25,16 @@ public final class PipelineLogQueryService {
     public PipelineLogs logs(String pipelineId) {
         Objects.requireNonNull(pipelineId, "pipelineId");
         return new PipelineLogs(pipelineId, logs.tail(pipelineId));
+    }
+
+    /** The pipeline's most recent {@code limit} lines, oldest to newest. */
+    public PipelineLogs logs(String pipelineId, int limit) {
+        Objects.requireNonNull(pipelineId, "pipelineId");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive");
+        }
+        List<LogLine> lines = logs.tail(pipelineId);
+        int from = Math.max(0, lines.size() - limit);
+        return new PipelineLogs(pipelineId, lines.subList(from, lines.size()));
     }
 }

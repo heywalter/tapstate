@@ -51,6 +51,8 @@ public enum Domain {
     MONITOR,
     // source-specific control operations: identity, optimistic concurrency and reference protection
     SOURCE,
+    // local MCP presentation: sidecar input, connector-spec and upstream-response failures
+    MCP,
     // runtime data plane: reading a source's snapshot / cdc into the replay store — diagnosable
     // capture-configuration faults such as an unparsable consumption start point (runtime)
     CAPTURE;

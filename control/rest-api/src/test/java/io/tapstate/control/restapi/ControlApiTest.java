@@ -3,6 +3,7 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.ApplyResult;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactOutcome;
+import io.tapstate.control.core.ArtifactValidationResult;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
 import jakarta.servlet.http.HttpServletRequest;
@@ -157,6 +158,32 @@ class ControlApiTest {
     }
 
     @Test
+    void validateReportsChangesAndDiagnosticsWithoutWritingOrAuditing() {
+        ArtifactValidationResult valid = client().post().uri("/api/artifacts:validate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(Map.of("content", TGT_MY))))
+                .retrieve().toEntity(ArtifactValidationResult.class).getBody();
+
+        assertThat(valid.valid()).isTrue();
+        assertThat(valid.diagnostics()).isEmpty();
+        assertThat(valid.outcomes()).singleElement()
+                .extracting(ArtifactOutcome::change).isEqualTo(ArtifactOutcome.Change.CREATED);
+        assertThat(context.getBean(ArtifactStore.class).list()).isEmpty();
+        assertThat(context.getBean(RecordingAuditStore.class).records).isEmpty();
+
+        ArtifactValidationResult invalid = client().post().uri("/api/artifacts:validate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(Map.of("content", UNKNOWN_FIELD_DRAFT))))
+                .retrieve().toEntity(ArtifactValidationResult.class).getBody();
+
+        assertThat(invalid.valid()).isFalse();
+        assertThat(invalid.diagnostics()).singleElement()
+                .extracting("code").isEqualTo("dsl.unknown-field");
+        assertThat(context.getBean(ArtifactStore.class).list()).isEmpty();
+        assertThat(context.getBean(RecordingAuditStore.class).records).isEmpty();
+    }
+
+    @Test
     void getReadsBackTheAppliedArtifactAsItsCanonicalForm() {
         applyDrafts(TGT_MY);
 
@@ -236,6 +263,23 @@ class ControlApiTest {
         assertThat(body.params()).containsKey("reason");
         // the message is rendered from the catalog with the reason substituted, not the bare code
         assertThat(body.message()).isNotBlank().isNotEqualTo("control.malformed-request").contains("drafts");
+    }
+
+    @Test
+    void applyAndValidateRejectNullDraftEntriesAtTheBoundary() {
+        for (String endpoint : List.of("/api/artifacts:apply", "/api/artifacts:validate")) {
+            ApiError body = client().post().uri(endpoint)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .body("{\"drafts\":[null]}")
+                    .exchange((request, response) -> {
+                        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                        return response.bodyTo(ApiError.class);
+                    });
+
+            assertThat(body.code()).isEqualTo("control.malformed-request");
+            assertThat(body.params()).containsKey("reason");
+        }
     }
 
     @Test

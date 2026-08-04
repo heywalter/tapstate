@@ -45,6 +45,8 @@ public enum DslError implements TapstateErrorCode {
     /** A connector config value whose type does not match the connector's declared field type
      *  (C3); {@code expected} names the declared type. */
     CONFIG_TYPE_MISMATCH("dsl.config-type-mismatch", Set.of("connector", "field", "expected", "path")),
+    /** A required connector config field is absent after its visibility conditions are applied. */
+    CONFIG_REQUIRED("dsl.config-required", Set.of("connector", "field", "path")),
     /** A connector config value outside the connector's declared enum choices (C3); {@code allowed}
      *  lists the legal values. */
     INVALID_CONFIG_VALUE("dsl.invalid-config-value", Set.of("connector", "field", "value", "allowed", "path")),

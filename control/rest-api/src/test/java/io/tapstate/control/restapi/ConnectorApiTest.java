@@ -25,6 +25,8 @@ import io.tapstate.spi.store.AuditStore;
 import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistrar;
 import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ContentHash;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
@@ -99,6 +101,8 @@ class ConnectorApiTest {
         context.getBean(RecordingAuditStore.class).clear();
         context.getBean(FakeTokenStore.class).clear();
         context.getBean(SeedableConnectorCatalogStore.class).clear();
+        context.getBean(SeedableConnectorSpecStore.class).clear();
+        context.getBean(SeedableConnectorRegistry.class).clear();
     }
 
     private RestClient client() {
@@ -232,6 +236,127 @@ class ConnectorApiTest {
         assertThat(password.get("secret")).isEqualTo(true);
         assertThat(password.containsKey("x-component")).isFalse();
         assertThat(password.containsKey("x-reactions")).isFalse();
+    }
+
+    @Test
+    void getsOneConnectorWithItsSpecSourceAndRuntimeAvailability() {
+        // The wire shape a consumer that cannot use the lossy projection depends on: the source text,
+        // the hash it is filed under, and whether the connector could actually run here.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+        String source = "{\"properties\":{\"id\":\"orders\"},\"zz\":1,\"a\":2}";
+        context.getBean(SeedableConnectorSpecStore.class).put("h", source.getBytes(StandardCharsets.UTF_8));
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("contentHash")).isEqualTo("h");
+        // Verbatim over the wire, key order included: a consumer reading this to build a form must see
+        // what the artifact declared, not a re-rendering of it.
+        assertThat(spec.get("text")).isEqualTo(source);
+        assertThat(spec.get("unavailable")).isNull();
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(false);
+        // The projection is untouched beside the new fields.
+        assertThat(detail.get("origin")).isEqualTo("registered");
+        assertThat((List<?>) detail.get("config")).hasSize(2);
+    }
+
+    @Test
+    void getsAConnectorWhoseSpecSourceWasNeverStoredWithTheReasonStated() {
+        // Nothing stored under the row's hash. The response must say so rather than carrying a bare
+        // null, which is the shape that invites a consumer to rebuild a spec out of the config.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("text")).isNull();
+        assertThat(spec.get("unavailable")).isEqualTo("not-stored");
+        assertThat(spec.get("contentHash")).isEqualTo("h");
+    }
+
+    @Test
+    void getsARegisteredConnectorWhoseArtifactIsPresentAsRuntimeAvailable() {
+        // The only state in which runtime availability is true: a row, a registration, and the bytes
+        // still under the hash it was filed at. Without a case here an implementation that answered a
+        // flat false would satisfy every other read in this suite.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+        String source = "{\"properties\":{\"id\":\"orders\"},\"zz\":1,\"a\":2}";
+        context.getBean(SeedableConnectorSpecStore.class).put("h", source.getBytes(StandardCharsets.UTF_8));
+        SeedableConnectorRegistry registry = context.getBean(SeedableConnectorRegistry.class);
+        registry.register("orders", "artifact-hash");
+        registry.withArtifactBytes("artifact-hash");
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(true);
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("text")).isEqualTo(source);
+        assertThat(detail.get("origin")).isEqualTo("registered");
+        assertThat((List<?>) detail.get("config")).hasSize(2);
+    }
+
+    @Test
+    void getsARegisteredConnectorWhoseArtifactBytesAreGoneAsNotRuntimeAvailable() {
+        // Registered, and the registration is right there in the registry - but its bytes are not. This
+        // is the case that separates runtime availability from origin and from mere registration: an
+        // implementation reading either one would answer true here, and only this seeding catches it.
+        context.getBean(SeedableConnectorCatalogStore.class).upsert(CatalogEntryReader.read(ORDERS_ROW));
+        context.getBean(SeedableConnectorRegistry.class).register("orders", "artifact-hash");
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/orders")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("origin")).isEqualTo("registered");
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(false);
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("text")).isNull();
+        assertThat(spec.get("unavailable")).isEqualTo("not-stored");
+    }
+
+    @Test
+    void getsABundledConnectorAsNotRuntimeAvailableWithItsSpecSourceStatedAbsent() {
+        // Nothing seeded: this row comes from the bundled snapshot, which is catalog metadata and no
+        // artifact at all. Its provenance still names a spec hash, so the response carries the pointer
+        // while saying plainly that nothing resolves under it - the shape a consumer must not read as
+        // "make something up from the config".
+        Map<?, ?> detail = client().get().uri("/api/connectors/mysql")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("origin")).isEqualTo("bundled");
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(false);
+        Map<?, ?> spec = (Map<?, ?>) detail.get("spec");
+        assertThat(spec.get("contentHash")).isNotNull();
+        assertThat(spec.get("text")).isNull();
+        assertThat(spec.get("unavailable")).isEqualTo("not-stored");
+    }
+
+    @Test
+    void getsABundledRowWhoseConnectorIsRegisteredAndLoadableAsRuntimeAvailable() {
+        // The combination the other four leave out, and the one the product itself produces: registering a
+        // connector whose capabilities cannot be derived here stores the bytes and contains the derivation
+        // failure, so the derived row stays absent and the id keeps answering from the bundled snapshot.
+        // origin then reads "bundled" while the connector is registered and loadable.
+        //
+        // Pinned rather than smoothed over: origin answers "where does this row come from", not "is
+        // anything installed under this id" - a consumer that reads it as the latter is reading the wrong
+        // field, and runtimeAvailable is the one that says the id is in fact taken and loadable here.
+        context.getBean(SeedableConnectorRegistry.class).register("mysql", "artifact-hash");
+        context.getBean(SeedableConnectorRegistry.class).withArtifactBytes("artifact-hash");
+
+        Map<?, ?> detail = client().get().uri("/api/connectors/mysql")
+                .header("Authorization", "Bearer " + token(Scope.READ))
+                .retrieve().body(Map.class);
+
+        assertThat(detail.get("origin")).isEqualTo("bundled");
+        assertThat(detail.get("runtimeAvailable")).isEqualTo(true);
     }
 
     @Test
@@ -409,8 +534,19 @@ class ConnectorApiTest {
         }
 
         @Bean
-        ConnectorCatalogView connectorCatalogView(SeedableConnectorCatalogStore store) {
-            return new ConnectorCatalogView(TapstateCatalog.load(), store);
+        SeedableConnectorRegistry connectorRegistry() {
+            return new SeedableConnectorRegistry();
+        }
+
+        @Bean
+        SeedableConnectorSpecStore connectorSpecStore() {
+            return new SeedableConnectorSpecStore();
+        }
+
+        @Bean
+        ConnectorCatalogView connectorCatalogView(
+                SeedableConnectorCatalogStore store, SeedableConnectorSpecStore specs, ConnectorRegistry registry) {
+            return new ConnectorCatalogView(TapstateCatalog.load(), store, specs, registry);
         }
     }
 
@@ -574,6 +710,79 @@ class ConnectorApiTest {
                 return Optional.empty();
             }
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
+        }
+    }
+
+    /** A connector spec source store a test can seed, mirroring the seedable catalog store. */
+    static final class SeedableConnectorSpecStore implements ConnectorSpecStore {
+
+        private final Map<String, byte[]> specs = new java.util.LinkedHashMap<>();
+
+        void clear() {
+            specs.clear();
+        }
+
+        @Override
+        public void put(String contentHash, byte[] spec) {
+            specs.put(contentHash, spec.clone());
+        }
+
+        @Override
+        public java.util.Optional<byte[]> get(String contentHash) {
+            return java.util.Optional.ofNullable(specs.get(contentHash)).map(byte[]::clone);
+        }
+    }
+
+    /**
+     * A registry a test can seed with registrations and, separately, with the hashes whose bytes are
+     * actually there. The two are separate on purpose: a registration whose bytes are gone is the state
+     * that tells runtime availability apart from origin, and a registry that could not express it would
+     * let an implementation conflating the two pass.
+     *
+     * <p>{@link #artifact} throws rather than answering: reading the catalog must never pull a whole jar
+     * back to decide a boolean, so an implementation that did would fail here instead of quietly costing
+     * tens of megabytes per read.
+     */
+    static final class SeedableConnectorRegistry implements ConnectorRegistry {
+
+        private final List<ConnectorRegistration> registrations = new ArrayList<>();
+        private final Set<String> present = new java.util.LinkedHashSet<>();
+
+        void clear() {
+            registrations.clear();
+            present.clear();
+        }
+
+        /** Files a registration for {@code connectorId} under {@code contentHash}, bytes not implied. */
+        void register(String connectorId, String contentHash) {
+            registrations.add(
+                    new ConnectorRegistration(connectorId, contentHash, "1.3.5", RegistrationSource.REGISTER));
+        }
+
+        /** Declares that the bytes under {@code contentHash} are present. */
+        void withArtifactBytes(String contentHash) {
+            present.add(contentHash);
+        }
+
+        @Override
+        public RegistrationOutcome register(
+                String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+            throw new UnsupportedOperationException("this suite drives the read face, not registration");
+        }
+
+        @Override
+        public List<ConnectorRegistration> list() {
+            return List.copyOf(registrations);
+        }
+
+        @Override
+        public java.util.Optional<byte[]> artifact(String contentHash) {
+            throw new UnsupportedOperationException("the read face must answer without fetching artifact bytes");
+        }
+
+        @Override
+        public boolean hasArtifact(String contentHash) {
+            return present.contains(contentHash);
         }
     }
 }

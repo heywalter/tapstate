@@ -7,6 +7,11 @@ import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
+import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
+import io.tapstate.spi.store.RegistrationOutcome;
+import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.control.core.ConnectorCatalogView;
 import io.tapstate.control.core.ConnectorRegisterService;
 import io.tapstate.control.core.ControlOperations;
@@ -529,7 +534,8 @@ class PipelineApiTest {
                     return List.of();
                 }
             };
-            return new ConnectorCatalogView(TapstateCatalog.load(), store);
+            return new ConnectorCatalogView(
+                    TapstateCatalog.load(), store, emptySpecStore(), emptyConnectorRegistry());
         }
 
         @Bean
@@ -753,5 +759,43 @@ class PipelineApiTest {
             }
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
         }
+    }
+
+    /** Spec sources and registrations are irrelevant here: this suite drives authorization, not catalog reads. */
+    private static ConnectorSpecStore emptySpecStore() {
+        return new ConnectorSpecStore() {
+            @Override
+            public void put(String contentHash, byte[] spec) {
+            }
+
+            @Override
+            public java.util.Optional<byte[]> get(String contentHash) {
+                return java.util.Optional.empty();
+            }
+        };
+    }
+
+    private static ConnectorRegistry emptyConnectorRegistry() {
+        return new ConnectorRegistry() {
+            @Override
+            public RegistrationOutcome register(String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public java.util.List<ConnectorRegistration> list() {
+                return java.util.List.of();
+            }
+
+            @Override
+            public java.util.Optional<byte[]> artifact(String contentHash) {
+                return java.util.Optional.empty();
+            }
+
+            @Override
+            public boolean hasArtifact(String contentHash) {
+                return false;
+            }
+        };
     }
 }

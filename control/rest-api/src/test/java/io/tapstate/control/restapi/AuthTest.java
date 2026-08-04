@@ -7,6 +7,11 @@ import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
+import io.tapstate.spi.store.ConnectorRegistration;
+import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
+import io.tapstate.spi.store.RegistrationOutcome;
+import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.control.core.ConnectorCatalogView;
 import io.tapstate.control.core.ConnectorRegisterService;
 import io.tapstate.control.core.ControlOperations;
@@ -193,6 +198,64 @@ class AuthTest {
                 .exchange((request, response) -> response.getStatusCode());
 
         assertThat(status).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void anAdminCanCreateListAndRevokeASecretFreeMachineToken() {
+        String admin = machineToken(Scope.ADMIN);
+
+        Map<?, ?> created = client().post().uri("/api/tokens")
+                .header("Authorization", "Bearer " + admin)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("scope", "write"))
+                .retrieve().body(Map.class);
+
+        String tokenId = String.valueOf(created.get("tokenId"));
+        String token = String.valueOf(created.get("token"));
+        assertThat(tokenId).isNotBlank();
+        assertThat(token).startsWith("cyxt_" + tokenId + ".");
+        assertThat(created.get("scope")).isEqualTo("WRITE");
+
+        String listed = client().get().uri("/api/tokens")
+                .header("Authorization", "Bearer " + admin)
+                .retrieve().body(String.class);
+        assertThat(listed).contains(tokenId).contains("WRITE");
+        assertThat(listed)
+                .doesNotContain(token)
+                .doesNotContain("secretHash")
+                .doesNotContain("hash:");
+
+        HttpStatusCode revoked = client().post().uri("/api/tokens/{id}:revoke", tokenId)
+                .header("Authorization", "Bearer " + admin)
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(revoked).isEqualTo(HttpStatus.NO_CONTENT);
+        HttpStatusCode revokedAgain = client().post().uri("/api/tokens/{id}:revoke", tokenId)
+                .header("Authorization", "Bearer " + admin)
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(revokedAgain).isEqualTo(HttpStatus.NO_CONTENT);
+
+        HttpStatusCode afterRevoke = client().get().uri("/api/artifacts")
+                .header("Authorization", "Bearer " + token)
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(afterRevoke).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void tokenAdministrationRequiresAdminScopeAndRejectsAnUnknownScope() {
+        HttpStatusCode forbidden = client().get().uri("/api/tokens")
+                .header("Authorization", "Bearer " + machineToken(Scope.WRITE))
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(forbidden).isEqualTo(HttpStatus.FORBIDDEN);
+
+        ApiError malformed = client().post().uri("/api/tokens")
+                .header("Authorization", "Bearer " + machineToken(Scope.ADMIN))
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("scope", "owner"))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    return response.bodyTo(ApiError.class);
+                });
+        assertThat(malformed.code()).isEqualTo("control.malformed-request");
     }
 
     @Test
@@ -642,7 +705,8 @@ class AuthTest {
                     return List.of();
                 }
             };
-            return new ConnectorCatalogView(TapstateCatalog.load(), store);
+            return new ConnectorCatalogView(
+                    TapstateCatalog.load(), store, emptySpecStore(), emptyConnectorRegistry());
         }
 
         @Bean
@@ -862,5 +926,43 @@ class AuthTest {
             }
             return resources;
         }
+    }
+
+    /** Spec sources and registrations are irrelevant here: this suite drives authorization, not catalog reads. */
+    private static ConnectorSpecStore emptySpecStore() {
+        return new ConnectorSpecStore() {
+            @Override
+            public void put(String contentHash, byte[] spec) {
+            }
+
+            @Override
+            public java.util.Optional<byte[]> get(String contentHash) {
+                return java.util.Optional.empty();
+            }
+        };
+    }
+
+    private static ConnectorRegistry emptyConnectorRegistry() {
+        return new ConnectorRegistry() {
+            @Override
+            public RegistrationOutcome register(String id, String pdkApiVersion, RegistrationSource source, byte[] artifact) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public java.util.List<ConnectorRegistration> list() {
+                return java.util.List.of();
+            }
+
+            @Override
+            public java.util.Optional<byte[]> artifact(String contentHash) {
+                return java.util.Optional.empty();
+            }
+
+            @Override
+            public boolean hasArtifact(String contentHash) {
+                return false;
+            }
+        };
     }
 }

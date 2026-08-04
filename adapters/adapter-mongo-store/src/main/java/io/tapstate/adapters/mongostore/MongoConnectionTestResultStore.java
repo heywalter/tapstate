@@ -6,6 +6,7 @@ import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectionTestItem;
 import io.tapstate.spi.store.ConnectionTestResult;
 import io.tapstate.spi.store.ConnectionTestResultStore;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 
 import java.util.ArrayList;

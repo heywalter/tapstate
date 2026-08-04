@@ -98,6 +98,40 @@ class ApplyServiceTest {
     }
 
     @Test
+    void validateReportsThePlannedChangesWithoutWritingOrAuditing() {
+        service.apply("alice", List.of(draft(TGT_MY)));
+        int writesBeforeValidation = store.saveCount;
+        auditStore.records.clear();
+
+        ArtifactValidationResult result = service.validate(List.of(
+                draft(TGT_MY), draft(SRC_ORA_STANDALONE)));
+
+        assertThat(result.valid()).isTrue();
+        assertThat(result.diagnostics()).isEmpty();
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::id)
+                .containsExactly("tgt_my", "src_ora");
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.UNCHANGED, ArtifactOutcome.Change.CREATED);
+        assertThat(store.saveCount).isEqualTo(writesBeforeValidation);
+        assertThat(auditStore.records).isEmpty();
+    }
+
+    @Test
+    void invalidValidationReturnsOneStructuredDiagnosticWithoutWritingOrAuditing() {
+        ArtifactValidationResult result = service.validate(List.of(
+                draft(TGT_MY + "bogus_field: 1\n")));
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.outcomes()).isEmpty();
+        assertThat(result.diagnostics()).singleElement().satisfies(diagnostic -> {
+            assertThat(diagnostic.code()).isEqualTo("dsl.unknown-field");
+            assertThat(diagnostic.params()).containsEntry("field", "bogus_field");
+        });
+        assertThat(store.saveCount).isZero();
+        assertThat(auditStore.records).isEmpty();
+    }
+
+    @Test
     void anUnknownFieldIsRejectedAtValidationWithItsDslCode() {
         // The structural tier: a field outside the tapstate/v1 schema.
         String withUnknownField = TGT_MY + "bogus_field: 1\n";

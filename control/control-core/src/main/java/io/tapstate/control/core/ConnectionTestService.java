@@ -25,12 +25,20 @@ public final class ConnectionTestService {
     private final ConnectionProbe probe;
     private final ConnectionTestResultStore resultStore;
     private final AuditGate auditGate;
+    private final ConnectorConfigValidator configValidator;
 
     public ConnectionTestService(
             ConnectionProbe probe, ConnectionTestResultStore resultStore, AuditGate auditGate) {
+        this(probe, resultStore, auditGate, null);
+    }
+
+    public ConnectionTestService(
+            ConnectionProbe probe, ConnectionTestResultStore resultStore, AuditGate auditGate,
+            ConnectorConfigValidator configValidator) {
         this.probe = Objects.requireNonNull(probe, "probe");
         this.resultStore = Objects.requireNonNull(resultStore, "resultStore");
         this.auditGate = Objects.requireNonNull(auditGate, "auditGate");
+        this.configValidator = configValidator;
     }
 
     /**
@@ -43,6 +51,9 @@ public final class ConnectionTestService {
      */
     public ConnectionTestReport test(
             String connectionId, String connectorId, Map<String, Object> settings, String principal) {
+        if (configValidator != null) {
+            configValidator.validate(connectorId, settings);
+        }
         ConnectionConfig config = new ConnectionConfig(connectionId, connectorId, settings);
         return auditGate.dispatch(
                 ControlOperations.CONNECTION_TEST,

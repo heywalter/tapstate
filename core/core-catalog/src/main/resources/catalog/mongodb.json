@@ -53,7 +53,12 @@
       "default": null,
       "secret": false,
       "options": [],
-      "visibleWhen": null
+      "visibleWhen": {
+        "controllingField": "isUri",
+        "equalsAnyOf": [
+          "true"
+        ]
+      }
     },
     {
       "name": "host",
