@@ -182,6 +182,20 @@ class ApplyServiceRowExpressionTypeTest {
         assertThat(artifacts.saved).isEmpty();
     }
 
+    /**
+     * A batch of endpoints alone is an ordinary thing to apply, and only a pipeline can carry a row
+     * expression - so there is nothing for a discovered model to be judged against. Asserting on the
+     * reads rather than on the outcome is the point: the outcome is the same either way, which is
+     * exactly why a store round trip per source would be paid here forever without anyone noticing.
+     */
+    @Test
+    @DisplayName("a batch carrying no pipeline consults the schema store not at all")
+    void aBatchWithoutAPipelineReadsNoSchema() {
+        service.apply("tester", List.of(new ArtifactDraft("src_orders.tap.yml", SOURCE)));
+
+        assertThat(schemas.reads).isZero();
+    }
+
     @Test
     @DisplayName("one column discovered as two types across a source's tables is refused as unresolved")
     void conflictingTypesAcrossTablesAreRefused() {
@@ -223,6 +237,8 @@ class ApplyServiceRowExpressionTypeTest {
 
     private static final class InMemorySchemaStore implements SchemaStore {
         private final Map<String, DiscoveredSourceModel> byConnection = new HashMap<>();
+        /** Reads, counted: a real store answers each over the network, so an unneeded one is a cost. */
+        int reads;
 
         @Override
         public void save(DiscoveredSourceModel discovered) {
@@ -231,6 +247,7 @@ class ApplyServiceRowExpressionTypeTest {
 
         @Override
         public Optional<DiscoveredSourceModel> get(String connectionId) {
+            reads++;
             return Optional.ofNullable(byConnection.get(connectionId));
         }
     }

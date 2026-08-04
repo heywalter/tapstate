@@ -7,6 +7,7 @@ import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.dsl.RowExpressionTypeRules;
 import io.tapstate.core.dsl.Workspace;
+import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.canonical.CanonicalHash;
@@ -167,9 +168,17 @@ public final class ApplyService {
      * changing - the connection settings can be edited, or the database itself altered under settings
      * that never moved. The check is against the last discovery, by design, and only a fresh discovery
      * makes it fresh.
+     *
+     * <p>A batch carrying no pipeline is answered without reading the store at all. Only a pipeline
+     * holds a row expression, so there would be nothing to judge what was read against - and a batch
+     * of endpoints alone is an ordinary thing to apply, which would otherwise pay a store round trip
+     * per source for an answer nobody consults.
      */
     private Map<String, Map<String, TapstateType>> discoveredColumns(List<Resource> resources) {
         Map<String, Map<String, TapstateType>> bySource = new LinkedHashMap<>();
+        if (resources.stream().noneMatch(PipelineResource.class::isInstance)) {
+            return bySource;
+        }
         for (Resource resource : resources) {
             if (!(resource instanceof SourceResource source)) {
                 continue;
