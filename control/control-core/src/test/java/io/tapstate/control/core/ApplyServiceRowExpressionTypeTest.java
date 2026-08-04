@@ -75,9 +75,15 @@ class ApplyServiceRowExpressionTypeTest {
 
     /** Records the discovery of one table's columns for a connection, as discovery would have. */
     private void discovered(String connectionId, String table, Map<String, TapstateType> columns) {
+        discovered(connectionId, "mysql", table, columns);
+    }
+
+    /** The same, for a discovery that ran through a named connector rather than the source's own. */
+    private void discovered(
+            String connectionId, String connectorId, String table, Map<String, TapstateType> columns) {
         List<SourceField> fields = new ArrayList<>();
         columns.forEach((name, type) -> fields.add(new SourceField(name, name + "_native", type)));
-        schemas.save(new DiscoveredSourceModel(connectionId, "mysql", 0L,
+        schemas.save(new DiscoveredSourceModel(connectionId, connectorId, 0L,
                 new SourceModel(List.of(new SourceTable(table, fields, List.of(), List.of())))));
     }
 
@@ -130,6 +136,28 @@ class ApplyServiceRowExpressionTypeTest {
     @DisplayName("an expression reading no row field applies without any discovery")
     void anExpressionWithoutRowAccessNeedsNoDiscovery() {
         assertThatCode(() -> service.apply("tester", batch("op == 'i'"))).doesNotThrowAnyException();
+    }
+
+    /**
+     * The column here is one the expression survives, so a model that was consulted would let this
+     * apply through. It is refused instead, which is the only outcome that shows the model was not
+     * consulted at all - the assertion would pass on a green run if it merely named some other code.
+     *
+     * <p>A model carries the types the connector that produced it declares, and a different connector
+     * spells its types differently. So a model discovered through one connector says nothing about a
+     * source now configured to read through another, even where both kept the connection's id.
+     */
+    @Test
+    @DisplayName("a model discovered through a different connector does not count as this source's")
+    void aModelDiscoveredThroughAnotherConnectorIsNotConsulted() {
+        discovered("src_orders", "mongodb", "orders", Map.of("amount", TapstateType.INT64));
+
+        DslException thrown = catchThrowableOfType(DslException.class,
+                () -> service.apply("tester", batch("after.amount * 2 > 0")));
+
+        assertThat(thrown.code()).isEqualTo(DslError.ROW_EXPRESSION_NEEDS_DISCOVERY);
+        assertThat(thrown.args()).containsEntry("source", "src_orders");
+        assertThat(artifacts.saved).isEmpty();
     }
 
     @Test

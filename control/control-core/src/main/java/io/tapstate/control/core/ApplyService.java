@@ -141,6 +141,19 @@ public final class ApplyService {
      *
      * <p>A source's own tables are merged the same way the rules merge across sources: one column name
      * two tables resolved to different types is left unresolved, never silently taken from one of them.
+     *
+     * <p>A model counts only when it was discovered through the connector this source now names. Types
+     * are resolved against the declaring connector's own vocabulary, so a model another connector
+     * produced carries types this source's columns were never described in - reading it would be
+     * judging one source's expression against a different source's answers. Keeping the connection's id
+     * across such a change does not make the old model apply to the new connector, so a mismatch reads
+     * as undiscovered: the author is asked to discover, and discovering is what makes it true.
+     *
+     * <p>What this does not check is whether the model is current. The stored model is what the last
+     * discovery found, and the source it describes can change afterwards without anything here
+     * changing - the connection settings can be edited, or the database itself altered under settings
+     * that never moved. The check is against the last discovery, by design, and only a fresh discovery
+     * makes it fresh.
      */
     private Map<String, Map<String, TapstateType>> discoveredColumns(List<Resource> resources) {
         Map<String, Map<String, TapstateType>> bySource = new LinkedHashMap<>();
@@ -148,15 +161,17 @@ public final class ApplyService {
             if (!(resource instanceof SourceResource source)) {
                 continue;
             }
-            schemas.get(source.id()).ifPresent(discovered -> {
-                Map<String, TapstateType> columns = new LinkedHashMap<>();
-                for (SourceTable table : discovered.model().tables()) {
-                    for (SourceField field : table.fields()) {
-                        RowExpressionTypeRules.mergeColumn(columns, field.name(), field.type());
-                    }
-                }
-                bySource.put(source.id(), columns);
-            });
+            schemas.get(source.id())
+                    .filter(discovered -> discovered.connectorId().equals(source.connector()))
+                    .ifPresent(discovered -> {
+                        Map<String, TapstateType> columns = new LinkedHashMap<>();
+                        for (SourceTable table : discovered.model().tables()) {
+                            for (SourceField field : table.fields()) {
+                                RowExpressionTypeRules.mergeColumn(columns, field.name(), field.type());
+                            }
+                        }
+                        bySource.put(source.id(), columns);
+                    });
         }
         return bySource;
     }
