@@ -10,6 +10,7 @@ import com.hazelcast.jet.core.Vertex;
 import com.hazelcast.jet.core.processor.Processors;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.runtime.engine.ChainAxes;
+import io.tapstate.runtime.engine.PassthroughProcessor;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -48,10 +49,10 @@ public final class NestDag {
             String outputStream, Function<String, List<Vertex>> upstream, NestBinding binding,
             ToIntFunction<Vertex> nextOutbound, NestFrontier frontier) {
         if (topology.isPassthrough()) {
-            Vertex passthrough = dag.newVertex(nodeId, ProcessorMetaSupplier.forceTotalParallelismOne(
-                    ProcessorSupplier.of(Processors.mapP(FunctionEx.identity()))));
+            List<Vertex> sources = upstream.apply(rootAlias);
+            Vertex passthrough = dag.newVertex(nodeId, gathering(frontier, rootAlias, sources.size()));
             int ordinal = 0;
-            for (Vertex source : upstream.apply(rootAlias)) {
+            for (Vertex source : sources) {
                 dag.edge(Edge.from(source, nextOutbound.applyAsInt(source)).to(passthrough, ordinal++));
             }
             return passthrough;
@@ -65,7 +66,7 @@ public final class NestDag {
                     frontier, chainsInto(spec, carried, frontier)));
             built.put(spec.pathId(), vertex);
             for (NestInbound edge : spec.inbound()) {
-                connect(dag, vertex, edge, built, upstream, nextOutbound);
+                connect(dag, vertex, edge, built, upstream, nextOutbound, frontier);
             }
             assembler = vertex;
         }
@@ -93,7 +94,7 @@ public final class NestDag {
         for (NestInbound edge : spec.inbound()) {
             List<String> chains = edge.isCascade()
                     ? carried.get(edge.pathId())
-                    : frontier.chainsOfAlias().apply(edge.alias());
+                    : frontier.chainsOfAlias(edge.alias());
             if (chains == null) {
                 throw new IllegalStateException("cascade into " + spec.name() + " knows no chain for "
                         + edge.pathId() + "; it is being wired before the vertex that feeds it");
@@ -106,7 +107,8 @@ public final class NestDag {
     }
 
     private static void connect(DAG dag, Vertex destination, NestInbound edge, Map<List<String>, Vertex> built,
-            Function<String, List<Vertex>> upstream, ToIntFunction<Vertex> nextOutbound) {
+            Function<String, List<Vertex>> upstream, ToIntFunction<Vertex> nextOutbound,
+            NestFrontier frontier) {
         if (edge.isCascade()) {
             Vertex source = built.get(edge.pathId());
             if (source == null) {
@@ -122,7 +124,7 @@ public final class NestDag {
         }
         Vertex source = sources.size() == 1
                 ? sources.get(0)
-                : merged(dag, destination, edge, sources, nextOutbound);
+                : merged(dag, destination, edge, sources, nextOutbound, frontier);
         draw(dag, source, destination, edge.ordinal(), fieldKey(edge.keyFields()), nextOutbound);
     }
 
@@ -131,15 +133,39 @@ public final class NestDag {
      * single edge on the ordinal the compiler gave that stream.
      */
     private static Vertex merged(DAG dag, Vertex destination, NestInbound edge, List<Vertex> sources,
-            ToIntFunction<Vertex> nextOutbound) {
+            ToIntFunction<Vertex> nextOutbound, NestFrontier frontier) {
         Vertex merge = dag.newVertex(destination.getName() + ":" + edge.alias(),
-                ProcessorMetaSupplier.forceTotalParallelismOne(
-                        ProcessorSupplier.of(Processors.mapP(FunctionEx.identity()))));
+                gathering(frontier, edge.alias(), sources.size()));
         int ordinal = 0;
         for (Vertex source : sources) {
             dag.edge(Edge.from(source, nextOutbound.applyAsInt(source)).to(merge, ordinal++));
         }
         return merge;
+    }
+
+    /**
+     * The vertex that gathers the {@code producers} of {@code alias} into one stream. It is where the
+     * alias's several producers stop being several, and the only place that knows which chain arrives on
+     * which of its edges - the level above it sees one edge and could never tell them apart.
+     *
+     * <p>A producer count that disagrees with the chains known for the alias means the graph is being
+     * drawn from one reading and its frontier from another; the edges would then be told about chains
+     * that arrive elsewhere, so it tears down rather than compiling a promise nobody can keep.
+     */
+    private static ProcessorMetaSupplier gathering(NestFrontier frontier, String alias, int producers) {
+        if (frontier == null) {
+            return PassthroughProcessor.metaSupplier();
+        }
+        List<List<String>> chains = frontier.chainsOfAliasByProducer().apply(alias);
+        if (chains.size() != producers) {
+            throw new IllegalStateException("alias '" + alias + "' is wired from " + producers
+                    + " producers but its chains are known for " + chains.size());
+        }
+        Map<Integer, List<String>> byOrdinal = new LinkedHashMap<>();
+        for (int ordinal = 0; ordinal < chains.size(); ordinal++) {
+            byOrdinal.put(ordinal, chains.get(ordinal));
+        }
+        return PassthroughProcessor.metaSupplier(frontier.axes(), byOrdinal);
     }
 
     private static void draw(DAG dag, Vertex source, Vertex destination, int ordinal,

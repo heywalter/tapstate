@@ -169,7 +169,7 @@ class NestHoldsTheFrontierBelowWhatItKeepsTest {
                 alias -> List.of(byAlias.get(alias)),
                 new NestBinding(tables::get, NestBinding.onHeap(), element -> { }),
                 vertex -> outbound.merge(vertex, 1, Integer::sum) - 1,
-                new NestFrontier(AXES, alias -> List.of(chainOfAlias.get(alias))));
+                new NestFrontier(AXES, alias -> List.of(List.of(chainOfAlias.get(alias)))));
 
         Vertex collector = dag.newVertex("collector", ProcessorMetaSupplier.forceTotalParallelismOne(
                 ProcessorSupplier.of((SupplierEx<Processor>) Collector::new)));

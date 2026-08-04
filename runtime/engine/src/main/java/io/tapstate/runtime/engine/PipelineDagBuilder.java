@@ -104,7 +104,8 @@ public final class PipelineDagBuilder {
                             bindings.nest(),
                             vertex -> outboundOrdinal.merge(vertex, 1, Integer::sum) - 1,
                             chains == null ? null : new NestFrontier(axes,
-                                    alias -> chains.union(aliasUpstream(inline.from(), alias, bindings)))));
+                                    alias -> chains.perProducer(
+                                            aliasUpstream(inline.from(), alias, bindings)))));
                     if (chains != null) {
                         chains.derived(step.id(), nestUpstream(inline.from(), bindings));
                     }
@@ -190,10 +191,10 @@ public final class PipelineDagBuilder {
                             + "; the linear DAG builder does not carry it");
         }
         if (body instanceof TransformBody.Union) {
-            // Pinned to total parallelism one, like the transform adapter and the sink: an ordered
-            // position stream a sink acks must not be re-laned by a parallel passthrough merge.
-            return dag.newVertex(step.id(), ProcessorMetaSupplier.forceTotalParallelismOne(
-                    ProcessorSupplier.of(Processors.mapP(FunctionEx.identity()))));
+            // The merge is the topology, so nothing is transformed here - but the frontier still has to be
+            // worked out per edge. The combined bound the engine would forward is never delivered at all
+            // for a chain only one of the merged streams carries, which is the whole shape a union is.
+            return dag.newVertex(step.id(), PassthroughProcessor.metaSupplier(axes, chainsByOrdinal));
         }
         return dag.newVertex(step.id(), TransformProcessor.metaSupplier(
                 bindings.transformPorts().apply(step), axes, chainsByOrdinal));

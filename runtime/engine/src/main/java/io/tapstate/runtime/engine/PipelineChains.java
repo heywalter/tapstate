@@ -53,6 +53,15 @@ final class PipelineChains {
         return List.copyOf(merged);
     }
 
+    /**
+     * What each of {@code upstreamKeys} carries, in that order and kept apart. A vertex gathering several
+     * producers of one stream needs them apart: the total of what reaches it says nothing about which of
+     * its edges any one chain arrives on, and waiting on every edge for every chain never ends.
+     */
+    List<List<String>> perProducer(List<String> upstreamKeys) {
+        return upstreamKeys.stream().map(this::of).toList();
+    }
+
     /** What each inbound ordinal carries, given the upstreams wired in that order, one edge each. */
     Map<Integer, List<String>> perOrdinal(List<String> upstreamKeys) {
         Map<Integer, List<String>> byOrdinal = new LinkedHashMap<>();
