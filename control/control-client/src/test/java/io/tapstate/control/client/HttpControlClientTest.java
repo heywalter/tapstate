@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -119,10 +118,9 @@ class HttpControlClientTest {
     }
 
     @Test
-    void connectionFailureIsAStableUnreachableOutcome() throws Exception {
-        try (ServerSocket socket = new ServerSocket(0);
-             HttpControlClient client = new HttpControlClient(Duration.ofMillis(250), Duration.ofMillis(250))) {
-            assertThat(client.get(URI.create("http://127.0.0.1:" + socket.getLocalPort()), "token", "/api/tokens"))
+    void connectionFailureIsAStableUnreachableOutcome() {
+        try (HttpControlClient client = new HttpControlClient(Duration.ofMillis(250), Duration.ofMillis(250))) {
+            assertThat(client.get(URI.create("http://127.0.0.1:0"), "token", "/api/tokens"))
                     .isInstanceOf(ControlResponse.Unreachable.class);
         }
     }
