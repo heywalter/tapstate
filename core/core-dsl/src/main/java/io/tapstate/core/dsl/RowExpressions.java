@@ -22,6 +22,7 @@ import dev.cel.compiler.CelCompiler;
 import dev.cel.compiler.CelCompilerBuilder;
 import dev.cel.compiler.CelCompilerFactory;
 import dev.cel.parser.CelStandardMacro;
+import dev.cel.parser.Operator;
 import io.tapstate.core.common.TapstateType;
 
 import java.util.LinkedHashMap;
@@ -133,7 +134,8 @@ public final class RowExpressions {
      *
      * <p>{@code expr} is expected to have already passed the untyped check, so a compile failure
      * here is a programmer error (an unchecked expression reaching this point), not a diagnosable
-     * user condition — it bare-throws.
+     * user condition — it bare-throws. That check is also what makes this set complete: it refuses an
+     * indexed read of the row, leaving a named access the only way an expression reaches a column.
      */
     public static Set<String> rowColumns(String expr) {
         Set<String> columns = new LinkedHashSet<>();
@@ -244,7 +246,36 @@ public final class RowExpressions {
 
     private static String error(CelCompiler compiler, String expr) {
         CelValidationResult result = compiler.compile(expr);
-        return result.hasError() ? result.getErrorString() : null;
+        if (result.hasError()) {
+            return result.getErrorString();
+        }
+        return indexedRow(ast(compiler, expr));
+    }
+
+    /**
+     * The diagnostic for reading a row field by index, or null when the expression reads none that way.
+     * The untyped row is a map, so an indexed read type-checks and would pass — but it names no column,
+     * and the column names are what the typed check is driven from. Left alone, the same field spelled
+     * two ways would get two different answers: {@code after.amount} judged against the type its source
+     * resolved, {@code after["amount"]} judged against nothing and carried through to the runtime.
+     *
+     * <p>Only the row root is refused. Indexing envelope metadata reaches no source column, and
+     * indexing a value read out of the row leaves the column itself named.
+     */
+    private static String indexedRow(CelAbstractSyntaxTree ast) {
+        return CelNavigableAst.fromAst(ast).getRoot().allNodes()
+                .filter(node -> node.getKind() == CelExpr.ExprKind.Kind.CALL)
+                .map(node -> node.expr().call())
+                .filter(call -> call.function().equals(Operator.INDEX.getFunction()) && !call.args().isEmpty())
+                .map(call -> call.args().get(0))
+                .filter(operand -> operand.getKind() == CelExpr.ExprKind.Kind.IDENT)
+                .map(operand -> operand.ident().name())
+                .filter(root -> root.equals("after") || root.equals("before"))
+                .findFirst()
+                .map(root -> "a row field is read by name: write " + root + ".<column> rather than "
+                        + root + "[...], which names no column and so cannot be checked against the "
+                        + "types the source resolved its columns to")
+                .orElse(null);
     }
 
     private static CelAbstractSyntaxTree ast(CelCompiler compiler, String expr) {
