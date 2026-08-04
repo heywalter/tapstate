@@ -179,27 +179,25 @@ public final class RowExpressionTypeRules {
     // ---- the judgment --------------------------------------------------------------------
 
     private void judgePredicate(String expr, Set<String> upstream, String path) {
-        Map<String, TapstateType> columns = judgeReach(expr, upstream, path);
-        if (columns != null) {
-            judgeTypes(expr, columns, path, RowExpressions.typedPredicateError(expr, columns));
+        Set<String> referenced = RowExpressions.rowColumns(expr);
+        if (referenced.isEmpty()) {
+            return;     // reads no row data, so no source model bears on it
         }
+        Map<String, TapstateType> columns = judgeReach(expr, upstream, path);
+        judgeTypes(expr, referenced, columns, path, RowExpressions.typedPredicateError(expr, columns));
     }
 
     private void judgeValue(String expr, Set<String> upstream, String path) {
-        Map<String, TapstateType> columns = judgeReach(expr, upstream, path);
-        if (columns != null) {
-            judgeTypes(expr, columns, path, RowExpressions.typedValueError(expr, columns));
+        Set<String> referenced = RowExpressions.rowColumns(expr);
+        if (referenced.isEmpty()) {
+            return;     // reads no row data, so no source model bears on it
         }
+        Map<String, TapstateType> columns = judgeReach(expr, upstream, path);
+        judgeTypes(expr, referenced, columns, path, RowExpressions.typedValueError(expr, columns));
     }
 
-    /**
-     * Enforces the discovery obligation and returns the columns to judge against, or null when the
-     * expression reads no row field and so needs no judgment at all.
-     */
+    /** Enforces the discovery obligation and returns the columns to judge against. */
     private Map<String, TapstateType> judgeReach(String expr, Set<String> upstream, String path) {
-        if (RowExpressions.rowColumns(expr).isEmpty()) {
-            return null;    // reads no row data, so no source model bears on it
-        }
         Map<String, TapstateType> columns = new LinkedHashMap<>();
         for (String sourceId : upstream) {
             Map<String, TapstateType> discovered = columnsBySource.get(sourceId);
@@ -214,9 +212,8 @@ public final class RowExpressionTypeRules {
         return columns;
     }
 
-    private void judgeTypes(
-            String expr, Map<String, TapstateType> columns, String path, String compileError) {
-        Set<String> referenced = RowExpressions.rowColumns(expr);
+    private void judgeTypes(String expr, Set<String> referenced, Map<String, TapstateType> columns,
+            String path, String compileError) {
         // A column nothing resolved is refused however it is used - even a presence test - because
         // what may be done with it is exactly what is not known.
         for (String column : referenced) {

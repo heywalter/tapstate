@@ -249,7 +249,7 @@ public final class RowExpressions {
         if (result.hasError()) {
             return result.getErrorString();
         }
-        return indexedRow(ast(compiler, expr));
+        return indexedRow(checked(result));
     }
 
     /**
@@ -283,6 +283,11 @@ public final class RowExpressions {
         if (result.hasError()) {
             throw new IllegalArgumentException(result.getErrorString());
         }
+        return checked(result);
+    }
+
+    /** The checked AST of an already-successful compile; a failure to hand it over is a programmer error. */
+    private static CelAbstractSyntaxTree checked(CelValidationResult result) {
         try {
             return result.getAst();
         } catch (CelValidationException e) {
