@@ -201,6 +201,64 @@ class AuthTest {
     }
 
     @Test
+    void anAdminCanCreateListAndRevokeASecretFreeMachineToken() {
+        String admin = machineToken(Scope.ADMIN);
+
+        Map<?, ?> created = client().post().uri("/api/tokens")
+                .header("Authorization", "Bearer " + admin)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("scope", "write"))
+                .retrieve().body(Map.class);
+
+        String tokenId = String.valueOf(created.get("tokenId"));
+        String token = String.valueOf(created.get("token"));
+        assertThat(tokenId).isNotBlank();
+        assertThat(token).startsWith("cyxt_" + tokenId + ".");
+        assertThat(created.get("scope")).isEqualTo("WRITE");
+
+        String listed = client().get().uri("/api/tokens")
+                .header("Authorization", "Bearer " + admin)
+                .retrieve().body(String.class);
+        assertThat(listed).contains(tokenId).contains("WRITE");
+        assertThat(listed)
+                .doesNotContain(token)
+                .doesNotContain("secretHash")
+                .doesNotContain("hash:");
+
+        HttpStatusCode revoked = client().post().uri("/api/tokens/{id}:revoke", tokenId)
+                .header("Authorization", "Bearer " + admin)
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(revoked).isEqualTo(HttpStatus.NO_CONTENT);
+        HttpStatusCode revokedAgain = client().post().uri("/api/tokens/{id}:revoke", tokenId)
+                .header("Authorization", "Bearer " + admin)
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(revokedAgain).isEqualTo(HttpStatus.NO_CONTENT);
+
+        HttpStatusCode afterRevoke = client().get().uri("/api/artifacts")
+                .header("Authorization", "Bearer " + token)
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(afterRevoke).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
+    @Test
+    void tokenAdministrationRequiresAdminScopeAndRejectsAnUnknownScope() {
+        HttpStatusCode forbidden = client().get().uri("/api/tokens")
+                .header("Authorization", "Bearer " + machineToken(Scope.WRITE))
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(forbidden).isEqualTo(HttpStatus.FORBIDDEN);
+
+        ApiError malformed = client().post().uri("/api/tokens")
+                .header("Authorization", "Bearer " + machineToken(Scope.ADMIN))
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("scope", "owner"))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    return response.bodyTo(ApiError.class);
+                });
+        assertThat(malformed.code()).isEqualTo("control.malformed-request");
+    }
+
+    @Test
     void interceptorAttachesOnlyTheAuthorizedVerifiedSubject() throws Exception {
         AuthInterceptor interceptor = context.getBean(AuthInterceptor.class);
         HttpServletResponse response = servletProxy(HttpServletResponse.class, new LinkedHashMap<>(), null);

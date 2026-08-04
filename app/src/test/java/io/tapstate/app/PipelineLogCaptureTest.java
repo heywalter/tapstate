@@ -3,6 +3,7 @@ package io.tapstate.app;
 import ch.qos.logback.classic.Logger;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.RingBufferLogSink;
+import io.tapstate.core.logging.SecretRedactor;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -24,7 +25,7 @@ class PipelineLogCaptureTest {
         // A logger that propagates to root, so a line logged here reaches the root-attached appender.
         Logger logger = (Logger) LoggerFactory.getLogger("test.capture");
 
-        try (PipelineLogCapture capture = new PipelineLogCapture(sink)) {
+        try (PipelineLogCapture capture = new PipelineLogCapture(sink, new SecretRedactor())) {
             MDC.put(MDC_KEY, "pl-cap");
             logger.info("while attached");
             MDC.remove(MDC_KEY);

@@ -55,12 +55,15 @@ argv = [binary] + sys.argv[1:]
 pid, fd = pty.fork()
 if pid == 0:                              # child: the binary on a controlling terminal
     try:
+        if os.environ.get("TERM", "") in ("", "dumb"):
+            os.environ["TERM"] = "linux"
         os.execv(binary, argv)
     except Exception:
         os._exit(127)
 else:
     out = bytearray()
-    os.write(fd, data)
+    input_sent = False
+    write_failed = None
     deadline = time.time() + 15
     timed_out = True                     # cleared when the child closes the pty (clean EOF)
     while time.time() < deadline:
@@ -75,6 +78,19 @@ else:
                 timed_out = False
                 break
             out += chunk
+            # A REPL must enter terminal raw mode before TAB is written. Its banner is stable while
+            # the prompt contains terminal control sequences. The wizard can accept input as soon
+            # as it emits its first prompt bytes.
+            ready = (len(argv) == 1 and b"Tapstate CLI." in out) or (len(argv) > 1)
+            if ready and not input_sent:
+                time.sleep(0.05)
+                try:
+                    os.write(fd, data)
+                except OSError as error:
+                    write_failed = str(error)
+                    timed_out = False
+                    break
+                input_sent = True
     if timed_out:                        # never leave the native binary running
         try:
             os.kill(pid, signal.SIGKILL)
@@ -91,7 +107,9 @@ else:
         pass
     sys.stdout.write(out.decode("utf-8", "replace"))
     sys.stdout.flush()
-    clean = (not timed_out) and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+    if write_failed is not None:
+        sys.stderr.write(f"could not write CLI input: {write_failed}\n")
+    clean = (write_failed is None) and (not timed_out) and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
     sys.exit(0 if clean else 1)
 PY
 )

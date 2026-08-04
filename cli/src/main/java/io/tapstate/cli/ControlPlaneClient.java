@@ -13,7 +13,7 @@ import java.util.function.BooleanSupplier;
  * the REPL logic is testable with a network-free fake and the production {@link HttpControlPlaneClient}
  * is swapped in only at the process entry point.
  */
-interface ControlPlaneClient {
+interface ControlPlaneClient extends AutoCloseable {
 
     /** Whether {@code GET {baseUrl}/healthz} answers 200; any I/O failure counts as not healthy. */
     boolean isHealthy(URI baseUrl);
@@ -100,6 +100,18 @@ interface ControlPlaneClient {
      */
     ConnectorListOutcome connectorList(URI baseUrl, String credential);
 
+    default TokenCreateOutcome tokenCreate(URI baseUrl, String credential, String scope) {
+        return new TokenCreateOutcome.Unreachable();
+    }
+
+    default TokenListOutcome tokenList(URI baseUrl, String credential) {
+        return new TokenListOutcome.Unreachable();
+    }
+
+    default TokenRevokeOutcome tokenRevoke(URI baseUrl, String credential, String tokenId) {
+        return new TokenRevokeOutcome.Unreachable();
+    }
+
     /**
      * Issues a pipeline lifecycle verb ({@code start} / {@code stop} / {@code pause} / {@code resume}) via
      * {@code POST {baseUrl}/api/pipelines/{pipelineId}:{verb}}, authenticated by the bearer
@@ -156,4 +168,8 @@ interface ControlPlaneClient {
      * or unreachable handshake ends the follow. Blocks the caller until it returns. Never throws.
      */
     void followLogs(URI baseUrl, String credential, String pipelineId, LogStream sink, BooleanSupplier stop);
+
+    @Override
+    default void close() {
+    }
 }

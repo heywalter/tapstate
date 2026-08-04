@@ -81,12 +81,15 @@ class CorpusSemanticGateTest {
         //
         // post-semantic - the artifact is well-formed and complete, but the code needs knowledge that
         // lives outside it.
+        //   CONFIG_REQUIRED: the verdict depends on the live connector catalog, which the offline
+        //   WorkspaceLoader this corpus exercises does not consult.
         //   ROW_EXPRESSION_NEEDS_DISCOVERY / ROW_EXPRESSION_TYPE_UNSUPPORTED /
         //   ROW_EXPRESSION_TYPE_UNKNOWN: the verdict depends on whether a source has been discovered
         //   and on the column types that discovery resolved, neither of which a document declares nor
         //   an offline check can reach (RowExpressionDiscoveryRulesTest / RowExpressionTypeRulesTest).
         Set<DslError> requiresCorpusWitness = EnumSet.complementOf(EnumSet.of(
                 DslError.MALFORMED_YAML, DslError.UNDEFINED_VARIABLE, DslError.MALFORMED_INTERPOLATION,
+                DslError.CONFIG_REQUIRED,
                 DslError.ROW_EXPRESSION_NEEDS_DISCOVERY, DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED,
                 DslError.ROW_EXPRESSION_TYPE_UNKNOWN));
         assertThat(witnessed).containsExactlyInAnyOrderElementsOf(requiresCorpusWitness);

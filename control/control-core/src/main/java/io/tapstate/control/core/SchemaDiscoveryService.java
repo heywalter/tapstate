@@ -29,13 +29,21 @@ public final class SchemaDiscoveryService {
     private final SchemaStore schemaStore;
     private final AuditGate auditGate;
     private final Clock clock;
+    private final ConnectorConfigValidator configValidator;
 
     public SchemaDiscoveryService(
             SchemaDiscoveryProbe probe, SchemaStore schemaStore, AuditGate auditGate, Clock clock) {
+        this(probe, schemaStore, auditGate, clock, null);
+    }
+
+    public SchemaDiscoveryService(
+            SchemaDiscoveryProbe probe, SchemaStore schemaStore, AuditGate auditGate, Clock clock,
+            ConnectorConfigValidator configValidator) {
         this.probe = Objects.requireNonNull(probe, "probe");
         this.schemaStore = Objects.requireNonNull(schemaStore, "schemaStore");
         this.auditGate = Objects.requireNonNull(auditGate, "auditGate");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.configValidator = configValidator;
     }
 
     /**
@@ -49,6 +57,9 @@ public final class SchemaDiscoveryService {
      */
     public SchemaReport discover(
             String connectionId, String connectorId, Map<String, Object> settings, String principal) {
+        if (configValidator != null) {
+            configValidator.validate(connectorId, settings);
+        }
         ConnectionConfig config = new ConnectionConfig(connectionId, connectorId, settings);
         return auditGate.dispatch(
                 ControlOperations.CONNECTION_DISCOVER_SCHEMA,

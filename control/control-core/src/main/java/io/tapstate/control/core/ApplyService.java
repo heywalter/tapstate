@@ -3,6 +3,7 @@ package io.tapstate.control.core;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.common.TapstateType;
 import io.tapstate.core.dsl.DslException;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.dsl.RowExpressionTypeRules;
 import io.tapstate.core.dsl.Workspace;
@@ -89,6 +90,24 @@ public final class ApplyService {
         return new ApplyPlan(prepared);
     }
 
+    /** Validates and plans a batch while performing no store or audit write. */
+    public ArtifactValidationResult validate(List<ArtifactDraft> drafts) {
+        final ApplyPlan planned;
+        try {
+            planned = plan(drafts);
+        } catch (TapstateException diagnostic) {
+            return new ArtifactValidationResult(
+                    false,
+                    List.of(),
+                    List.of(new ValidationDiagnostic(diagnostic.code().code(), diagnostic.args())));
+        }
+        List<ArtifactOutcome> outcomes = new ArrayList<>();
+        for (PreparedArtifact prepared : planned.artifacts()) {
+            outcomes.add(outcome(prepared));
+        }
+        return new ArtifactValidationResult(true, outcomes, List.of());
+    }
+
     /**
      * Validates the batch (via {@link #plan}), then writes the changed set — created and updated
      * artifacts — into the store as one atomic batch, returning one outcome per artifact in submission
@@ -109,21 +128,15 @@ public final class ApplyService {
         List<Resource> toWrite = new ArrayList<>();
         List<AuditContext> audited = new ArrayList<>();
         for (PreparedArtifact prepared : plan.artifacts()) {
-            Optional<Resource> existing = store.get(prepared.id());
-            ArtifactOutcome.Change change;
-            if (existing.isEmpty()) {
-                change = ArtifactOutcome.Change.CREATED;
-                toWrite.add(prepared.resource());
-            } else if (storedHash(existing.get()).equals(prepared.contentHash())) {
-                change = ArtifactOutcome.Change.UNCHANGED;
-            } else {
-                change = ArtifactOutcome.Change.UPDATED;
+            ArtifactOutcome outcome = outcome(prepared);
+            ArtifactOutcome.Change change = outcome.change();
+            if (change != ArtifactOutcome.Change.UNCHANGED) {
                 toWrite.add(prepared.resource());
             }
             if (change != ArtifactOutcome.Change.UNCHANGED) {
                 audited.add(new AuditContext(principal, prepared.id()));
             }
-            outcomes.add(new ArtifactOutcome(prepared.id(), prepared.kind(), change, prepared.contentHash()));
+            outcomes.add(outcome);
         }
         // The changed set is audited per artifact, then written as one atomic batch: all of it lands or,
         // on a write failure, none does.
@@ -174,6 +187,17 @@ public final class ApplyService {
                     });
         }
         return bySource;
+    }
+
+    /** Classifies one prepared artifact without mutating the store. */
+    private ArtifactOutcome outcome(PreparedArtifact prepared) {
+        Optional<Resource> existing = store.get(prepared.id());
+        ArtifactOutcome.Change change = existing.isEmpty()
+                ? ArtifactOutcome.Change.CREATED
+                : storedHash(existing.get()).equals(prepared.contentHash())
+                        ? ArtifactOutcome.Change.UNCHANGED
+                        : ArtifactOutcome.Change.UPDATED;
+        return new ArtifactOutcome(prepared.id(), prepared.kind(), change, prepared.contentHash());
     }
 
     /** The content hash of a stored artifact, recomputed over its canonical form for the no-op check. */

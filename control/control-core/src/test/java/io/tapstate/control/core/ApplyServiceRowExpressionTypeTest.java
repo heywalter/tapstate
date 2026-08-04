@@ -111,6 +111,28 @@ class ApplyServiceRowExpressionTypeTest {
         assertThat(artifacts.saved).isEmpty();
     }
 
+    /**
+     * The write-free validate verb plans the batch, so it reaches this check too and an author asking
+     * "would this apply?" is told the same no. The verb answers with a diagnostic rather than letting
+     * the refusal escape, which is what keeps a refused expression a reported verdict instead of a
+     * server fault. Moving the check onto the write path alone would silently take it out of this
+     * answer, so the case is pinned on the verb rather than only on apply.
+     */
+    @Test
+    @DisplayName("the write-free validate verb reports the same refusal, as a diagnostic and not a throw")
+    void validateReportsTheRefusalAsADiagnostic() {
+        discovered("src_orders", "orders", Map.of("amount", TapstateType.DECIMAL));
+
+        ArtifactValidationResult result = service.validate(batch("after.amount * 2 > 0"));
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.diagnostics()).singleElement().satisfies(diagnostic -> {
+            assertThat(diagnostic.code()).isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED.code());
+            assertThat(diagnostic.params()).containsEntry("column", "amount");
+        });
+        assertThat(artifacts.saved).isEmpty();
+    }
+
     @Test
     @DisplayName("the same expression over a lossless numeric column applies and is stored")
     void applyAcceptsALosslessColumnType() {

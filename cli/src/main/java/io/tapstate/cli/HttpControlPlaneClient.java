@@ -1,6 +1,9 @@
 package io.tapstate.cli;
 
 import io.tapstate.core.common.JsonReader;
+import io.tapstate.control.client.ControlResponse;
+import io.tapstate.control.client.HttpControlClient;
+import io.tapstate.control.client.RequestBudget;
 
 import java.io.IOException;
 import java.net.URI;
@@ -18,9 +21,12 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -54,6 +60,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     private final Duration probeTimeout;
     private final Duration heavyTimeout;
     private HttpClient httpClient;
+    private final HttpControlClient sharedClient;
 
     HttpControlPlaneClient() {
         this(PROBE_TIMEOUT, HEAVY_TIMEOUT);
@@ -66,6 +73,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     HttpControlPlaneClient(Duration probeTimeout, Duration heavyTimeout) {
         this.probeTimeout = probeTimeout;
         this.heavyTimeout = heavyTimeout;
+        this.sharedClient = new HttpControlClient(probeTimeout, heavyTimeout);
     }
 
     /**
@@ -91,7 +99,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                     .timeout(probeTimeout)
                     .GET()
                     .build();
-            HttpResponse<Void> response = client().send(request, HttpResponse.BodyHandlers.discarding());
+            HttpResponse<Void> response = send(request, HttpResponse.BodyHandlers.discarding());
             return response.statusCode() == 200;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -115,7 +123,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                     .POST(HttpRequest.BodyPublishers.ofString(JsonOut.write(payload), StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 String token = stringField(response.body(), "token");
                 return token == null || token.isBlank()
@@ -133,6 +141,51 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     }
 
     @Override
+    public TokenCreateOutcome tokenCreate(URI baseUrl, String credential, String scope) {
+        ControlResponse response = sharedClient.post(
+                baseUrl, credential, "/api/tokens", Map.of("scope", scope), RequestBudget.LIGHT);
+        return switch (response) {
+            case ControlResponse.Success success -> {
+                RemoteCreatedToken created = createdToken(success.body());
+                yield created == null
+                        ? new TokenCreateOutcome.Unreachable()
+                        : new TokenCreateOutcome.Issued(created);
+            }
+            case ControlResponse.Rejected rejected ->
+                    new TokenCreateOutcome.Rejected(rejected.code(), rejected.message());
+            case ControlResponse.Unreachable ignored -> new TokenCreateOutcome.Unreachable();
+        };
+    }
+
+    @Override
+    public TokenListOutcome tokenList(URI baseUrl, String credential) {
+        ControlResponse response = sharedClient.get(baseUrl, credential, "/api/tokens");
+        return switch (response) {
+            case ControlResponse.Success success -> new TokenListOutcome.Listed(tokens(success.body()));
+            case ControlResponse.Rejected rejected ->
+                    new TokenListOutcome.Rejected(rejected.code(), rejected.message());
+            case ControlResponse.Unreachable ignored -> new TokenListOutcome.Unreachable();
+        };
+    }
+
+    @Override
+    public TokenRevokeOutcome tokenRevoke(URI baseUrl, String credential, String tokenId) {
+        ControlResponse response = sharedClient.post(
+                baseUrl, credential, "/api/tokens/" + urlSegment(tokenId) + ":revoke", null, RequestBudget.LIGHT);
+        return switch (response) {
+            case ControlResponse.Success ignored -> new TokenRevokeOutcome.Revoked();
+            case ControlResponse.Rejected rejected ->
+                    new TokenRevokeOutcome.Rejected(rejected.code(), rejected.message());
+            case ControlResponse.Unreachable ignored -> new TokenRevokeOutcome.Unreachable();
+        };
+    }
+
+    @Override
+    public void close() {
+        sharedClient.close();
+    }
+
+    @Override
     public ApplyOutcome apply(URI baseUrl, String credential, List<LocalDraft> drafts) {
         try {
             HttpRequest request = authed(baseUrl, "/api/artifacts:apply", credential)
@@ -140,7 +193,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                     .POST(HttpRequest.BodyPublishers.ofString(applyBody(drafts), StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 return new ApplyOutcome.Applied(applyItems(response.body()));
             }
@@ -159,7 +212,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         try {
             HttpRequest request = authed(baseUrl, "/api/artifacts/" + id, credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             int status = response.statusCode();
             if (status == 200) {
                 RemoteArtifact artifact = remoteArtifact(response.body());
@@ -187,7 +240,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                     : "/api/artifacts?kind=" + URLEncoder.encode(kind, StandardCharsets.UTF_8);
             HttpRequest request = authed(baseUrl, path, credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 return new ListOutcome.Listed(remoteArtifacts(response.body()));
             }
@@ -211,7 +264,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                             connectionBody(id, connectorId, settings), StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 ConnectionReport report = connectionReport(response.body());
                 // a 200 that is not a usable report (a proxy / non-Tapstate reply) is treated as unreachable
@@ -239,7 +292,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             HttpRequest request =
                     authed(baseUrl, "/api/connections/" + id + "/test-result", credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             int status = response.statusCode();
             if (status == 200) {
                 ConnectionReport report = connectionReport(response.body());
@@ -271,7 +324,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                             connectionBody(id, connectorId, settings), StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 ConnectionSchema schema = connectionSchema(response.body());
                 // a 200 that is not a usable model (a proxy / non-Tapstate reply) is treated as unreachable
@@ -298,7 +351,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         try {
             HttpRequest request = authed(baseUrl, "/api/connections/" + id + "/schema", credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             int status = response.statusCode();
             if (status == 200) {
                 ConnectionSchema schema = connectionSchema(response.body());
@@ -328,7 +381,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                     .POST(HttpRequest.BodyPublishers.ofString(registerBody(artifact), StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 RegisteredConnector registered = registeredConnector(response.body());
                 // a 200 that is not a usable registration (a proxy / non-Tapstate reply) is treated as unreachable
@@ -355,7 +408,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         try {
             HttpRequest request = authed(baseUrl, "/api/connectors", credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 return new ConnectorListOutcome.Listed(catalogConnectors(response.body()));
             }
@@ -502,7 +555,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 LifecycleOutcome.Accepted accepted = desiredState(response.body());
                 // a 200 that is not a usable desired-state reply (a proxy / non-Tapstate answer) is unreachable
@@ -535,7 +588,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             HttpRequest request =
                     authed(baseUrl, "/api/pipelines/" + pipelineId + "/status", credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 StatusOutcome.Found found = statusFound(response.body());
                 // a 200 that is not a usable status reply (a proxy / non-Tapstate answer) is unreachable
@@ -557,7 +610,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             HttpRequest request =
                     authed(baseUrl, "/api/pipelines/" + pipelineId + "/metrics", credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 MetricsOutcome.Found found = metricsFound(response.body());
                 return found == null ? new MetricsOutcome.Unreachable() : found;
@@ -578,7 +631,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             HttpRequest request =
                     authed(baseUrl, "/api/pipelines/" + pipelineId + "/snapshot", credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 SnapshotOutcome.Found found = snapshotFound(response.body());
                 return found == null ? new SnapshotOutcome.Unreachable() : found;
@@ -663,7 +716,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             HttpRequest request =
                     authed(baseUrl, "/api/pipelines/" + pipelineId + "/logs", credential).GET().build();
             HttpResponse<String> response =
-                    client().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
                 LogsOutcome.Found found = logsFound(response.body());
                 return found == null ? new LogsOutcome.Unreachable() : found;
@@ -857,6 +910,35 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                 .header("Authorization", "Bearer " + credential);
     }
 
+    /** Enforces the request budget outside the JDK client's transport state machine as well. */
+    private <T> HttpResponse<T> send(
+            HttpRequest request, HttpResponse.BodyHandler<T> handler)
+            throws IOException, InterruptedException {
+        CompletableFuture<HttpResponse<T>> future = client().sendAsync(request, handler);
+        Duration timeout = request.timeout().orElse(probeTimeout);
+        try {
+            return future.get(Math.max(1, timeout.toMillis()), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException error) {
+            future.cancel(true);
+            throw error;
+        } catch (TimeoutException error) {
+            future.cancel(true);
+            throw new HttpTimeoutException("HTTP request exceeded " + timeout);
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause();
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (cause instanceof Error fatal) {
+                throw fatal;
+            }
+            throw new IOException("HTTP request failed", cause);
+        }
+    }
+
     /** The absolute request URI for {@code path} against a base, tolerating a trailing slash on the base. */
     private static URI endpoint(URI baseUrl, String path) {
         String base = baseUrl.toString();
@@ -961,5 +1043,36 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             // fall through: a non-coded / unparseable error body is still a refusal, not a crash
         }
         return new Rejection("", genericMessage);
+    }
+
+    private static RemoteCreatedToken createdToken(Object body) {
+        if (body instanceof Map<?, ?> map
+                && map.get("tokenId") instanceof String tokenId
+                && map.get("scope") instanceof String scope
+                && map.get("token") instanceof String token
+                && map.get("createdAt") instanceof String createdAt) {
+            return new RemoteCreatedToken(tokenId, scope, token, createdAt);
+        }
+        return null;
+    }
+
+    private static List<RemoteToken> tokens(Object body) {
+        List<RemoteToken> out = new ArrayList<>();
+        if (body instanceof Map<?, ?> map && map.get("tokens") instanceof List<?> rows) {
+            for (Object row : rows) {
+                if (row instanceof Map<?, ?> token
+                        && token.get("tokenId") instanceof String tokenId
+                        && token.get("scope") instanceof String scope
+                        && token.get("revoked") instanceof Boolean revoked
+                        && token.get("createdAt") instanceof String createdAt) {
+                    out.add(new RemoteToken(tokenId, scope, revoked, createdAt));
+                }
+            }
+        }
+        return List.copyOf(out);
+    }
+
+    private static String urlSegment(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 }

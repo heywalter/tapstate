@@ -6,13 +6,11 @@
   table for scripting / AI. Offline verbs are a whitelist (validate / new / explain); server
   verbs are registered too but report "requires a connection" rather than going missing.
 
-  Ring rule R6: the CLI talks to services over HTTP only, so it carries no compile dependency
-  on any ring other than core. Its dependency surface is allowlisted (bannedDependencies, the
-  coarse twin of the arch-tests R6 rule): only the named core-ring modules plus picocli (command
-  framework) and jline (REPL line reader) are permitted. The core-ring artifacts are listed one
-  by one rather than via an io.tapstate:* wildcard, so a future non-core ring (control / runtime)
-  added here fails the build instead of being waved through by group id. Anything else fails the
-  build; widen the allowlist only by amending the recorded decision, never silently.
+  Ring rule R6: the CLI talks to services over HTTP only. Its dependency surface is allowlisted
+  (bannedDependencies, the coarse twin of the arch-tests R6 rule): the named core-ring modules,
+  the framework-free control HTTP client, picocli (command framework), and jline (REPL line reader).
+  Product control services and runtime implementations remain forbidden. Every allowed artifact is
+  listed explicitly, so a new dependency fails the build until its boundary is deliberately reviewed.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -27,8 +25,8 @@
 
   <artifactId>cli</artifactId>
   <name>Tapstate :: CLI</name>
-  <description>Offline CLI product front-end: dual-mode REPL + one-shot verbs (validate / new /
-    explain), native-image packaged. Depends only on the core ring (rule R6).</description>
+  <description>CLI product front-end: offline authoring plus HTTP control-plane verbs, packaged as
+    a native image. Depends on core contracts and the framework-free HTTP client (rule R6).</description>
 
   <properties>
     <mainClass>io.tapstate.cli.Cli</mainClass>
@@ -76,6 +74,11 @@
     <dependency>
       <groupId>io.tapstate</groupId>
       <artifactId>messages</artifactId>
+      <version>${revision}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.tapstate</groupId>
+      <artifactId>control-client</artifactId>
       <version>${revision}</version>
     </dependency>
 
@@ -140,7 +143,7 @@
         </configuration>
       </plugin>
 
-      <!-- R6 coarse gate: only io.tapstate modules + picocli + jline on the compile/runtime surface.
+      <!-- R6 coarse gate: only named core modules, control-client, picocli, and jline on the surface.
            The fine-grained twin is the arch-tests R6 ArchUnit rule. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -159,8 +162,8 @@
                        transitively through the core ring, which governs that surface under R1 — they
                        are not the CLI's to re-allowlist. This gate covers direct deps; the arch-tests
                        R6 rule covers the package edges the CLI's bytecode actually references. A
-                       non-core ring cannot reach the CLI transitively either, because R1 keeps the
-                       core ring free of any non-core dependency. -->
+                       Product control and runtime rings cannot reach the CLI transitively either;
+                       control-client is a framework-free transport leaf. -->
                   <searchTransitive>false</searchTransitive>
                   <excludes>
                     <exclude>*</exclude>
@@ -175,6 +178,7 @@
                     <include>io.tapstate:core-catalog</include>
                     <!-- the shared presentation catalog + renderer (zero third-party itself) -->
                     <include>io.tapstate:messages</include>
+                    <include>io.tapstate:control-client</include>
                     <include>info.picocli:picocli</include>
                     <!-- jline aggregates its own modules under one version -->
                     <include>org.jline:*</include>

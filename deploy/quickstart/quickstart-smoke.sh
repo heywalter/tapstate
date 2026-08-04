@@ -26,9 +26,13 @@ sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else
 CLI_STUB="$(mktemp -d)"
 make_cli() {   # $1 = platform; the fake binary just echoes, so a run phase (if ever reached) won't hang
   d="$CLI_STUB/download/v$VERSION"; mkdir -p "$d"; stage="$(mktemp -d)"
-  printf '#!/bin/sh\necho "tapstate %s %s"\n' "$VERSION" "$1" > "$stage/tapstate"; chmod +x "$stage/tapstate"
+  mkdir -p "$stage/tapstate-cli-$VERSION/bin" "$stage/tapstate-cli-$VERSION/libexec"
+  printf '#!/bin/sh\necho "tapstate %s %s"\n' "$VERSION" "$1" > "$stage/tapstate-cli-$VERSION/bin/tapstate"
+  chmod +x "$stage/tapstate-cli-$VERSION/bin/tapstate"
+  printf '#!/bin/sh\necho mcp\n' > "$stage/tapstate-cli-$VERSION/libexec/tapstate-mcp"
+  chmod +x "$stage/tapstate-cli-$VERSION/libexec/tapstate-mcp"
   echo license > "$stage/LICENSE"; echo notice > "$stage/NOTICE"
-  a="tapstate-$VERSION-$1.tar.gz"; tar -czf "$d/$a" -C "$stage" tapstate LICENSE NOTICE
+  a="tapstate-$VERSION-$1.tar.gz"; tar -czf "$d/$a" -C "$stage" "tapstate-cli-$VERSION" LICENSE NOTICE
   ( cd "$d" && sha256_of "$a" > "$a.sha256" ); rm -rf "$stage"
 }
 for p in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do make_cli "$p"; done

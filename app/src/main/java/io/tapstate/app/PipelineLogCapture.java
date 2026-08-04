@@ -2,6 +2,7 @@ package io.tapstate.app;
 
 import ch.qos.logback.classic.Logger;
 import io.tapstate.core.logging.LogSink;
+import io.tapstate.core.logging.SecretRedactor;
 import org.slf4j.LoggerFactory;
 
 /**
@@ -17,8 +18,8 @@ final class PipelineLogCapture implements AutoCloseable {
     private final Logger root;
     private final PipelineLogAppender appender;
 
-    PipelineLogCapture(LogSink sink) {
-        this.appender = new PipelineLogAppender(sink);
+    PipelineLogCapture(LogSink sink, SecretRedactor redactor) {
+        this.appender = new PipelineLogAppender(sink, redactor);
         this.root = (Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
         appender.setContext(root.getLoggerContext());
         appender.start();

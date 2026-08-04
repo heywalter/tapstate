@@ -18,6 +18,7 @@ import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
+import io.tapstate.control.core.ConnectorConfigValidator;
 import io.tapstate.control.core.ConnectorRegisterService;
 import io.tapstate.control.core.ControlOperations;
 import io.tapstate.control.core.CredentialAuthenticator;
@@ -38,11 +39,13 @@ import io.tapstate.control.restapi.ControlHttpFace;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.logging.LogSink;
 import io.tapstate.core.logging.RingBufferLogSink;
+import io.tapstate.core.logging.SecretRedactor;
 import io.tapstate.runtime.probe.ConnectionProbe;
 import io.tapstate.runtime.probe.DelegatingConnectionProbe;
 import io.tapstate.runtime.probe.DelegatingSchemaDiscoveryProbe;
 import io.tapstate.runtime.probe.SchemaDiscoveryProbe;
 import io.tapstate.spi.store.AuditStore;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.ConnectionTestResultStore;
 import io.tapstate.spi.store.ConnectionTester;
 import io.tapstate.spi.store.CapabilityDeriver;
@@ -172,18 +175,18 @@ class ControlPlaneConfiguration {
 
     @Bean
     ApplyService applyService(
-            StorePort storePort, ConnectorCatalogView connectorCatalogView, AuditGate auditGate) {
+            ArtifactStore artifactStore, ConnectorCatalogView connectorCatalogView, AuditGate auditGate,
+            SchemaStore schemaStore) {
         // The online apply validates against the live catalog view (the bundled snapshot union the
         // connectors registered so far), so a connector registered at runtime is honoured without a restart.
         // It also reads the schema store, which is what lets it judge a row expression against the columns
         // its sources were discovered to hold - the one check that cannot run offline.
-        return new ApplyService(
-                connectorCatalogView::merged, storePort.artifacts(), auditGate, storePort.schemas());
+        return new ApplyService(connectorCatalogView::merged, artifactStore, auditGate, schemaStore);
     }
 
     @Bean
-    ArtifactQueryService artifactQueryService(StorePort storePort) {
-        return new ArtifactQueryService(storePort.artifacts());
+    ArtifactQueryService artifactQueryService(ArtifactStore artifactStore) {
+        return new ArtifactQueryService(artifactStore);
     }
 
     // ---- the connector plane: the R5 synchronous connection-test verb, wired end to end ----
@@ -277,9 +280,15 @@ class ControlPlaneConfiguration {
     }
 
     @Bean
+    ConnectorConfigValidator connectorConfigValidator(ConnectorCatalogView connectorCatalogView) {
+        return new ConnectorConfigValidator(connectorCatalogView::merged);
+    }
+
+    @Bean
     ConnectionTestService connectionTestService(
-            ConnectionProbe probe, ConnectionTestResultStore resultStore, AuditGate auditGate) {
-        return new ConnectionTestService(probe, resultStore, auditGate);
+            ConnectionProbe probe, ConnectionTestResultStore resultStore, AuditGate auditGate,
+            ConnectorConfigValidator configValidator) {
+        return new ConnectionTestService(probe, resultStore, auditGate, configValidator);
     }
 
     @Bean
@@ -307,8 +316,9 @@ class ControlPlaneConfiguration {
 
     @Bean
     SchemaDiscoveryService schemaDiscoveryService(
-            SchemaDiscoveryProbe probe, SchemaStore schemaStore, AuditGate auditGate, Clock clock) {
-        return new SchemaDiscoveryService(probe, schemaStore, auditGate, clock);
+            SchemaDiscoveryProbe probe, SchemaStore schemaStore, AuditGate auditGate, Clock clock,
+            ConnectorConfigValidator configValidator) {
+        return new SchemaDiscoveryService(probe, schemaStore, auditGate, clock, configValidator);
     }
 
     @Bean
@@ -339,10 +349,22 @@ class ControlPlaneConfiguration {
         return new RingBufferLogSink(MAX_LOGGED_PIPELINES, MAX_LOG_LINES_PER_PIPELINE);
     }
 
+    @Bean
+    SecretRedactor secretRedactor() {
+        return new SecretRedactor();
+    }
+
+    @Bean
+    ArtifactStore artifactStore(
+            StorePort storePort, ConnectorCatalogView connectorCatalogView, SecretRedactor secretRedactor) {
+        return new SecretTrackingArtifactStore(
+                storePort.artifacts(), connectorCatalogView::merged, secretRedactor);
+    }
+
     /** Attaches the pipeline log appender to the logging backend so the sink is fed; detaches on shutdown. */
     @Bean
-    PipelineLogCapture pipelineLogCapture(LogSink logSink) {
-        return new PipelineLogCapture(logSink);
+    PipelineLogCapture pipelineLogCapture(LogSink logSink, SecretRedactor secretRedactor) {
+        return new PipelineLogCapture(logSink, secretRedactor);
     }
 
     @Bean
@@ -357,8 +379,9 @@ class ControlPlaneConfiguration {
 
     @Bean
     SourceService sourceService(
-            ConnectorCatalogView connectorCatalogView, StorePort storePort, SourceRepresentation representation) {
-        return new SourceService(connectorCatalogView::merged, storePort.artifacts(), representation);
+            ConnectorCatalogView connectorCatalogView, ArtifactStore artifactStore,
+            SourceRepresentation representation) {
+        return new SourceService(connectorCatalogView::merged, artifactStore, representation);
     }
 
     @Bean

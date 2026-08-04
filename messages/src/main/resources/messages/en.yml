@@ -50,6 +50,9 @@ cli.verb-not-implemented:
 cli.repl-builtin-only:
   message: "`{verb}` works inside the Tapstate session, not as a one-shot command."
   solution: "Start `tapstate` with no arguments and type `{verb}` at the prompt; `help` lists the session commands."
+cli.mcp-unavailable:
+  message: "The MCP sidecar is unavailable: {reason}."
+  solution: "Install the complete Tapstate CLI bundle, including libexec/tapstate-mcp, and retry."
 dsl.unknown-field:
   message: "Unknown field '{field}' at {path}."
   solution: "Remove it, or run `tapstate explain` to see the fields allowed here."
@@ -92,6 +95,9 @@ dsl.unsupported-mode:
 dsl.config-type-mismatch:
   message: "Config field '{field}' of connector '{connector}' at {path} has the wrong type; expected {expected}."
   solution: "Provide a value of the expected type."
+dsl.config-required:
+  message: "Required config field '{field}' of connector '{connector}' is missing at {path}."
+  solution: "Provide the field, or choose a connection mode that makes it unnecessary."
 dsl.invalid-config-value:
   message: "Config field '{field}' of connector '{connector}' at {path} has an invalid value '{value}'."
   solution: "Use one of the allowed values: {allowed}."
@@ -212,6 +218,18 @@ control.malformed-request:
 control.unauthenticated:
   message: "This operation requires authentication."
   solution: "Sign in with `login` to obtain a session token, or present a machine token with `--token`."
+control.unreachable:
+  message: "The Tapstate Server is unreachable."
+  solution: "Check the Server URL and availability, then retry the tool call."
+mcp.connector-spec-unavailable:
+  message: "Connector {connector} does not provide a complete live spec."
+  solution: "Register the connector runtime and retry connector_get before source_create."
+mcp.environment-missing:
+  message: "Environment variable {variable} is required by the Source config."
+  solution: "Inject the variable into the MCP process environment and retry source_create."
+mcp.server-rejected:
+  message: "The Tapstate Server rejected the request with HTTP status {status} without a structured error code."
+  solution: "Inspect the Server logs and verify that the MCP sidecar and Server use compatible control contracts."
 engine.no-such-job:
   message: "Pipeline {pipeline} has no running job to act on."
   solution: "Start the pipeline before pausing or resuming it, and check the id for typos."

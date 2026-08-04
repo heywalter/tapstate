@@ -32,6 +32,7 @@ class DslErrorTest {
                 "dsl.duplicate-id",
                 "dsl.unsupported-mode",
                 "dsl.config-type-mismatch",
+                "dsl.config-required",
                 "dsl.invalid-config-value",
                 // pre-semantic syntax error — no corpus witness (a syntax error cannot be well-formed)
                 "dsl.malformed-yaml",
@@ -61,6 +62,8 @@ class DslErrorTest {
                 .containsExactlyInAnyOrder("connector", "mode", "allowed", "path");
         assertThat(DslError.CONFIG_TYPE_MISMATCH.placeholders())
                 .containsExactlyInAnyOrder("connector", "field", "expected", "path");
+        assertThat(DslError.CONFIG_REQUIRED.placeholders())
+                .containsExactlyInAnyOrder("connector", "field", "path");
         assertThat(DslError.INVALID_CONFIG_VALUE.placeholders())
                 .containsExactlyInAnyOrder("connector", "field", "value", "allowed", "path");
         // malformed-yaml is pre-semantic: it carries only the parser detail, no field path
