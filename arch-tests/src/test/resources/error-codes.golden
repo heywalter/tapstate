@@ -56,6 +56,7 @@ dsl.mode-mismatch
 dsl.undefined-variable
 dsl.unknown-field
 dsl.unsupported-mode
+engine.frontier-order-not-encodable
 engine.no-such-job
 io.document-unreadable
 io.store-unauthorized
@@ -67,6 +68,7 @@ monitor.no-observation
 nest.append-mode-conflicts-with-key-tracking
 nest.array-key-unresolvable
 nest.capacity-threshold-order-invalid
+nest.chain-axis-limit-exceeded
 nest.embed-path-conflict
 nest.key-change-tracking-requires-before-image
 nest.migration-parking-limit-exceeded

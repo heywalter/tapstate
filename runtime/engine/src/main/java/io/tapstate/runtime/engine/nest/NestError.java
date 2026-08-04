@@ -45,6 +45,13 @@ public enum NestError implements TapstateErrorCode {
     RESOLVER_VERTEX_LIMIT_EXCEEDED("nest.resolver-vertex-limit-exceeded", Set.of("vertices", "limit")),
 
     /**
+     * Building the job: the pipeline draws from more chains than there are axes for their bounds to travel
+     * on, so one of them would have no way to report how far the frontier may go. {@code chains} is how
+     * many it draws from, {@code limit} how many there are.
+     */
+    CHAIN_AXIS_LIMIT_EXCEEDED("nest.chain-axis-limit-exceeded", Set.of("chains", "limit")),
+
+    /**
      * Checking the tree: an append-only root cannot also track structural key changes, because moving a
      * subtree has to hold emissions back until it lands, and holding them back is what append-only forbids.
      */

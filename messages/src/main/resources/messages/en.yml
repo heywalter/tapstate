@@ -203,6 +203,9 @@ control.unauthenticated:
 engine.no-such-job:
   message: "Pipeline {pipeline} has no running job to act on."
   solution: "Start the pipeline before pausing or resuming it, and check the id for typos."
+engine.frontier-order-not-encodable:
+  message: "Chain {chain} reached generation {epoch} position {seq}, past what the engine encodes an ordering value in."
+  solution: "Report this with the pipeline: the range is a build-time width, and no configuration widens it."
 monitor.no-observation:
   message: "No observation is available for pipeline {pipeline}."
   solution: "Check the pipeline id for typos; a freshly started pipeline may take a moment to publish its first observation."
@@ -254,6 +257,9 @@ nest.array-key-unresolvable:
 nest.resolver-vertex-limit-exceeded:
   message: "This nest compiles to {vertices} resolver vertices, past the limit of {limit}."
   solution: "Flatten the tree or split the pipeline: every vertex takes a thread of its own."
+nest.chain-axis-limit-exceeded:
+  message: "This pipeline draws from {chains} chains, past the limit of {limit}."
+  solution: "Split the pipeline: each table it reads spends one of the axes a bound can travel on."
 nest.append-mode-conflicts-with-key-tracking:
   message: "Root {rootAlias} is append-only, and embed {embedPath} tracks structural key changes."
   solution: "Use an upsert root, or turn key tracking off: moving a subtree holds emissions back until it lands, which append-only forbids."
