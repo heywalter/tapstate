@@ -10,6 +10,7 @@ import io.tapstate.core.dsl.Workspace;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.SourceResource;
+import io.tapstate.core.model.TableRef;
 import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactStore;
@@ -24,6 +25,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * The resource-type-agnostic apply pipeline. {@link #plan} is the front half — validate -> canonical
@@ -153,8 +156,10 @@ public final class ApplyService {
      * absent from the result rather than present and empty, so the rules can tell "discovered nothing"
      * apart from "not discovered".
      *
-     * <p>A source's own tables are merged the same way the rules merge across sources: one column name
-     * two tables resolved to different types is left unresolved, never silently taken from one of them.
+     * <p>The tables this source selects are merged the same way the rules merge across sources: one
+     * column name two of them resolved to different types is left unresolved, never silently taken from
+     * one of them. The merge covers what the source selects rather than the whole model, per
+     * {@link #selectedTables}.
      *
      * <p>A model counts only when it was discovered through the connector this source now names. Types
      * are resolved against the declaring connector's own vocabulary, so a model another connector
@@ -187,7 +192,7 @@ public final class ApplyService {
                     .filter(discovered -> discovered.connectorId().equals(source.connector()))
                     .ifPresent(discovered -> {
                         Map<String, TapstateType> columns = new LinkedHashMap<>();
-                        for (SourceTable table : discovered.model().tables()) {
+                        for (SourceTable table : selectedTables(source, discovered.model().tables())) {
                             for (SourceField field : table.fields()) {
                                 RowExpressionTypeRules.mergeColumn(columns, field.name(), field.type());
                             }
@@ -196,6 +201,51 @@ public final class ApplyService {
                     });
         }
         return bySource;
+    }
+
+    /**
+     * The discovered tables {@code source} reads. Discovery runs per connection, so the stored model
+     * carries every table the connection can see - including the ones this source's selector leaves
+     * out. Folding those in would let a table the source never reads decide the type of a column it
+     * does, and that is the ordinary case rather than a corner: one database naming a column {@code id}
+     * in two unrelated tables, typed differently, is normal, and it would refuse most expressions on
+     * most real databases.
+     *
+     * <p>A selector matching nothing in the model narrows nothing - the names cannot be lined up, so no
+     * table is ruled out. Narrowing to the empty set is the direction that would hurt: a column absent
+     * from the model stays untyped and passes, so the gate would quietly stop refusing anything at all
+     * for that source. A pattern that will not compile is treated the same way, matching nothing on its
+     * own rather than failing the apply.
+     */
+    private static List<SourceTable> selectedTables(SourceResource source, List<SourceTable> discovered) {
+        List<TableRef> selectors = source.tables();
+        if (selectors == null || selectors.isEmpty()) {
+            return discovered;      // no selector: the source reads whatever the connection holds
+        }
+        List<SourceTable> selected = new ArrayList<>();
+        for (SourceTable table : discovered) {
+            if (selectors.stream().anyMatch(selector -> selects(selector, table.name()))) {
+                selected.add(table);
+            }
+        }
+        return selected.isEmpty() ? discovered : selected;
+    }
+
+    /** Whether one {@code tables} entry selects the named discovered table. */
+    private static boolean selects(TableRef selector, String table) {
+        return switch (selector) {
+            case TableRef.Literal literal -> literal.name().equals(table);
+            case TableRef.Spec spec -> spec.name().equals(table);
+            case TableRef.Regex regex -> matches(regex.pattern(), table);
+        };
+    }
+
+    private static boolean matches(String pattern, String table) {
+        try {
+            return Pattern.matches(pattern, table);
+        } catch (PatternSyntaxException e) {
+            return false;
+        }
     }
 
     /** Classifies one prepared artifact without mutating the store. */

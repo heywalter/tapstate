@@ -39,15 +39,20 @@ class ApplyServiceRowExpressionTypeTest {
 
     private static final Clock FIXED_CLOCK = Clock.fixed(Instant.parse("2026-07-15T10:15:30Z"), ZoneOffset.UTC);
 
-    private static final String SOURCE = """
-            version: tapstate/v1
-            kind: source
-            id: src_orders
-            connector: mysql
-            config: { host: 10.10.0.5, username: u, password: p }
-            mode: cdc
-            tables: [ orders ]
-            """;
+    private static final String SOURCE = source("[ orders ]");
+
+    /** The source document, varying only in which tables it selects — the rest is fixed noise. */
+    private static String source(String tables) {
+        return """
+                version: tapstate/v1
+                kind: source
+                id: src_orders
+                connector: mysql
+                config: { host: 10.10.0.5, username: u, password: p }
+                mode: cdc
+                tables: %s
+                """.formatted(tables);
+    }
 
     private final InMemoryArtifactStore artifacts = new InMemoryArtifactStore();
     private final InMemorySchemaStore schemas = new InMemorySchemaStore();
@@ -69,8 +74,22 @@ class ApplyServiceRowExpressionTypeTest {
     }
 
     private List<ArtifactDraft> batch(String expr) {
-        return List.of(new ArtifactDraft("src_orders.tap.yml", SOURCE),
+        return batch(SOURCE, expr);
+    }
+
+    private List<ArtifactDraft> batch(String source, String expr) {
+        return List.of(new ArtifactDraft("src_orders.tap.yml", source),
                 new ArtifactDraft("orders_out.tap.yml", pipeline(expr)));
+    }
+
+    /** Records a whole connection's discovery: several tables, as one discovery of one connection. */
+    private void discovered(String connectionId, SourceTable... tables) {
+        schemas.save(new DiscoveredSourceModel(connectionId, "mysql", 0L, new SourceModel(List.of(tables))));
+    }
+
+    private static SourceTable table(String name, String column, TapstateType type) {
+        return new SourceTable(
+                name, List.of(new SourceField(column, column + "_native", type)), List.of(), List.of());
     }
 
     /** Records the discovery of one table's columns for a connection, as discovery would have. */
@@ -199,17 +218,64 @@ class ApplyServiceRowExpressionTypeTest {
     @Test
     @DisplayName("one column discovered as two types across a source's tables is refused as unresolved")
     void conflictingTypesAcrossTablesAreRefused() {
-        List<SourceTable> tables = List.of(
-                new SourceTable("orders",
-                        List.of(new SourceField("amount", "bigint", TapstateType.INT64)), List.of(), List.of()),
-                new SourceTable("orders_archive",
-                        List.of(new SourceField("amount", "varchar", TapstateType.STRING)), List.of(), List.of()));
-        schemas.save(new DiscoveredSourceModel("src_orders", "mysql", 0L, new SourceModel(tables)));
+        discovered("src_orders",
+                table("orders", "amount", TapstateType.INT64),
+                table("orders_archive", "amount", TapstateType.STRING));
 
         DslException thrown = catchThrowableOfType(DslException.class,
-                () -> service.apply("tester", batch("after.amount > 0")));
+                () -> service.apply("tester", batch(source("[ orders, orders_archive ]"), "after.amount > 0")));
 
         assertThat(thrown.code()).isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNKNOWN);
+    }
+
+    /**
+     * Discovery runs per connection, so the stored model carries every table the connection can see —
+     * not the ones this source selected. Folding all of them together would let a table the source
+     * never reads decide the type of a column it does: the conflict here is with {@code sessions},
+     * which the source does not select, and {@code orders.id} resolved perfectly well on its own.
+     *
+     * <p>This is the common case rather than a corner: a column named {@code id} or {@code status}
+     * typed differently in two unrelated tables of one database is ordinary, and folding the whole
+     * connection in would refuse most expressions on most real databases.
+     */
+    @Test
+    @DisplayName("a conflict in a table the source does not select leaves the columns it does read resolved")
+    void aConflictInAnUnselectedTableDoesNotReachTheSource() {
+        discovered("src_orders",
+                table("orders", "id", TapstateType.INT64),
+                table("sessions", "id", TapstateType.STRING));
+
+        assertThatCode(() -> service.apply("tester", batch("after.id > 0"))).doesNotThrowAnyException();
+        assertThat(artifacts.get("orders_out")).isPresent();
+    }
+
+    /**
+     * A selector naming nothing the model carries cannot be lined up against it — the connector may
+     * report qualified names, or the model may predate the selector — so nothing is ruled out and the
+     * whole model still answers. The alternative is worse than a false refusal: narrowing to an empty
+     * set would leave every column absent from the model, and an absent column stays untyped and
+     * passes, so the gate would quietly stop refusing anything at all for that source.
+     */
+    @Test
+    @DisplayName("a selector matching no discovered table narrows nothing, rather than emptying the model")
+    void aSelectorMatchingNoDiscoveredTableStillJudgesAgainstTheModel() {
+        discovered("src_orders", table("legacy_orders", "amount", TapstateType.DECIMAL));
+
+        DslException thrown = catchThrowableOfType(DslException.class,
+                () -> service.apply("tester", batch("after.amount * 2 > 0")));
+
+        assertThat(thrown.code()).isEqualTo(DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED);
+    }
+
+    @Test
+    @DisplayName("a regex selector picks the discovered tables it matches, and leaves the rest out")
+    void aRegexSelectorSelectsTheTablesItMatches() {
+        discovered("src_orders",
+                table("ord_2026", "id", TapstateType.INT64),
+                table("sessions", "id", TapstateType.STRING));
+
+        assertThatCode(() -> service.apply("tester", batch(source("[ /ord_.*/ ]"), "after.id > 0")))
+                .doesNotThrowAnyException();
     }
 
     // ---- doubles -------------------------------------------------------------------------
