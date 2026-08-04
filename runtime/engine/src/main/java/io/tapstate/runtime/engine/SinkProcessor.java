@@ -1,6 +1,5 @@
 package io.tapstate.runtime.engine;
 
-import com.hazelcast.function.ComparatorEx;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
@@ -9,15 +8,12 @@ import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.Envelope;
+import io.tapstate.runtime.engine.SinkFrontier.ChainEntry;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.WriteResult;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -54,13 +50,10 @@ public final class SinkProcessor extends AbstractProcessor {
 
     private final SinkWriter writer;
     private final SinkAck sinkAck;
-    private final Comparator<String> positionOrder;
+    private final SinkFrontier frontier;
     private final int maxInFlight;
     private final int maxBatchSize;
     private final List<InFlightBatch> inFlight = new ArrayList<>();
-    // Per chain (its src stream): the highest position that has settled but is not yet proven closed. The
-    // watermark lags this by one position, so a fan-out's every output is in before the position is acked.
-    private final Map<String, String> openPosByChain = new HashMap<>();
     private boolean closed;
 
     /** No sink-ack watermark: the order-independent or append-only path (any in-flight bound is allowed). */
@@ -68,7 +61,7 @@ public final class SinkProcessor extends AbstractProcessor {
         this(writer, null, null, maxInFlight, maxBatchSize);
     }
 
-    public SinkProcessor(SinkWriter writer, SinkAck sinkAck, Comparator<String> positionOrder,
+    public SinkProcessor(SinkWriter writer, SinkAck sinkAck, SinkFrontier frontier,
             int maxInFlight, int maxBatchSize) {
         this.writer = Objects.requireNonNull(writer, "writer");
         if (maxInFlight < 1) {
@@ -78,7 +71,7 @@ public final class SinkProcessor extends AbstractProcessor {
             throw new IllegalArgumentException("maxBatchSize must be at least 1: " + maxBatchSize);
         }
         if (sinkAck != null) {
-            Objects.requireNonNull(positionOrder, "positionOrder");
+            Objects.requireNonNull(frontier, "frontier");
             if (maxInFlight != 1) {
                 throw new IllegalArgumentException(
                         "a sink-ack watermark requires maxInFlight == 1 so batches settle in order; got "
@@ -86,7 +79,7 @@ public final class SinkProcessor extends AbstractProcessor {
             }
         }
         this.sinkAck = sinkAck;
-        this.positionOrder = positionOrder;
+        this.frontier = frontier;
         this.maxInFlight = maxInFlight;
         this.maxBatchSize = maxBatchSize;
     }
@@ -108,15 +101,19 @@ public final class SinkProcessor extends AbstractProcessor {
      * as a {@link SinkAckFactory}, not a prebuilt {@link SinkAck}: the durable store it writes is not
      * serializable, so only the factory travels on the DAG and the store is resolved on the member that runs
      * the vertex. The vertex is pinned to total parallelism one and keeps a single write in flight, the
-     * order-preserving contract the contiguous-acked-prefix watermark depends on.
+     * order-preserving contract every shape of frontier below it depends on.
+     *
+     * <p>{@code frontierFactory} settles which shape that is, and it is settled here rather than run-time:
+     * how far a sink may say a chain has landed depends on whether what reaches it is one chain in order or
+     * an assembly of several, and that is a property of the graph that was compiled, not of any event.
      */
-    public static ProcessorMetaSupplier metaSupplier(SupplierEx<? extends SinkWriter> writerFactory,
-            SinkAckFactory sinkAckFactory, ComparatorEx<String> positionOrder) {
+    static ProcessorMetaSupplier metaSupplier(SupplierEx<? extends SinkWriter> writerFactory,
+            SinkAckFactory sinkAckFactory, SupplierEx<SinkFrontier> frontierFactory) {
         Objects.requireNonNull(writerFactory, "writerFactory");
         Objects.requireNonNull(sinkAckFactory, "sinkAckFactory");
-        Objects.requireNonNull(positionOrder, "positionOrder");
+        Objects.requireNonNull(frontierFactory, "frontierFactory");
         return ProcessorMetaSupplier.forceTotalParallelismOne(
-                new AckSinkSupplier(writerFactory, sinkAckFactory, positionOrder));
+                new AckSinkSupplier(writerFactory, sinkAckFactory, frontierFactory));
     }
 
     @Override
@@ -128,7 +125,7 @@ public final class SinkProcessor extends AbstractProcessor {
                 batch.add((Envelope) inbox.poll());
             }
             inFlight.add(new InFlightBatch(
-                    writer.write(batch).toCompletableFuture(), lastPositionByChain(batch)));
+                    writer.write(batch).toCompletableFuture(), positionsOf(batch)));
         }
         // A saturated in-flight set leaves the rest of the inbox unread; Jet backpressures upstream
         // until reapSettled frees a slot on a later call.
@@ -156,13 +153,31 @@ public final class SinkProcessor extends AbstractProcessor {
     }
 
     /**
-     * Refuses to pass on a bound that arrived with no edge attached to it. This is the end of the line for
-     * a bound: what it tells this processor is how far every edge has promised, and anything emitted from
-     * here would be offered to the target as a record. The engine forwards it by default, silently, which
-     * is why saying otherwise is explicit.
+     * Takes in a bound that arrived with no edge attached to it, and never passes it on. This variant is
+     * the one a sink wants: the engine calls it with the value combined across every input queue, which is
+     * the guarantee the frontier rests on - a queue that has said nothing still holds it down. The
+     * per-edge variant would answer with one edge's promise while data covered by it sits on another.
+     *
+     * <p>Nothing is emitted from here. This is the end of the line for a bound, and anything emitted would
+     * be offered to the target as a record. The engine forwards it by default, silently, which is why
+     * saying otherwise is explicit.
      */
     @Override
     public boolean tryProcessWatermark(Watermark watermark) {
+        if (frontier != null) {
+            frontier.bound(watermark, sinkAck);
+        }
+        return true;
+    }
+
+    /**
+     * Takes no notice of a bound that arrived on one edge. Answering true is what lets the engine combine
+     * it with the other edges and deliver the combined value to the variant above; acting on it here would
+     * be acting on one edge's promise alone. Written out rather than left to the interface default, which
+     * is the same answer for a different reason.
+     */
+    @Override
+    public boolean tryProcessWatermark(int ordinal, Watermark watermark) {
         return true;
     }
 
@@ -181,51 +196,17 @@ public final class SinkProcessor extends AbstractProcessor {
             if (!batch.future().isDone()) {
                 return false;
             }
-            settle(batch.future()); // throws on a failed write, before any watermark advances
-            advanceWatermarks(batch);
+            settle(batch.future()); // throws on a failed write, before any position advances
+            if (frontier != null) {
+                frontier.settled(batch.positions(), sinkAck);
+            }
             return true;
         });
     }
 
-    /**
-     * The last source position each chain contributes to this batch, empty when no watermark is tracked.
-     * Under the single-in-flight, order-preserving contract a chain's last event in the batch is its
-     * highest position there; an event with no position (a snapshot or synthetic event) does not take part.
-     */
-    private Map<String, String> lastPositionByChain(List<Envelope> batch) {
-        if (sinkAck == null) {
-            return Map.of();
-        }
-        Map<String, String> last = new LinkedHashMap<>();
-        for (Envelope event : batch) {
-            if (event.srcPos() != null) {
-                last.put(event.src(), event.srcPos());
-            }
-        }
-        return last;
-    }
-
-    /**
-     * Advances each chain's watermark to its contiguous acked prefix. A settled batch proves every event
-     * at or below its positions is durably written, but a position stays open until a strictly higher one
-     * settles — a fan-out could still place more of it in a later batch. When a higher position closes the
-     * open one, the old open position is a complete acked prefix and is acked exactly once, monotonically.
-     */
-    private void advanceWatermarks(InFlightBatch batch) {
-        if (sinkAck == null) {
-            return;
-        }
-        batch.lastPositionByChain().forEach((chain, batchLast) -> {
-            String open = openPosByChain.get(chain);
-            if (open == null) {
-                openPosByChain.put(chain, batchLast);
-            } else if (positionOrder.compare(batchLast, open) > 0) {
-                sinkAck.advance(chain, open);
-                openPosByChain.put(chain, batchLast);
-            }
-            // batchLast <= open: the same open position (a fan-out continuation), or an out-of-order
-            // arrival if a precondition were violated - either way do not advance and do not regress.
-        });
+    /** What this batch contributes to the frontier, empty when no frontier is tracked. */
+    private List<ChainEntry> positionsOf(List<Envelope> batch) {
+        return frontier == null ? List.of() : frontier.positions(batch);
     }
 
     /**
@@ -248,9 +229,8 @@ public final class SinkProcessor extends AbstractProcessor {
         }
     }
 
-    /** One outstanding write and the last source position each chain contributed to its batch. */
-    private record InFlightBatch(
-            CompletableFuture<WriteResult> future, Map<String, String> lastPositionByChain) {
+    /** One outstanding write and what its batch contributes to the frontier once it settles. */
+    private record InFlightBatch(CompletableFuture<WriteResult> future, List<ChainEntry> positions) {
     }
 
     /**
@@ -263,14 +243,14 @@ public final class SinkProcessor extends AbstractProcessor {
 
         private final SupplierEx<? extends SinkWriter> writerFactory;
         private final SinkAckFactory sinkAckFactory;
-        private final ComparatorEx<String> positionOrder;
+        private final SupplierEx<SinkFrontier> frontierFactory;
         private transient SinkAck sinkAck;
 
         AckSinkSupplier(SupplierEx<? extends SinkWriter> writerFactory,
-                SinkAckFactory sinkAckFactory, ComparatorEx<String> positionOrder) {
+                SinkAckFactory sinkAckFactory, SupplierEx<SinkFrontier> frontierFactory) {
             this.writerFactory = writerFactory;
             this.sinkAckFactory = sinkAckFactory;
-            this.positionOrder = positionOrder;
+            this.frontierFactory = frontierFactory;
         }
 
         @Override
@@ -282,7 +262,7 @@ public final class SinkProcessor extends AbstractProcessor {
         public Collection<? extends Processor> get(int count) {
             List<Processor> processors = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
-                processors.add(new SinkProcessor(writerFactory.get(), sinkAck, positionOrder,
+                processors.add(new SinkProcessor(writerFactory.get(), sinkAck, frontierFactory.get(),
                         DEFAULT_MAX_IN_FLIGHT, DEFAULT_MAX_BATCH_SIZE));
             }
             return processors;

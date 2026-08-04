@@ -3,15 +3,17 @@ package io.tapstate.runtime.engine;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.hazelcast.jet.core.Watermark;
 import com.hazelcast.jet.core.test.TestInbox;
 import com.hazelcast.jet.core.test.TestOutbox;
 import com.hazelcast.jet.core.test.TestProcessorContext;
 import com.hazelcast.jet.core.test.TestSupport;
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.WriteResult;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -28,18 +30,22 @@ import org.junit.jupiter.api.Test;
  */
 class SinkProcessorTest {
 
+    private static final ChainAxes AXES = ChainAxes.assign(List.of("orders", "lines"));
+
     private static Envelope event(int id) {
         return Envelope.insert(id, "orders", Map.of("id", id), null);
     }
 
-    /** An event on chain {@code src} carrying source position {@code pos}. */
+    /**
+     * An event on chain {@code src} carrying source position {@code pos}, ordered by the numeric suffix of
+     * that token - the order the engine assigned as it read, which is what ranks positions now that no
+     * connector supplies an order over its own tokens.
+     */
     private static Envelope at(String src, String pos) {
-        return Envelope.insert(1L, src, Map.of("id", pos), null).withSrcPos(pos);
+        return Envelope.insert(1L, src, Map.of("id", pos), null)
+                .withSrcPos(pos)
+                .withOrder(new SourceOrder(1, Integer.parseInt(pos.replaceAll("\\D+", ""))));
     }
-
-    /** The connector position order, faked here as the integer suffix of a token (per chain). */
-    private static final Comparator<String> BY_SUFFIX =
-            Comparator.comparingInt(token -> Integer.parseInt(token.replaceAll("\\D+", "")));
 
     /** A sink is terminal: it consumes every event and emits nothing, across all Jet run scenarios. */
     @Test
@@ -188,7 +194,7 @@ class SinkProcessorTest {
         // The contiguous prefix is only correct if batches settle in issue order, which needs one write
         // in flight; a hook with a higher bound is a wiring error and fails fast at construction.
         assertThatThrownBy(
-                () -> new SinkProcessor(new RecordingWriter(), new RecordingAck(), BY_SUFFIX, 2, 1024))
+                () -> new SinkProcessor(new RecordingWriter(), new RecordingAck(), new ContiguousPrefix(), 2, 1024))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxInFlight");
     }
@@ -196,7 +202,7 @@ class SinkProcessorTest {
     @Test
     void does_not_advance_the_watermark_on_the_first_settled_position() throws Exception {
         RecordingAck ack = new RecordingAck();
-        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, BY_SUFFIX, 1, 1));
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 1));
 
         TestInbox inbox = new TestInbox();
         inbox.add(at("orders", "p1"));
@@ -210,7 +216,7 @@ class SinkProcessorTest {
     void advances_a_position_only_once_a_strictly_higher_one_has_settled() throws Exception {
         RecordingAck ack = new RecordingAck();
         // one event per batch, so each position settles in its own batch, in order.
-        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, BY_SUFFIX, 1, 1));
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 1));
 
         TestInbox inbox = new TestInbox();
         inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2"), at("orders", "p3")));
@@ -223,7 +229,7 @@ class SinkProcessorTest {
     @Test
     void holds_a_fan_out_position_that_spans_batches_until_a_higher_one_settles() throws Exception {
         RecordingAck ack = new RecordingAck();
-        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, BY_SUFFIX, 1, 1));
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 1));
 
         TestInbox inbox = new TestInbox();
         // p1 appears in two separate batches (a fan-out split across a batch boundary), then p2.
@@ -240,7 +246,7 @@ class SinkProcessorTest {
         RecordingAck ack = new RecordingAck();
         // three positions per batch, so the per-batch reduction must pick the batch's highest position,
         // not the first, at the production-realistic batch size (every other test pins batch size to one).
-        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, BY_SUFFIX, 1, 3));
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 3));
 
         TestInbox inbox = new TestInbox();
         inbox.addAll(List.of(
@@ -255,7 +261,7 @@ class SinkProcessorTest {
     @Test
     void reduces_each_chain_to_its_own_position_within_a_multi_chain_batch() throws Exception {
         RecordingAck ack = new RecordingAck();
-        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, BY_SUFFIX, 1, 3));
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 3));
 
         TestInbox inbox = new TestInbox();
         // one batch interleaves two chains; within it chain a's position is a2 (its max), chain b's is b1.
@@ -269,7 +275,7 @@ class SinkProcessorTest {
     @Test
     void tracks_each_chain_independently() throws Exception {
         RecordingAck ack = new RecordingAck();
-        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, BY_SUFFIX, 1, 1));
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 1));
 
         TestInbox inbox = new TestInbox();
         // two single-table chains merged (a union): each advances on its own higher position.
@@ -282,7 +288,7 @@ class SinkProcessorTest {
     @Test
     void skips_events_that_carry_no_source_position() throws Exception {
         RecordingAck ack = new RecordingAck();
-        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, BY_SUFFIX, 1, 1));
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 1));
 
         TestInbox inbox = new TestInbox();
         // a snapshot / synthetic event carries no position and must not move the watermark.
@@ -296,7 +302,7 @@ class SinkProcessorTest {
     void never_advances_past_an_unsettled_write() throws Exception {
         RecordingAck ack = new RecordingAck();
         ManualWriter writer = new ManualWriter();
-        SinkProcessor processor = init(new SinkProcessor(writer, ack, BY_SUFFIX, 1, 1));
+        SinkProcessor processor = init(new SinkProcessor(writer, ack, new ContiguousPrefix(), 1, 1));
 
         TestInbox inbox = new TestInbox();
         inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2")));
@@ -320,7 +326,7 @@ class SinkProcessorTest {
         RecordingAck ack = new RecordingAck();
         SinkFailure boom = new SinkFailure("target refused the batch");
         // the first write (p1) succeeds and opens p1; the second (p2) fails.
-        SinkProcessor processor = init(new SinkProcessor(new FailOnNthWriter(2, boom), ack, BY_SUFFIX, 1, 1));
+        SinkProcessor processor = init(new SinkProcessor(new FailOnNthWriter(2, boom), ack, new ContiguousPrefix(), 1, 1));
 
         TestInbox inbox = new TestInbox();
         inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2")));
@@ -328,6 +334,63 @@ class SinkProcessorTest {
         assertThatThrownBy(() -> pump(processor, inbox)).isSameAs(boom);
         // p2's write failed, so it must not settle and close p1: nothing is durably acked.
         assertThat(ack.calls).isEmpty();
+    }
+
+    // ---- the shape of frontier is settled while the graph is compiled -------------------------
+
+    @Test
+    void a_sink_fed_by_one_chain_in_order_discards_a_bound_rather_than_acting_on_it() throws Exception {
+        RecordingAck ack = new RecordingAck();
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, new ContiguousPrefix(), 1, 1));
+
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2")));
+        pump(processor, inbox);
+        processor.tryProcessWatermark(new Watermark(Long.MAX_VALUE - 1, (byte) 1));
+        drain(processor);
+
+        // The source stamps bounds whatever the graph does with them, so they reach this sink too. Acting
+        // on one here would advance past p2, which is still open: the settled prefix is the whole answer.
+        assertThat(ack.calls).containsExactly("orders=p1");
+    }
+
+    @Test
+    void a_sink_fed_by_an_assembly_advances_only_what_the_combined_bound_covers() throws Exception {
+        RecordingAck ack = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, floor, 1, 1));
+
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2"), at("orders", "p3")));
+        pump(processor, inbox);
+        assertThat(ack.calls).isEmpty();
+
+        processor.tryProcessWatermark(boundAt("orders", 2));
+        drain(processor);
+
+        assertThat(ack.calls).containsExactly("orders=p2");
+    }
+
+    @Test
+    void a_sink_fed_by_an_assembly_takes_no_notice_of_a_bound_that_arrived_on_one_edge() throws Exception {
+        RecordingAck ack = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+        SinkProcessor processor = init(new SinkProcessor(new RecordingWriter(), ack, floor, 1, 1));
+
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2")));
+        pump(processor, inbox);
+        processor.tryProcessWatermark(0, boundAt("orders", 2));
+        drain(processor);
+
+        // The per-edge variant carries one edge's promise; data it covers may be sitting on another edge.
+        // Answering true is what lets the engine combine the edges and call the variant that is safe.
+        assertThat(ack.calls).isEmpty();
+    }
+
+    /** The bound the engine combined across every input queue for {@code chain}, at ring sequence {@code seq}. */
+    private static Watermark boundAt(String chain, int seq) {
+        return new Watermark(FrontierOrders.pack(chain, new SourceOrder(1, seq)), AXES.axisOf(chain));
     }
 
     /** Drives process() until the inbox drains (reaping and issuing one batch per call), then completes. */
@@ -408,13 +471,13 @@ class SinkProcessorTest {
         }
     }
 
-    /** Records every {@code advance(chain, srcpos)} call as {@code "chain=srcpos"}, in order. */
+    /** Records every {@code advance(chain, position)} call as {@code "chain=token"}, in order. */
     private static final class RecordingAck implements SinkAck {
         private final List<String> calls = new ArrayList<>();
 
         @Override
-        public void advance(String chain, String srcpos) {
-            calls.add(chain + "=" + srcpos);
+        public void advance(String chain, ChainPosition position) {
+            calls.add(chain + "=" + position.token());
         }
     }
 

@@ -52,7 +52,7 @@ public final class PipelineDagBuilder {
      * variant, so an ack-less run still builds. The topology is identical either way — the ack only
      * changes which sink vertex the serve block wires.
      */
-    public static DAG build(PipelineResource pipeline, DagBindings bindings, SinkAckBinding sinkAck) {
+    public static DAG build(PipelineResource pipeline, DagBindings bindings, SinkAckFactory sinkAck) {
         return build(pipeline, bindings, sinkAck, null);
     }
 
@@ -62,10 +62,14 @@ public final class PipelineDagBuilder {
      * go; when it is null no level propagates a bound at all, which is a frontier that does not advance
      * rather than one that advances too far. The topology is identical either way.
      */
-    public static DAG build(PipelineResource pipeline, DagBindings bindings, SinkAckBinding sinkAck,
+    public static DAG build(PipelineResource pipeline, DagBindings bindings, SinkAckFactory sinkAck,
             FrontierBinding frontier) {
         DAG dag = new DAG();
         Map<String, Vertex> byKey = new HashMap<>();
+        // Whether anything in this graph gathers several chains into one stream. It settles which shape of
+        // frontier the sinks are given, and it is a property of the graph rather than of what flows through
+        // it, so it is answered here and never re-judged while running.
+        boolean assembled = false;
         // Jet rejects two edges that share a source or destination ordinal, so every edge takes the
         // next free ordinal on each of its endpoints; a fan-in (union) and a fan-out (multi-sink)
         // then wire without collision.
@@ -104,6 +108,7 @@ public final class PipelineDagBuilder {
                     if (chains != null) {
                         chains.derived(step.id(), nestUpstream(inline.from(), bindings));
                     }
+                    assembled = true;
                     continue;
                 }
                 List<String> upstream = resolveClause(step.from(), bindings);
@@ -127,7 +132,8 @@ public final class PipelineDagBuilder {
             for (int i = 0; i < sync.size(); i++) {
                 SyncElement element = sync.get(i);
                 String name = SERVE_VERTEX_PREFIX + (element.id() != null ? element.id() : i);
-                Vertex vertex = dag.newVertex(name, sinkVertex(bindings.sinkWriters().apply(element), sinkAck));
+                Vertex vertex = dag.newVertex(name,
+                        sinkVertex(bindings.sinkWriters().apply(element), sinkAck, axes, assembled));
                 connect(dag, upstream, vertex, outboundOrdinal, inboundOrdinal);
             }
         }
@@ -136,15 +142,30 @@ public final class PipelineDagBuilder {
     }
 
     /**
-     * The sink vertex for one serve.sync element: the ack-bearing sink when a sink-ack binding is present
+     * The sink vertex for one serve.sync element: the ack-bearing sink when a sink-ack factory is present
      * (advancing a durable watermark), otherwise the no-ack sink. Both wrap the same writer factory in the
      * one generic sink adapter, pinned to total parallelism one.
+     *
+     * <p>{@code assembled} picks the shape of frontier the ack-bearing sink runs. Where the graph gathers
+     * several chains into one stream, what arrives can no longer say by itself how far a chain has
+     * travelled, and the sink goes by the bound the engine combines across its input queues instead. Where
+     * it does not, the events of one chain arrive in their own order and the settled prefix is the whole
+     * answer; a bound reaching such a sink is discarded rather than acted on, because the source stamps
+     * bounds whatever the graph does with them.
+     *
+     * <p>An assembling graph built without a chain numbering gets the same shape with nothing to attribute
+     * a bound to, so its frontier stands still. That is the direction to fail in: reading a stream of
+     * several chains as though it were one would ack positions whose changes are still in flight.
      */
-    private static ProcessorMetaSupplier sinkVertex(
-            SupplierEx<? extends SinkWriter> writerFactory, SinkAckBinding sinkAck) {
-        return sinkAck == null
-                ? SinkProcessor.metaSupplier(writerFactory)
-                : SinkProcessor.metaSupplier(writerFactory, sinkAck.ackFactory(), sinkAck.positionOrder());
+    private static ProcessorMetaSupplier sinkVertex(SupplierEx<? extends SinkWriter> writerFactory,
+            SinkAckFactory sinkAck, ChainAxes axes, boolean assembled) {
+        if (sinkAck == null) {
+            return SinkProcessor.metaSupplier(writerFactory);
+        }
+        SupplierEx<SinkFrontier> frontier = assembled
+                ? () -> new SettledFloor(axes, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN)
+                : ContiguousPrefix::new;
+        return SinkProcessor.metaSupplier(writerFactory, sinkAck, frontier);
     }
 
     /**
