@@ -126,6 +126,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: graalvm/setup-graalvm@v1
         with:
+          # The native artifact is the CLI only. The MCP sidecar remains a JVM Boot JAR, so this
+          # release stays on the project's JDK 21 baseline instead of requiring a Java 25 AOT toolchain.
           java-version: '21'
           distribution: 'liberica'   # Liberica NIK 21 (GPLv2+CPE) — the release toolchain; Oracle GraalVM (GFTC) is local dev only
           github-token: ${{ secrets.GITHUB_TOKEN }}
