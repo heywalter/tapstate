@@ -34,7 +34,7 @@ class TapEventCodecTest {
         assertThat(env.op()).isEqualTo(Op.INSERT);
         assertThat(env.ts()).isEqualTo(1000L);
         assertThat(env.src()).isEqualTo("orders");
-        assertThat(env.after()).isEqualTo(Map.of("id", 1, "region", "eu"));
+        assertThat(env.after()).isEqualTo(Map.of("id", 1L, "region", "eu"));
         assertThat(env.before()).isNull();
     }
 
@@ -45,8 +45,8 @@ class TapEventCodecTest {
                 .before(Map.of("id", 1, "region", "eu")).after(Map.of("id", 1, "region", "us"));
         Envelope env = TapEventCodec.decodeChange(event);
         assertThat(env.op()).isEqualTo(Op.UPDATE);
-        assertThat(env.before()).isEqualTo(Map.of("id", 1, "region", "eu"));
-        assertThat(env.after()).isEqualTo(Map.of("id", 1, "region", "us"));
+        assertThat(env.before()).isEqualTo(Map.of("id", 1L, "region", "eu"));
+        assertThat(env.after()).isEqualTo(Map.of("id", 1L, "region", "us"));
     }
 
     @Test
@@ -55,7 +55,7 @@ class TapEventCodecTest {
                 .table("orders").referenceTime(1000L).before(Map.of("id", 1));
         Envelope env = TapEventCodec.decodeChange(event);
         assertThat(env.op()).isEqualTo(Op.DELETE);
-        assertThat(env.before()).isEqualTo(Map.of("id", 1));
+        assertThat(env.before()).isEqualTo(Map.of("id", 1L));
         assertThat(env.after()).isNull();
     }
 
@@ -94,7 +94,7 @@ class TapEventCodecTest {
                 .table("orders").referenceTime(1000L).after(Map.of("id", 7));
         Envelope env = TapEventCodec.decodeSnapshotRow(row);
         assertThat(env.op()).isEqualTo(Op.READ);
-        assertThat(env.after()).isEqualTo(Map.of("id", 7));
+        assertThat(env.after()).isEqualTo(Map.of("id", 7L));
         assertThat(env.before()).isNull();
     }
 
@@ -122,28 +122,33 @@ class TapEventCodecTest {
     }
 
     // ---- round trip: an envelope survives encode → (phase-appropriate) decode unchanged ----
+    //
+    // The fixtures hold int64 because that is what an envelope in circulation holds: decode is where
+    // a driver's own boxing becomes the value model, so a row that has been through it once is
+    // already in it. An envelope hand-built with a narrower box is not a shape the runtime produces,
+    // and asking the round trip to preserve it would be asking decode to undo its own job.
 
     @Test
     void insertRoundTrips() {
-        Envelope env = Envelope.insert(1000L, "orders", Map.of("id", 1, "region", "eu"), null);
+        Envelope env = Envelope.insert(1000L, "orders", Map.of("id", 1L, "region", "eu"), null);
         assertThat(TapEventCodec.decodeChange(TapEventCodec.encode(env))).isEqualTo(env);
     }
 
     @Test
     void updateRoundTrips() {
-        Envelope env = Envelope.update(1000L, "orders", Map.of("id", 1), Map.of("id", 1, "n", 2), null);
+        Envelope env = Envelope.update(1000L, "orders", Map.of("id", 1L), Map.of("id", 1L, "n", 2L), null);
         assertThat(TapEventCodec.decodeChange(TapEventCodec.encode(env))).isEqualTo(env);
     }
 
     @Test
     void deleteRoundTrips() {
-        Envelope env = Envelope.delete(1000L, "orders", Map.of("id", 1), null);
+        Envelope env = Envelope.delete(1000L, "orders", Map.of("id", 1L), null);
         assertThat(TapEventCodec.decodeChange(TapEventCodec.encode(env))).isEqualTo(env);
     }
 
     @Test
     void readRoundTripsThroughTheSnapshotPhase() {
-        Envelope env = Envelope.read(1000L, "orders", Map.of("id", 7), null);
+        Envelope env = Envelope.read(1000L, "orders", Map.of("id", 7L), null);
         assertThat(TapEventCodec.decodeSnapshotRow(TapEventCodec.encode(env))).isEqualTo(env);
     }
 

@@ -103,6 +103,34 @@ class DslCelCheckTest {
         assertThat(((DslException) thrown).path()).isEqualTo("transforms[0].expr");
     }
 
+    /**
+     * The offline check is where an indexed row read has to be caught: it is the one layer every
+     * expression passes through, and the layer that judges a column against the type its source
+     * resolved it to only ever sees columns read by name. Catching it here also means the author is
+     * told before discovering anything, since nothing about a source bears on the answer.
+     */
+    @Test
+    @DisplayName("a row field read by index is rejected at its field path, like any other illegal expression")
+    void indexedRowReadIsRejected() {
+        String pipeline = """
+                version: tapstate/v1
+                kind: pipeline
+                id: p
+                source: src_a
+                transforms:
+                  - id: f
+                    from: [orders]
+                    type: filter
+                    expr: "after['region'] == 'US'"
+                """;
+
+        Throwable thrown = catchThrowable(() -> parser.parse(pipeline));
+
+        assertThat(thrown).isInstanceOf(DslException.class);
+        assertThat(((DslException) thrown).code().code()).isEqualTo("dsl.illegal-expression");
+        assertThat(((DslException) thrown).path()).isEqualTo("transforms[0].expr");
+    }
+
     @Test
     @DisplayName("a map computed value that fails to compile is rejected at its field path")
     void mapComputedExpressionWithSyntaxErrorIsRejected() {

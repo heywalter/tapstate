@@ -122,8 +122,10 @@ class PdkCapturePortTest {
             assertThat(e.op()).isEqualTo(Op.READ);
             assertThat(e.src()).isEqualTo("t1");
         });
-        assertThat(got.get(0).after()).containsEntry("id", 1);
-        assertThat(got.get(1).after()).containsEntry("id", 2);
+        // The synthetic source emits an int; the decode boundary carries it into the value model, so
+        // what the port yields is the one integer width every reader downstream binds to.
+        assertThat(got.get(0).after()).containsEntry("id", 1L);
+        assertThat(got.get(1).after()).containsEntry("id", 2L);
     }
 
     @Test

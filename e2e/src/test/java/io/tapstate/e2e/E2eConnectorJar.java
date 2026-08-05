@@ -39,8 +39,18 @@ final class E2eConnectorJar {
     /** The resource the entry class's {@code @TapConnectorClass} names, resolved as a jar entry. */
     private static final String SPEC_ENTRY = "e2e-file-spec.json";
 
-    /** {@code properties.id} is the identity registration files the artifact under. */
-    private static final String SPEC_TEMPLATE = "{\"properties\":{\"id\":\"%s\"}}";
+    /**
+     * {@code properties.id} is the identity registration files the artifact under, and {@code dataTypes}
+     * is how the connector's own word for a column type becomes a type the product knows.
+     *
+     * <p>Declaring the one type this connector has is not decoration. A discovered column whose native
+     * type maps to nothing resolves as unknown, and an expression reading an unknown column is refused
+     * at apply - so without this, every specification whose pipeline reads a row field is refused
+     * before it runs. The connector already says every column is text; this is where it says it in the
+     * vocabulary the mapping reads.
+     */
+    private static final String SPEC_TEMPLATE =
+            "{\"properties\":{\"id\":\"%s\"},\"dataTypes\":{\"string\":{\"to\":\"TapString\",\"byte\":65535}}}";
 
     /**
      * The API version the product's level table registers. An unregistered version does not refuse the

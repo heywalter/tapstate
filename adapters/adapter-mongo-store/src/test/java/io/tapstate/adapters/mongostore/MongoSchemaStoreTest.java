@@ -1,6 +1,7 @@
 package io.tapstate.adapters.mongostore;
 
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.common.TapstateType;
 import io.tapstate.spi.store.DiscoveredSourceModel;
 import io.tapstate.spi.store.IoError;
 import io.tapstate.spi.store.SourceField;
@@ -85,14 +86,84 @@ class MongoSchemaStoreTest {
     }
 
     @Test
-    void aFieldWithNoResolvedTypeRoundTripsAsNull() {
+    void aFieldWithNoDeclaredTypeRoundTripsAsUnresolved() {
         DiscoveredSourceModel envelope = discovered("x", new SourceModel(List.of(
                 new SourceTable("t", List.of(new SourceField("c", null)), List.of(), List.of()))));
 
         DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(MongoSchemaStore.toDocument(envelope));
 
-        assertThat(read.model().tables().get(0).fields().get(0).type()).isNull();
+        SourceField field = read.model().tables().get(0).fields().get(0);
+        assertThat(field.dataType()).isNull();
+        assertThat(field.type()).isEqualTo(TapstateType.UNKNOWN);
         assertThat(read).isEqualTo(envelope);
+    }
+
+    @Test
+    void aFieldsResolvedTypeSurvivesTheRoundTrip() {
+        DiscoveredSourceModel envelope = discovered("x", new SourceModel(List.of(new SourceTable(
+                "t",
+                List.of(new SourceField("amount", "decimal(18,4)", TapstateType.DECIMAL)),
+                List.of(),
+                List.of()))));
+
+        DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(MongoSchemaStore.toDocument(envelope));
+
+        assertThat(read.model().tables().get(0).fields().get(0).type())
+                .as("the resolution happens once, at discovery, so the store has to carry it")
+                .isEqualTo(TapstateType.DECIMAL);
+    }
+
+    @Test
+    void aStoredFieldFromBeforeTypesWereResolvedReadsBackAsUnknown() {
+        // A document written before discovery resolved types carries the declared type and no resolved one.
+        // The model is a derived observation a re-discovery replaces, so an older document is read, not
+        // refused - and what it is read as must be unknown rather than any type that would be acted on.
+        Document stored = MongoSchemaStore.toDocument(discovered("x", new SourceModel(List.of(
+                new SourceTable("t", List.of(new SourceField("amount", "decimal(18,4)")), List.of(), List.of())))));
+        List<Document> tables = stored.getList("tables", Document.class);
+        tables.get(0).getList("fields", Document.class).get(0).remove("tapstateType");
+
+        DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(stored);
+
+        assertThat(read.model().tables().get(0).fields().get(0).type()).isEqualTo(TapstateType.UNKNOWN);
+        assertThat(read.model().tables().get(0).fields().get(0).dataType()).isEqualTo("decimal(18,4)");
+    }
+
+    @Test
+    void aStoredDocumentCarriesTheStampThatSaysItsTypesAreResolved() {
+        Document document = MongoSchemaStore.toDocument(
+                new DiscoveredSourceModel("conn_1", "mysql", 1000L, ordersModel()));
+
+        assertThat(MongoSchemaStore.carriesResolvedTypes(document)).isTrue();
+    }
+
+    @Test
+    void aDocumentWithoutTheStampIsNotADiscoveryThisBuildCanRead() {
+        // What a discovery written before the types were resolved looks like: every column reads back
+        // with no resolved type, which is refused wherever a resolved type is needed - and refused
+        // while pointing at the columns, telling the author to change an expression that is not wrong.
+        Document old = new Document("_id", "conn_1")
+                .append("connectorId", "mysql")
+                .append("discoveredAt", 1000L)
+                .append("tables", List.of(new Document("name", "orders")
+                        .append("fields", List.of(new Document("name", "id").append("type", "bigint")))
+                        .append("primaryKey", List.of("id"))
+                        .append("indexes", List.of())));
+
+        assertThat(MongoSchemaStore.carriesResolvedTypes(old)).isFalse();
+    }
+
+    @Test
+    void aStampedModelHoldingNothingIsStillADiscovery() {
+        // The case that rules out reading the content instead of a stamp: a connection that legitimately
+        // holds no table has no field carrying a resolved type either, so "no resolved type anywhere"
+        // cannot tell it from a document that predates the resolution. Read that way, an empty source
+        // would stay undiscoverable however often it is discovered - and "discovered nothing" has to
+        // stay a different answer from "not discovered".
+        Document document = MongoSchemaStore.toDocument(
+                new DiscoveredSourceModel("conn_1", "mysql", 1000L, new SourceModel(List.of())));
+
+        assertThat(MongoSchemaStore.carriesResolvedTypes(document)).isTrue();
     }
 
     @Test

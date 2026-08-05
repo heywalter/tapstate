@@ -44,4 +44,50 @@ class RowExpressionsTest {
         assertThatThrownBy(() -> RowExpressions.predicateAst("src"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    /**
+     * The row is read by name, and an index into it is refused rather than left to compile. The
+     * untyped row is a map, so an indexed read type-checks here and carries no column name — which is
+     * what makes it worth refusing: the column it reads never reaches the layer that judges columns
+     * against the types a source resolved them to, so the one spelling would run unexamined while the
+     * other is checked.
+     */
+    @Test
+    @DisplayName("a row field read by index is refused, and the diagnostic names the spelling to use")
+    void valueErrorRefusesAnIndexedRowRead() {
+        String diagnostic = RowExpressions.valueError("after[\"amount\"] * 2");
+
+        assertThat(diagnostic).isNotNull().contains("after.");
+    }
+
+    @Test
+    @DisplayName("the same refusal covers a predicate, and the before row alongside after")
+    void predicateErrorRefusesAnIndexedRowRead() {
+        assertThat(RowExpressions.predicateError("before['id'] == 1")).isNotNull();
+    }
+
+    /**
+     * A key that is only known at evaluation time is the same escape with a different spelling, and a
+     * macro body is where it is most natural to write. Refusing the constant-key form alone would move
+     * the hole rather than close it.
+     */
+    @Test
+    @DisplayName("an indexed row read is refused inside a macro body too, dynamic key and all")
+    void predicateErrorRefusesAnIndexedRowReadInsideAMacro() {
+        assertThat(RowExpressions.predicateError("after.exists(k, after[k] > 0)")).isNotNull();
+    }
+
+    /**
+     * Only the row root is refused. {@code schema} is envelope metadata rather than source columns, so
+     * nothing about it is judged against a source model and indexing it escapes no check; and indexing
+     * a value read out of the row — a list or map column — is the ordinary way to reach into it, with
+     * the column itself still named. Refusing either would cost authoring reach for no gain.
+     */
+    @Test
+    @DisplayName("indexing envelope metadata, or a value read out of the row, stays allowed")
+    void indexingOutsideTheRowRootIsAllowed() {
+        assertThat(RowExpressions.valueError("schema['name']")).isNull();
+        assertThat(RowExpressions.valueError("after.tags[0]")).isNull();
+        assertThat(RowExpressions.valueError("['a', 'b'][1]")).isNull();
+    }
 }

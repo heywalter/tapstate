@@ -39,7 +39,12 @@ class DslErrorTest {
                 // pre-semantic interpolation errors — no corpus witness either, since they are raised on
                 // raw text before the parse and turn on the environment, not on the document
                 "dsl.undefined-variable",
-                "dsl.malformed-interpolation");
+                "dsl.malformed-interpolation",
+                // post-semantic row-expression type errors — the artifact is well-formed and complete,
+                // but the verdict turns on a source's discovered column types, which it does not carry
+                "dsl.row-expression-needs-discovery",
+                "dsl.row-expression-type-unsupported",
+                "dsl.row-expression-type-unknown");
     }
 
     @Test
@@ -66,6 +71,15 @@ class DslErrorTest {
         // the interpolation codes are pre-semantic too: the offending variable / reference, no field path
         assertThat(DslError.UNDEFINED_VARIABLE.placeholders()).containsExactlyInAnyOrder("name");
         assertThat(DslError.MALFORMED_INTERPOLATION.placeholders()).containsExactlyInAnyOrder("ref");
+        // the row-expression type codes name the column the verdict is about, so the author is told
+        // which one to change rather than only that the expression was refused - and the table it was
+        // read from, since an expression reading several is judged against each of them in turn
+        assertThat(DslError.ROW_EXPRESSION_NEEDS_DISCOVERY.placeholders())
+                .containsExactlyInAnyOrder("expr", "source", "path");
+        assertThat(DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED.placeholders())
+                .containsExactlyInAnyOrder("expr", "column", "type", "table", "path");
+        assertThat(DslError.ROW_EXPRESSION_TYPE_UNKNOWN.placeholders())
+                .containsExactlyInAnyOrder("expr", "column", "table", "path");
     }
 
     @Test
