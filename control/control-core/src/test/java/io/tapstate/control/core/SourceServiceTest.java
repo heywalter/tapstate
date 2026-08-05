@@ -48,6 +48,19 @@ class SourceServiceTest {
     }
 
     @Test
+    void draftValidatesAndRendersWithoutWritingAnArtifact() {
+        SourceDraftResult drafted = service.draft(draft(
+                "orders", "mysql", "snapshot", Map.of(
+                        "host", "localhost", "port", "3306", "database", "orders",
+                        "username", "app", "password", "draft-secret")));
+
+        assertThat(drafted.yaml())
+                .contains("version: tapstate/v1", "kind: source", "id: orders", "connector: mysql")
+                .contains("password: draft-secret");
+        assertThat(store.list()).isEmpty();
+    }
+
+    @Test
     void listReturnsOnlySourcesSortedByIdAndGetRejectsMissingOrOtherKinds() {
         store.save(source("zeta", "zeta"));
         store.save(pipeline("pipeline", "zeta"));

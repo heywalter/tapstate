@@ -47,11 +47,11 @@ class McpStdioProcessTest {
             Map<?, ?> listed = readResponse(output, Duration.ofSeconds(10));
             assertThat(listed.get("id")).isEqualTo(2L);
             List<?> tools = (List<?>) ((Map<?, ?>) listed.get("result")).get("tools");
-            assertThat(tools).hasSize(11);
+            assertThat(tools).hasSize(12);
             assertThat(tools.stream()
                     .map(tool -> String.valueOf(((Map<?, ?>) tool).get("name")))
                     .toList())
-                    .contains("connector_get", "artifact_validate", "pipeline_logs")
+                    .contains("connector_get", "source_draft", "artifact_validate", "pipeline_logs")
                     .doesNotContain("source_create", "artifact_apply", "pipeline_start");
 
             send(input, """
