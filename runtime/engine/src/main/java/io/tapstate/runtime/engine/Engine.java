@@ -70,15 +70,23 @@ public final class Engine {
 
     /**
      * Cancels the pipeline's job. Idempotent: a pipeline with no running job is already stopped, so
-     * this is a no-op. The pipeline-private continuation the store holds (its consumer cursor,
+     * the job side is a no-op. The pipeline-private continuation the store holds (its consumer cursor,
      * private operator state and sink watermark) is cleared separately when the source store is
      * present; this actuator owns the job side.
+     *
+     * <p>Always releases any failure the {@link JobFailureRegistry} recorded for this pipeline, live job
+     * or not: a stop is the terminal verb for a failed pipeline, and its job is already terminal by then —
+     * so the release must not hide behind the live-job guard, or the recorded exception (and its whole
+     * cause graph) would stay referenced for the rest of the member's life. By the time a stop is driven,
+     * the converge side has already read the failure and moved the pipeline to the observable FAILED
+     * state, so nothing is lost by forgetting it here.
      */
     public void cancel(String pipelineId) {
         Job job = liveJob(pipelineId);
         if (job != null) {
             job.cancel();
         }
+        JobFailureRegistry.of(member).clear(pipelineId);
     }
 
     /**

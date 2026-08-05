@@ -147,6 +147,22 @@ class EngineTest {
     }
 
     @Test
+    void cancel_of_a_failed_pipeline_releases_its_recorded_cause() {
+        // A stop is the terminal verb for a failed pipeline: once the operator stops it, the run and its
+        // reason are over, so the registry must not keep the exception (and its whole cause graph) alive
+        // for the rest of the member's life. The job here is already terminal when cancel is called --
+        // there is no live job to cancel -- so the release must not hide behind the live-job guard.
+        Engine engine = new Engine(member);
+        engine.submit("orders-pipe", failingSinkDag());
+        awaitStatus(member.getJet().getJob("orders-pipe"), JobStatus.FAILED);
+        assertThat(JobFailureRegistry.of(member).get("orders-pipe")).isPresent();
+
+        engine.cancel("orders-pipe");
+
+        assertThat(JobFailureRegistry.of(member).get("orders-pipe")).isEmpty();
+    }
+
+    @Test
     void failureOf_is_empty_for_a_job_a_stop_cancelled_so_a_stop_is_not_a_failure() {
         Engine engine = new Engine(member);
         engine.submit("orders-pipe", foreverDag());
