@@ -341,7 +341,7 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
     }
 
     private static String mapName(String pipelineId, String nodeId, List<String> pathId) {
-        return "nest." + pipelineId + "." + nodeId + "."
+        return NestMaps.NAMESPACE_PREFIX + pipelineId + "." + nodeId + "."
                 + (pathId.isEmpty() ? ROOT_NAMESPACE : render(pathId));
     }
 

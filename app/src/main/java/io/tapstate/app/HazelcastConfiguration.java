@@ -10,6 +10,7 @@ import com.hazelcast.core.HazelcastException;
 import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.runtime.engine.nest.NestMaps;
 import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsItem;
@@ -128,6 +129,11 @@ class HazelcastConfiguration {
                 .setInMemoryFormat(InMemoryFormat.OBJECT)
                 .setTimeToLiveSeconds(0)
                 .setBackupCount(0));
+        // Make the member nest-capable. A nest vertex's state map is created on demand, by the name the
+        // compiled topology gave that vertex, so what those maps are has to be declared before any of them
+        // exists. The engine owns their shape -- the assembly root only installs it here, next to the ring
+        // it does the same for.
+        config.addMapConfig(NestMaps.stateMaps());
         return config;
     }
 }

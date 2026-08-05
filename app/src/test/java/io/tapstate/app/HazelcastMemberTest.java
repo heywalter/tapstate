@@ -2,11 +2,14 @@ package io.tapstate.app;
 
 import io.tapstate.core.event.ChainPosition;
 import com.hazelcast.config.Config;
+import com.hazelcast.config.EvictionPolicy;
 import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.JoinConfig;
+import com.hazelcast.config.MapConfig;
 import com.hazelcast.config.RingbufferConfig;
 import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
+import io.tapstate.runtime.engine.nest.NestMaps;
 import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsItem;
@@ -119,6 +122,22 @@ class HazelcastMemberTest {
         assertThat(ring.getBackupCount()).isZero();
         assertThat(ring.getInMemoryFormat()).isEqualTo(InMemoryFormat.OBJECT);
         assertThat(ring.getCapacity()).isEqualTo(1024);
+    }
+
+    @Test
+    void memberConfigDeclaresWhatNestStateMapsAre() {
+        // Nest state maps are created on demand as vertices ask for them, so what they are is decided here
+        // or not at all -- and the substrate's own defaults are wrong for state a vertex must read back: a
+        // backup replica costs a copy per write for redundancy this state does not need, and expiry or
+        // eviction would drop entries with nothing behind the map to load them back from, emitting a
+        // half-built document instead of failing. The wildcard applies to every map the nest naming lands
+        // under, so the engine owns its shape and the assembly root only installs it.
+        Config config = HazelcastConfiguration.memberConfig(new HazelcastProperties());
+        MapConfig state = config.getMapConfigs().get(NestMaps.stateMaps().getName());
+        assertThat(state).isNotNull();
+        assertThat(state.getBackupCount()).isZero();
+        assertThat(state.getTimeToLiveSeconds()).isZero();
+        assertThat(state.getEvictionConfig().getEvictionPolicy()).isEqualTo(EvictionPolicy.NONE);
     }
 
     @Test
