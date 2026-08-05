@@ -47,6 +47,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -150,6 +151,28 @@ class PipelineStreamRoundTripTest {
     }
 
     @Test
+    @DisplayName("watchStatus of a never-applied id terminates with the coded refusal, not an endless reconnect")
+    void watchStatusOfAnUnknownPipelineTerminatesWithTheCodedRefusal() throws Exception {
+        // Full stack again, for the negative path: the server closes the websocket deliberately with the
+        // permanent code, and the production client must treat that close as terminal. A client that read
+        // it as a dropped connection would re-attach every backoff forever -- the watch would never return
+        // and the join below would time out with the thread still alive.
+        AtomicBoolean stop = new AtomicBoolean(false);
+        AtomicReference<String> refusal = new AtomicReference<>();
+        Thread watcher = new Thread(() -> refusal.set(client.watchStatus(
+                baseUrl(), readToken(), "ghost", (id, state, failureCode, failureMessage) -> { }, stop::get)));
+        watcher.setDaemon(true);
+        watcher.start();
+
+        watcher.join(TimeUnit.SECONDS.toMillis(5));
+
+        assertThat(watcher.isAlive())
+                .as("the watch must end on its own; a live thread here means it is reconnecting forever")
+                .isFalse();
+        assertThat(refusal.get()).isEqualTo("lifecycle.unknown-pipeline");
+    }
+
+    @Test
     @DisplayName("followLogs delivers the existing tail then a newly appended line")
     void followLogsDeliversTheTailThenNewLines() throws Exception {
         FakeLogSink logs = context.getBean(FakeLogSink.class);
@@ -201,8 +224,8 @@ class PipelineStreamRoundTripTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore store) {
-            // Every id reads as applied: this round trip is about the stream frames, not about telling an
-            // applied pipeline from one that was never applied.
+            // Every id reads as applied except the "ghost" prefix, which resolves to nothing -- the one
+            // case in this round trip that is about telling an applied pipeline from one never applied.
             return new PipelineObservationQueryService(new ArtifactQueryService(new ArtifactStore() {
                 @Override
                 public void saveAll(java.util.List<Resource> artifacts) {
@@ -210,6 +233,9 @@ class PipelineStreamRoundTripTest {
 
                 @Override
                 public java.util.Optional<Resource> get(String id) {
+                    if (id.startsWith("ghost")) {
+                        return java.util.Optional.empty();
+                    }
                     return java.util.Optional.of(
                             new PipelineResource(id, null, java.util.List.of("src_x"), null, null, null, null, null));
                 }

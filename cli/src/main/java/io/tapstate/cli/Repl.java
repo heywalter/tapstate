@@ -1781,7 +1781,7 @@ final class Repl {
         }
         PrintWriter out = commandLine.getOut();
         streamCancelled = false;
-        controlPlane.watchStatus(session.landingNode(), session.credential(), id,
+        String refusal = controlPlane.watchStatus(session.landingNode(), session.credential(), id,
                 (pipelineId, state, failureCode, failureMessage) -> {
                     out.println(pipelineId + "  " + state.toLowerCase(Locale.ROOT));
                     if (failureCode != null) {
@@ -1793,6 +1793,9 @@ final class Repl {
                     out.flush();
                 },
                 this::isStreamCancelled);
+        if (refusal != null) {
+            return renderStreamRefusal(refusal, id);
+        }
         // a stream ends because the user stopped it, which is the way it is meant to end
         return Cli.EXIT_OK;
     }
@@ -1809,14 +1812,30 @@ final class Repl {
         }
         PrintWriter out = commandLine.getOut();
         streamCancelled = false;
-        controlPlane.followLogs(session.landingNode(), session.credential(), id,
+        String refusal = controlPlane.followLogs(session.landingNode(), session.credential(), id,
                 (pipelineId, lines) -> {
                     lines.forEach(line -> out.println(renderLogLine(line)));
                     out.flush();
                 },
                 this::isStreamCancelled);
+        if (refusal != null) {
+            return renderStreamRefusal(refusal, id);
+        }
         // a stream ends because the user stopped it, which is the way it is meant to end
         return Cli.EXIT_OK;
+    }
+
+    /**
+     * Renders the coded refusal a stream was deliberately closed with — the server ended the watch or
+     * follow because it can never be served (e.g. the id was never applied), not because the connection
+     * dropped. The close frame carries only the code, so the message is rendered locally from the bundled
+     * catalog with the id this stream was for; it prints as a refusal, on stderr, exactly like its
+     * one-shot twin would have been.
+     */
+    private int renderStreamRefusal(String code, String pipelineId) {
+        MessageCatalog.Rendered rendered = MessageCatalog.bundled().render(code, Map.of("pipeline", pipelineId));
+        renderRejection(code, rendered.message());
+        return Cli.EXIT_DIAGNOSTIC;
     }
 
     /**

@@ -110,6 +110,7 @@ class ReplTest {
         LogsOutcome logsOutcome = new LogsOutcome.Unreachable();
         /** The states a watch stream feeds, and the line batches a follow stream feeds, in order. */
         List<String> watchStates = List.of();
+        String streamRefusalCode;
         /** The coded reason carried alongside every emitted watch state, when a test needs one. */
         String watchFailureCode;
         String watchFailureMessage;
@@ -264,27 +265,29 @@ class ReplTest {
         }
 
         @Override
-        public void watchStatus(URI baseUrl, String credential, String pipelineId,
+        public String watchStatus(URI baseUrl, String credential, String pipelineId,
                 StatusStream sink, java.util.function.BooleanSupplier stop) {
             watchCalls.add(credential + "@" + baseUrl + "/" + pipelineId);
             for (String state : watchStates) {
                 if (stop.getAsBoolean()) {
-                    return;
+                    return null;
                 }
                 sink.state(pipelineId, state, watchFailureCode, watchFailureMessage);
             }
+            return streamRefusalCode;
         }
 
         @Override
-        public void followLogs(URI baseUrl, String credential, String pipelineId,
+        public String followLogs(URI baseUrl, String credential, String pipelineId,
                 LogStream sink, java.util.function.BooleanSupplier stop) {
             followCalls.add(credential + "@" + baseUrl + "/" + pipelineId);
             for (List<RemoteLogLine> batch : followBatches) {
                 if (stop.getAsBoolean()) {
-                    return;
+                    return null;
                 }
                 sink.lines(pipelineId, batch);
             }
+            return streamRefusalCode;
         }
     }
 
@@ -2635,6 +2638,37 @@ class ReplTest {
         assertThat(h.repl().dispatch("status pl1 --watch")).isTrue();
 
         assertThat(h.sink().toString().substring(mark)).doesNotContain("engine.");
+    }
+
+    @Test
+    void statusWatchOfAnUnknownPipelineRendersTheCodedRefusalInsteadOfWatchingForever() {
+        // The one-shot `status ghost` is refused at once; its --watch twin must not silently outlive it.
+        // The server ends the stream deliberately with the coded reason, the client hands that code back,
+        // and the watch renders it as the refusal it is -- on stderr, like every other refused command.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.streamRefusalCode = "lifecycle.unknown-pipeline";
+        SplitHarness h = onlineSplitStreamSession(Path.of("tap-work"), client);
+        int errMark = h.err().toString().length();
+
+        assertThat(h.repl().dispatch("status ghost --watch")).isTrue();
+
+        String stderr = h.err().toString().substring(errMark);
+        assertThat(stderr).contains("error:").contains("lifecycle.unknown-pipeline");
+        // The catalog's message renders locally with the id the watch was for, not a bare code.
+        assertThat(stderr).contains("ghost");
+    }
+
+    @Test
+    void logsFollowOfAnUnknownPipelineRendersTheCodedRefusalInsteadOfFollowingForever() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.streamRefusalCode = "lifecycle.unknown-pipeline";
+        SplitHarness h = onlineSplitStreamSession(Path.of("tap-work"), client);
+        int errMark = h.err().toString().length();
+
+        assertThat(h.repl().dispatch("logs ghost --follow")).isTrue();
+
+        String stderr = h.err().toString().substring(errMark);
+        assertThat(stderr).contains("error:").contains("lifecycle.unknown-pipeline");
     }
 
     @Test
