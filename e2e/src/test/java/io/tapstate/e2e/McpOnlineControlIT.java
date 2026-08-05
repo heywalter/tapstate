@@ -16,6 +16,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,10 +25,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The MCP stdio process drafting a Source through the remote control contract.
@@ -42,6 +45,7 @@ class McpOnlineControlIT {
     private static final String MCP_BOOT_JAR_PROPERTY = "tapstate.e2e.mcp-boot-jar";
     private static final String MACHINE_TOKEN = "mcp-e2e-machine-token";
     private static final String SENTINEL_SECRET = "mcp-e2e-sentinel-secret";
+    private static final Duration READINESS_TIMEOUT = Duration.ofSeconds(5);
 
     @TempDir
     private Path temporaryDirectory;
@@ -63,60 +67,87 @@ class McpOnlineControlIT {
             answer(exchange, 200, sourceDraftResponse());
         });
         Path stderr = temporaryDirectory.resolve("mcp.stderr");
-        awaitServer(server);
-        requests.clear();
-        Process process = startMcp(server, stderr);
-        try (Writer input = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
-                BufferedReader output = process.inputReader(StandardCharsets.UTF_8)) {
-            send(input, """
-                    {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-                      "protocolVersion":"2025-06-18","capabilities":{},
-                      "clientInfo":{"name":"tapstate-e2e","version":"1"}}}
-                    """);
-            Map<?, ?> initialized = receive(output);
-            assertThat(((Map<?, ?>) initialized.get("result")).get("protocolVersion"))
-                    .isEqualTo("2025-06-18");
+        try {
+            awaitServer(server);
+            requests.clear();
+            Process process = startMcp(server, stderr);
+            try (Writer input = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
+                    BufferedReader output = process.inputReader(StandardCharsets.UTF_8)) {
+                send(input, """
+                        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                          "protocolVersion":"2025-06-18","capabilities":{},
+                          "clientInfo":{"name":"tapstate-e2e","version":"1"}}}
+                        """);
+                Map<?, ?> initialized = receive(output);
+                assertThat(((Map<?, ?>) initialized.get("result")).get("protocolVersion"))
+                        .isEqualTo("2025-06-18");
 
-            send(input, """
-                    {"jsonrpc":"2.0","method":"notifications/initialized"}
-                    """);
-            send(input, """
-                    {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-                    """);
-            List<?> tools = (List<?>) ((Map<?, ?>) receive(output).get("result")).get("tools");
-            assertThat(tools).hasSize(17);
-            assertThat(tools.stream()
-                    .map(tool -> String.valueOf(((Map<?, ?>) tool).get("name")))
-                    .toList())
-                    .contains("source_draft", "artifact_apply", "pipeline_stop")
-                    .doesNotContain("source_create");
+                send(input, """
+                        {"jsonrpc":"2.0","method":"notifications/initialized"}
+                        """);
+                send(input, """
+                        {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+                        """);
+                List<?> tools = (List<?>) ((Map<?, ?>) receive(output).get("result")).get("tools");
+                assertThat(tools).hasSize(17);
+                assertThat(tools.stream()
+                        .map(tool -> String.valueOf(((Map<?, ?>) tool).get("name")))
+                        .toList())
+                        .contains("source_draft", "artifact_apply", "pipeline_stop")
+                        .doesNotContain("source_create");
 
-            send(input, """
-                    {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
-                      "name":"source_draft","arguments":{"id":"orders","connector":"mysql",
-                      "config":{"host":"db.internal","password":"%s"}}}}
-                    """.formatted(SENTINEL_SECRET));
-            Map<?, ?> drafted = receive(output);
-            Map<?, ?> result = (Map<?, ?>) drafted.get("result");
-            assertThat(result.get("isError")).isEqualTo(false);
-            String yaml = String.valueOf(((Map<?, ?>) result.get("structuredContent")).get("yaml"));
-            assertThat(yaml).contains("id: orders", "password: " + SENTINEL_SECRET);
-        } finally {
-            process.getOutputStream().close();
-            if (!process.waitFor(5, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+                send(input, """
+                        {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+                          "name":"source_draft","arguments":{"id":"orders","connector":"mysql",
+                          "config":{"host":"db.internal","password":"%s"}}}}
+                        """.formatted(SENTINEL_SECRET));
+                Map<?, ?> drafted = receive(output);
+                Map<?, ?> result = (Map<?, ?>) drafted.get("result");
+                assertThat(result.get("isError")).isEqualTo(false);
+                String yaml = String.valueOf(((Map<?, ?>) result.get("structuredContent")).get("yaml"));
+                assertThat(yaml).contains("id: orders", "password: " + SENTINEL_SECRET);
+            } finally {
+                process.getOutputStream().close();
+                if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+                }
             }
+            assertThat(process.exitValue()).isZero();
+            assertThat(requests).containsExactly("POST /api/sources:draft");
+            assertThat(authorization.get()).isEqualTo("Bearer " + MACHINE_TOKEN);
+            assertThat(((Map<?, ?>) sourceRequest.get().get("config")).get("password"))
+                    .isEqualTo(SENTINEL_SECRET);
+            assertThat(Files.readString(stderr))
+                    .doesNotContain(MACHINE_TOKEN)
+                    .doesNotContain(SENTINEL_SECRET);
+        } finally {
             server.stop(0);
         }
-        assertThat(process.exitValue()).isZero();
-        assertThat(requests).containsExactly("POST /api/sources:draft");
-        assertThat(authorization.get()).isEqualTo("Bearer " + MACHINE_TOKEN);
-        assertThat(((Map<?, ?>) sourceRequest.get().get("config")).get("password"))
-                .isEqualTo(SENTINEL_SECRET);
-        assertThat(Files.readString(stderr))
-                .doesNotContain(MACHINE_TOKEN)
-                .doesNotContain(SENTINEL_SECRET);
+    }
+
+    @Test
+    void readinessProbeTimesOutWhenPeerDoesNotRespond() throws Exception {
+        CountDownLatch requestReceived = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        HttpServer server = server(exchange -> {
+            requestReceived.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            } finally {
+                exchange.close();
+            }
+        });
+        try {
+            assertThatThrownBy(() -> awaitServer(server, Duration.ofSeconds(1)))
+                    .isInstanceOf(HttpTimeoutException.class);
+            assertThat(requestReceived.await(1, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            release.countDown();
+            server.stop(0);
+        }
     }
 
     private static HttpServer server(ExchangeHandler handler) throws IOException {
@@ -139,9 +170,17 @@ class McpOnlineControlIT {
     }
 
     private static void awaitServer(HttpServer server) throws Exception {
-        HttpResponse<Void> response = HttpClient.newHttpClient().send(
+        awaitServer(server, READINESS_TIMEOUT);
+    }
+
+    private static void awaitServer(HttpServer server, Duration timeout) throws Exception {
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(timeout)
+                .build();
+        HttpResponse<Void> response = client.send(
                 HttpRequest.newBuilder(URI.create(
                         "http://127.0.0.1:" + server.getAddress().getPort() + "/_ready"))
+                        .timeout(timeout)
                         .GET()
                         .build(),
                 HttpResponse.BodyHandlers.discarding());

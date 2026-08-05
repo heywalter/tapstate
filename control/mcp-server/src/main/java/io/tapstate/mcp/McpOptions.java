@@ -44,7 +44,49 @@ record McpOptions(URI server, String token, boolean allowWrite) {
                 || uri.getHost() == null) {
             throw new IllegalArgumentException("MCP Server URL must be an absolute HTTP(S) URL");
         }
+        if ("http".equalsIgnoreCase(uri.getScheme()) && !isTrustedLoopbackHost(uri.getHost())) {
+            throw new IllegalArgumentException("MCP Server URL must use HTTPS unless host is loopback");
+        }
         return uri;
+    }
+
+    private static boolean isTrustedLoopbackHost(String host) {
+        return host.equalsIgnoreCase("localhost")
+                || host.equalsIgnoreCase("::1")
+                || host.equalsIgnoreCase("[::1]")
+                || isIpv4Loopback(host);
+    }
+
+    private static boolean isIpv4Loopback(String host) {
+        String[] octets = host.split("\\.", -1);
+        if (octets.length != 4) {
+            return false;
+        }
+        int first = parseIpv4Octet(octets[0]);
+        if (first != 127) {
+            return false;
+        }
+        for (int index = 1; index < octets.length; index++) {
+            if (parseIpv4Octet(octets[index]) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int parseIpv4Octet(String value) {
+        if (value.isEmpty() || value.length() > 3) {
+            return -1;
+        }
+        int result = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character < '0' || character > '9') {
+                return -1;
+            }
+            result = result * 10 + character - '0';
+        }
+        return result <= 255 ? result : -1;
     }
 
     @Override
