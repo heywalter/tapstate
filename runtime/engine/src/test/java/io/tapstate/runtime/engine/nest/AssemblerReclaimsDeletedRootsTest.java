@@ -137,7 +137,10 @@ class AssemblerReclaimsDeletedRootsTest {
     @Test
     void keeps_a_root_that_came_back_after_it_was_deleted() throws Exception {
         init();
-        feed(ROOT_ROWS, customer(1, "c1"), customerGone(2, "c1"), customer(3, "c1"));
+        // Two drains, not one: a root deleted and re-created within a single drain never sends a key row,
+        // so nothing was ever put down to forget and the test would pass without exercising anything.
+        feed(ROOT_ROWS, customer(1, "c1"), customerGone(2, "c1"));
+        feed(ROOT_ROWS, customer(3, "c1"));
 
         floor.at("customer", at(9));
         processor.tryProcess();

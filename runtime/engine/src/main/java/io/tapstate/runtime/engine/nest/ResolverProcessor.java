@@ -3,17 +3,21 @@ package io.tapstate.runtime.engine.nest;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
 import com.hazelcast.jet.core.Watermark;
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.SourceOrder;
 import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.LevelBounds;
+import io.tapstate.runtime.engine.ReplayFloor;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * One resolver vertex: it answers, for one embed, which row of the level above each of its keys hangs
@@ -44,10 +48,24 @@ public final class ResolverProcessor extends AbstractProcessor {
     private final Deque<Object> outgoing = new ArrayDeque<>();
     private final ChainBounds held = new ChainBounds();
     private final LevelBounds bounds;
+    private final ReplayFloor floor;
+
+    /**
+     * Keys whose mapping is a tombstone and whose record is still kept, against what that deletion
+     * covered. A tombstone occupies a key just as a live mapping does, so it is counted by whatever caps
+     * this vertex, which is why dropping it once it is safe to is worth doing at all.
+     */
+    private final Map<Object, Map<String, ChainPosition>> deleted = new LinkedHashMap<>();
 
     /** A resolver in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter) {
-        this(vertex, store, deadLetter, null, null);
+        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE);
+    }
+
+    /** A resolver that forgets a tombstone once {@code floor} says its deletion cannot come back. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            ReplayFloor floor) {
+        this(vertex, store, deadLetter, null, null, floor);
     }
 
     /**
@@ -57,13 +75,64 @@ public final class ResolverProcessor extends AbstractProcessor {
      */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal) {
+        this(vertex, store, deadLetter, axes, chainsByOrdinal, ReplayFloor.NONE);
+    }
+
+    /** The whole of it: a frontier passed on, and tombstones forgotten once it is safe to. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.store = Objects.requireNonNull(store, "store");
         this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
+        this.floor = Objects.requireNonNull(floor, "floor");
         if (vertex.isAssembler()) {
             throw new IllegalArgumentException("the assembler is not a resolver: " + vertex.name());
         }
+    }
+
+    /**
+     * Run when there is nothing arriving: the moment to drop the tombstones whose deletion can no longer
+     * be delivered again. Off the path a change takes, for the same reason the assembler's sweep is -
+     * reading the durable plane costs more than the work a change does, and reclaiming late costs nothing.
+     */
+    @Override
+    public boolean tryProcess() {
+        Iterator<Map.Entry<Object, Map<String, ChainPosition>>> candidates = deleted.entrySet().iterator();
+        while (candidates.hasNext()) {
+            Map.Entry<Object, Map<String, ChainPosition>> candidate = candidates.next();
+            ResolverState state = store.load(candidate.getKey());
+            if (state == null || !state.deleted()) {
+                candidates.remove();
+            } else if (forgettable(state, candidate.getValue())) {
+                store.remove(candidate.getKey());
+                candidates.remove();
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a tombstone can be dropped: nothing is waiting on the key, and every position its deletion
+     * covered sits below where a restart would resume. A chain whose floor is not known holds it back -
+     * dropping it early lets a child that arrives afterwards find no answer where there was one, and wait
+     * for a parent that has been deleted rather than being told so.
+     *
+     * <p>Nothing waits on a deleted key today: a deletion drains what was waiting, and a child arriving
+     * afterwards is told the parent is absent rather than held. The check is still made, because that is
+     * what the rule says and because a later bucket landing in the same place inherits it for free.
+     */
+    private boolean forgettable(ResolverState state, Map<String, ChainPosition> covered) {
+        if (!state.lowestHeldByChain().isEmpty()) {
+            return false;
+        }
+        for (Map.Entry<String, ChainPosition> position : covered.entrySet()) {
+            Optional<SourceOrder> resumesAt = floor.of(position.getKey());
+            if (resumesAt.isEmpty() || position.getValue().order().compareTo(resumesAt.get()) >= 0) {
+                return false;
+            }
+        }
+        return !covered.isEmpty();
     }
 
     @Override
@@ -169,9 +238,14 @@ public final class ResolverProcessor extends AbstractProcessor {
         List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
         List<Object> parent = NestKeys.valuesOf(row, vertex.parentKeyFields());
         ResolverState state = stateFor(key, touched);
-        List<NestElement> released = NestKeys.isDeletion(event)
-                ? state.deleteMapping(order)
-                : state.declare(parent, order);
+        List<NestElement> released;
+        if (NestKeys.isDeletion(event)) {
+            released = state.deleteMapping(order);
+            deleted.put(key, event.positions());
+        } else {
+            released = state.declare(parent, order);
+            deleted.remove(key);
+        }
         emit(new KeyedElement(parent, element(edge, event, row, parentIdentity(edge, parent), key)));
         for (NestElement child : released) {
             if (NestKeys.isDeletion(event)) {

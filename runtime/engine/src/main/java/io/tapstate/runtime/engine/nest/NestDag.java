@@ -184,13 +184,8 @@ public final class NestDag {
         NestDeadLetter deadLetter = binding.deadLetter();
         List<EmbedSlot> slots = topology.slots();
         ChainAxes axes = frontier == null ? null : frontier.axes();
-        if (spec.isAssembler()) {
-            return ProcessorMetaSupplier.of(new AssemblerSupplier(spec, slots, stores, outputStream, axes,
-                    chainsByOrdinal, binding.replayFloor()));
-        }
-        com.hazelcast.function.SupplierEx<Processor> supplier =
-                () -> new ResolverProcessor(spec, stores.forResolver(spec), deadLetter, axes, chainsByOrdinal);
-        return ProcessorMetaSupplier.of(ProcessorSupplier.of(supplier));
+        return ProcessorMetaSupplier.of(new NestVertexSupplier(spec, slots, stores, deadLetter, outputStream,
+                axes, chainsByOrdinal, binding.replayFloor()));
     }
 
     /** Reads the key off the fields a row carries it in. */
@@ -204,30 +199,36 @@ public final class NestDag {
     }
 
     /**
-     * Supplies the assemblers on one member. It exists rather than a plain supplier because the seam that
-     * reads back where a restart would resume is bound to a store that lives on the member and cannot be
-     * serialized onto the graph: only the coordinates travel, and they are turned into the real thing here,
-     * once, for every assembler this member runs.
+     * Supplies one nest vertex's processors on one member. It exists rather than a plain supplier because
+     * the seam that reads back where a restart would resume is bound to a store that lives on the member
+     * and cannot be serialized onto the graph: only the coordinates travel, and they are turned into the
+     * real thing here, once, for every processor this member runs.
+     *
+     * <p>Both kinds go through it. Both keep something a deletion leaves behind - a root's record of being
+     * deleted, a key's tombstoned mapping - and both drop it on the same terms, so neither is the one that
+     * quietly did without.
      */
-    private static final class AssemblerSupplier implements ProcessorSupplier {
+    private static final class NestVertexSupplier implements ProcessorSupplier {
 
         private static final long serialVersionUID = 1L;
 
         private final NestVertex spec;
         private final List<EmbedSlot> slots;
         private final NestBinding.NestStores stores;
+        private final NestDeadLetter deadLetter;
         private final String outputStream;
         private final ChainAxes axes;
         private final Map<Integer, List<String>> chainsByOrdinal;
         private final ReplayFloorFactory replayFloor;
         private transient ReplayFloor floor;
 
-        private AssemblerSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
-                String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
-                ReplayFloorFactory replayFloor) {
+        private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
+                NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
+                Map<Integer, List<String>> chainsByOrdinal, ReplayFloorFactory replayFloor) {
             this.spec = spec;
             this.slots = slots;
             this.stores = stores;
+            this.deadLetter = deadLetter;
             this.outputStream = outputStream;
             this.axes = axes;
             this.chainsByOrdinal = chainsByOrdinal;
@@ -243,8 +244,11 @@ public final class NestDag {
         public Collection<? extends Processor> get(int count) {
             List<Processor> processors = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
-                processors.add(new AssemblerProcessor(spec, slots, stores.forAssembler(spec), outputStream,
-                        axes, chainsByOrdinal, floor));
+                processors.add(spec.isAssembler()
+                        ? new AssemblerProcessor(spec, slots, stores.forAssembler(spec), outputStream,
+                                axes, chainsByOrdinal, floor)
+                        : new ResolverProcessor(spec, stores.forResolver(spec), deadLetter, axes,
+                                chainsByOrdinal, floor));
             }
             return processors;
         }
