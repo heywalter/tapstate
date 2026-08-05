@@ -15,6 +15,7 @@ import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsItem;
 import io.tapstate.runtime.srs.SrsItemSerializer;
+import io.tapstate.spi.store.KeyedStateStore;
 import io.tapstate.spi.store.SrsMetaStore;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -50,8 +51,9 @@ class HazelcastConfiguration {
 
     @Bean(destroyMethod = "shutdown")
     HazelcastInstance hazelcastMember(HazelcastProperties properties, @Nullable SrsMetaStore srsMetaStore,
-            @Nullable ConnectorProvisioner connectorProvisioner, @Nullable SnapshotBuffer snapshotBuffer) {
-        Config config = memberConfig(properties);
+            @Nullable ConnectorProvisioner connectorProvisioner, @Nullable SnapshotBuffer snapshotBuffer,
+            @Nullable KeyedStateStore nestStateStore) {
+        Config config = memberConfig(properties, nestStateStore);
         HazelcastInstance member = startMember(() -> Hazelcast.newHazelcastInstance(config));
         // Bind the SRS meta store onto the member so the read-cursor publisher factory -- carried onto the
         // Jet source and resolved member-side -- can reach it through the user context and publish durable
@@ -92,8 +94,17 @@ class HazelcastConfiguration {
         }
     }
 
-    /** Builds the single-member config; pure function, exposed for direct assertion. */
+    /** Builds the single-member config with nothing behind the nest state maps. */
     static Config memberConfig(HazelcastProperties properties) {
+        return memberConfig(properties, null);
+    }
+
+    /**
+     * Builds the single-member config; pure function, exposed for direct assertion. A run with no store
+     * ({@code nestStateStore} null) still gets the nest state maps, holding only what the member holds:
+     * declaring a store that is not there would fail the map the first time a vertex asked it for a key.
+     */
+    static Config memberConfig(HazelcastProperties properties, @Nullable KeyedStateStore nestStateStore) {
         Config config = new Config();
         config.setClusterName(properties.getClusterName());
         // Member logs flow through the same operational logging setup as the rest of the process.
@@ -133,7 +144,9 @@ class HazelcastConfiguration {
         // compiled topology gave that vertex, so what those maps are has to be declared before any of them
         // exists. The engine owns their shape -- the assembly root only installs it here, next to the ring
         // it does the same for.
-        config.addMapConfig(NestMaps.stateMaps());
+        config.addMapConfig(nestStateStore == null
+                ? NestMaps.stateMaps()
+                : NestMaps.stateMaps(nestStateStore));
         return config;
     }
 }

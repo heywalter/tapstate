@@ -245,10 +245,16 @@ class StoreBackedDagSourceTest {
         }
 
         private final SrsMetaStore meta = new InMemorySrsMetaStore();
+        private final InMemoryKeyedStateStore keyedState = new InMemoryKeyedStateStore();
 
         @Override
         public SrsMetaStore meta() {
             return meta;
+        }
+
+        @Override
+        public io.tapstate.spi.store.KeyedStateStore keyedState() {
+            return keyedState;
         }
     }
 }

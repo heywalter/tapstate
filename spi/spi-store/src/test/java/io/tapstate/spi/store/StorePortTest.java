@@ -685,6 +685,7 @@ class StorePortTest {
         private final Map<String, DesiredState> desired = new HashMap<>();
         private final Map<String, Observation> observations = new HashMap<>();
         private final Map<String, SrsMeta> srsMeta = new HashMap<>();
+        private final Map<String, byte[]> keyedState = new HashMap<>();
 
         @Override
         public ArtifactStore artifacts() {
@@ -889,6 +890,31 @@ class StorePortTest {
                 @Override
                 public Optional<Observation> read(String pipelineId) {
                     return Optional.ofNullable(observations.get(pipelineId));
+                }
+            };
+        }
+
+        @Override
+        public KeyedStateStore keyedState() {
+            return new KeyedStateStore() {
+                @Override
+                public Optional<byte[]> load(String namespace, String key) {
+                    return Optional.ofNullable(keyedState.get(namespace + "/" + key));
+                }
+
+                @Override
+                public void save(String namespace, String key, byte[] state) {
+                    keyedState.put(namespace + "/" + key, state);
+                }
+
+                @Override
+                public void delete(String namespace, String key) {
+                    keyedState.remove(namespace + "/" + key);
+                }
+
+                @Override
+                public void dropNamespace(String namespace) {
+                    keyedState.keySet().removeIf(id -> id.startsWith(namespace + "/"));
                 }
             };
         }

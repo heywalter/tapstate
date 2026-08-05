@@ -166,10 +166,13 @@ final class StoreBackedDagSource implements DagSource {
      * nothing else, and the alternative — deciding here that a pipeline has no nest — is a second place
      * that has to agree with the builder about what a nest is.
      *
-     * <p>State goes on the heap of the member running the vertex: it is rebuilt by replay after a restart,
-     * which is what this build promises and no more. Dropped changes are counted and warned about rather
-     * than routed anywhere, because where they should go has not been decided; counting them is the part
-     * that is not in question.
+     * <p>State goes in a map of the member's own, one per vertex, named by what the topology computed for
+     * that vertex - so a vertex addresses the same entries across restarts and across the several processor
+     * instances a vertex is run as. Whether those entries outlive the member is decided where the member is
+     * configured: with a store behind the maps a restart reads a key back as it is asked for, and without
+     * one the state is rebuilt by replay, which is what the earlier build promised and no more. Dropped
+     * changes are counted and warned about rather than routed anywhere, because where they should go has
+     * not been decided; counting them is the part that is not in question.
      *
      * <p>It also carries the read side of the durable frontier, which is how an assembler learns that a
      * root it deleted can no longer be built back by a replay and its record may be dropped. Without it
@@ -177,7 +180,7 @@ final class StoreBackedDagSource implements DagSource {
      */
     private NestBinding nestBinding(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
         Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
-        return new NestBinding(byAlias::get, NestBinding.onHeap(), new CountingNestDeadLetter(),
+        return new NestBinding(byAlias::get, NestBinding.onMap(), new CountingNestDeadLetter(),
                 new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()));
     }
 
