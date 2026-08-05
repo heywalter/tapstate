@@ -123,13 +123,23 @@ final class StoreBackedDagSource implements DagSource {
      * coordinates ship.
      */
     private SinkAckFactory sinkAckFactory(PipelineResource pipeline, String pipelineId) {
+        return new StoreBackedSinkAckFactory(chainIdByTable(pipeline), pipelineId);
+    }
+
+    /**
+     * The mining chain behind each table the pipeline's sources read. Both directions of the durable
+     * frontier are keyed by it - the sink writes its confirmed position under it, and an operator upstream
+     * reads that position back - so both are resolved the same way, from the same source resolution the
+     * source vertex itself is built from.
+     */
+    private Map<String, String> chainIdByTable(PipelineResource pipeline) {
         Map<String, String> chainIdByTable = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
             SourceCaptureResolution resolution =
                     SourceCaptureResolution.of(StoredArtifacts.requireSource(artifacts(), sourceId));
             chainIdByTable.put(resolution.table(), resolution.chainId().value());
         }
-        return new StoreBackedSinkAckFactory(chainIdByTable, pipelineId);
+        return chainIdByTable;
     }
 
     /**
@@ -160,10 +170,15 @@ final class StoreBackedDagSource implements DagSource {
      * which is what this build promises and no more. Dropped changes are counted and warned about rather
      * than routed anywhere, because where they should go has not been decided; counting them is the part
      * that is not in question.
+     *
+     * <p>It also carries the read side of the durable frontier, which is how an assembler learns that a
+     * root it deleted can no longer be built back by a replay and its record may be dropped. Without it
+     * every deletion would leave something behind for as long as the job runs.
      */
     private NestBinding nestBinding(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
         Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
-        return new NestBinding(byAlias::get, NestBinding.onHeap(), new CountingNestDeadLetter());
+        return new NestBinding(byAlias::get, NestBinding.onHeap(), new CountingNestDeadLetter(),
+                new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()));
     }
 
     /**

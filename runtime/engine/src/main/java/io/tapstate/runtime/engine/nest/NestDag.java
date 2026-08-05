@@ -10,7 +10,11 @@ import com.hazelcast.jet.core.Vertex;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.PassthroughProcessor;
+import io.tapstate.runtime.engine.ReplayFloor;
+import io.tapstate.runtime.engine.ReplayFloorFactory;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -180,11 +184,12 @@ public final class NestDag {
         NestDeadLetter deadLetter = binding.deadLetter();
         List<EmbedSlot> slots = topology.slots();
         ChainAxes axes = frontier == null ? null : frontier.axes();
-        com.hazelcast.function.SupplierEx<Processor> supplier = spec.isAssembler()
-                ? () -> new AssemblerProcessor(spec, slots, stores.forAssembler(spec), outputStream,
-                        axes, chainsByOrdinal)
-                : () -> new ResolverProcessor(spec, stores.forResolver(spec), deadLetter,
-                        axes, chainsByOrdinal);
+        if (spec.isAssembler()) {
+            return ProcessorMetaSupplier.of(new AssemblerSupplier(spec, slots, stores, outputStream, axes,
+                    chainsByOrdinal, binding.replayFloor()));
+        }
+        com.hazelcast.function.SupplierEx<Processor> supplier =
+                () -> new ResolverProcessor(spec, stores.forResolver(spec), deadLetter, axes, chainsByOrdinal);
         return ProcessorMetaSupplier.of(ProcessorSupplier.of(supplier));
     }
 
@@ -196,5 +201,52 @@ public final class NestDag {
     /** Reads the key an upstream vertex already resolved and routed by. */
     private static FunctionEx<Object, Object> routedKey() {
         return item -> ((KeyedElement) item).key();
+    }
+
+    /**
+     * Supplies the assemblers on one member. It exists rather than a plain supplier because the seam that
+     * reads back where a restart would resume is bound to a store that lives on the member and cannot be
+     * serialized onto the graph: only the coordinates travel, and they are turned into the real thing here,
+     * once, for every assembler this member runs.
+     */
+    private static final class AssemblerSupplier implements ProcessorSupplier {
+
+        private static final long serialVersionUID = 1L;
+
+        private final NestVertex spec;
+        private final List<EmbedSlot> slots;
+        private final NestBinding.NestStores stores;
+        private final String outputStream;
+        private final ChainAxes axes;
+        private final Map<Integer, List<String>> chainsByOrdinal;
+        private final ReplayFloorFactory replayFloor;
+        private transient ReplayFloor floor;
+
+        private AssemblerSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
+                String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
+                ReplayFloorFactory replayFloor) {
+            this.spec = spec;
+            this.slots = slots;
+            this.stores = stores;
+            this.outputStream = outputStream;
+            this.axes = axes;
+            this.chainsByOrdinal = chainsByOrdinal;
+            this.replayFloor = replayFloor;
+        }
+
+        @Override
+        public void init(Context context) {
+            floor = replayFloor.resolve(context.hazelcastInstance());
+        }
+
+        @Override
+        public Collection<? extends Processor> get(int count) {
+            List<Processor> processors = new ArrayList<>(count);
+            for (int i = 0; i < count; i++) {
+                processors.add(new AssemblerProcessor(spec, slots, stores.forAssembler(spec), outputStream,
+                        axes, chainsByOrdinal, floor));
+            }
+            return processors;
+        }
     }
 }

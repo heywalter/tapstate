@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -56,11 +57,15 @@ class NestDagRunTest {
     /** What the sink was handed, in arrival order. Static because the writer is built on the member. */
     private static final List<Envelope> WRITTEN = Collections.synchronizedList(new ArrayList<>());
 
+    /** How many times the read side of the durable frontier was bound. Static for the same reason. */
+    private static final AtomicInteger FLOORS_BOUND = new AtomicInteger();
+
     private HazelcastInstance member;
 
     @BeforeEach
     void startMember() {
         WRITTEN.clear();
+        FLOORS_BOUND.set(0);
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(2);
         config.setProperty("hazelcast.phone.home.enabled", "false");
@@ -106,6 +111,21 @@ class NestDagRunTest {
         assertThat(items(documents.get(2)).get(0)).containsEntry("sku", "s20");
     }
 
+    @Test
+    void theSeamThatReadsBackTheDurableFrontierIsBoundOnTheMemberRunningTheAssembler() {
+        DAG dag = ordersWithItems(List.of(row("order_id", 1, "code", "A")),
+                List.of(row("item_id", 10, "order_id", 1, "sku", "s10")));
+
+        member.getJet().newJob(dag).join();
+
+        // An assembler that never binds it can still assemble every document correctly and pass every other
+        // test here, and simply never forgets a deleted root for as long as the job runs. Nothing about the
+        // output says so, which is why the binding itself is what is asserted.
+        assertThat(FLOORS_BOUND.get())
+                .describedAs("the assembler was supplied without the read side of the durable frontier")
+                .isPositive();
+    }
+
     // ---- the pipeline under test ------------------------------------------------------
 
     /** orders as the root, order_items embedded beneath it as an array at {@code items}. */
@@ -140,9 +160,21 @@ class NestDagRunTest {
                 s -> (SupplierEx<TransformPort>) () -> event -> List.of(event),
                 syncElement -> (SupplierEx<SinkWriter>) CollectingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onHeap(), element -> { }));
+                new NestBinding(tables::get, NestBinding.onHeap(), element -> { }, new CountingFloors()));
 
         return PipelineDagBuilder.build(pipeline, bindings);
+    }
+
+    /** A read side that records that it was bound and then knows nothing, so nothing is ever forgotten. */
+    private static final class CountingFloors implements ReplayFloorFactory {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public ReplayFloor resolve(HazelcastInstance member) {
+            FLOORS_BOUND.incrementAndGet();
+            return ReplayFloor.NONE;
+        }
     }
 
     // ---- reading what came out --------------------------------------------------------

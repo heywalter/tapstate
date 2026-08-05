@@ -3,17 +3,21 @@ package io.tapstate.runtime.engine.nest;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
 import com.hazelcast.jet.core.Watermark;
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.SourceOrder;
 import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.LevelBounds;
+import io.tapstate.runtime.engine.ReplayFloor;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * The vertex that holds whole documents: root rows arrive and become the document, elements arrive
@@ -39,11 +43,25 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final Deque<Object> outgoing = new ArrayDeque<>();
     private final ChainBounds held = new ChainBounds();
     private final LevelBounds bounds;
+    private final ReplayFloor floor;
+
+    /**
+     * Roots whose deletion has gone downstream and whose record is still kept, against what that deletion
+     * covered. They are remembered as they happen rather than looked for later, because a store is not
+     * something this can walk: asking one for its keys is what read-through exists to avoid.
+     */
+    private final Map<Object, Map<String, ChainPosition>> deleted = new LinkedHashMap<>();
 
     /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream) {
-        this(vertex, slots, store, outputStream, null, null);
+        this(vertex, slots, store, outputStream, null, null, ReplayFloor.NONE);
+    }
+
+    /** An assembler that forgets deleted roots once {@code floor} says their deletion cannot come back. */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, ReplayFloor floor) {
+        this(vertex, slots, store, outputStream, null, null, floor);
     }
 
     /**
@@ -53,11 +71,19 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal) {
+        this(vertex, slots, store, outputStream, axes, chainsByOrdinal, ReplayFloor.NONE);
+    }
+
+    /** The whole of it: a frontier passed on, and deleted roots forgotten once it is safe to. */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
+            ReplayFloor floor) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
+        this.floor = Objects.requireNonNull(floor, "floor");
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -66,6 +92,51 @@ public final class AssemblerProcessor extends AbstractProcessor {
     @Override
     public boolean isCooperative() {
         return false;
+    }
+
+    /**
+     * Run when there is nothing arriving: the moment to forget the deleted roots that can no longer come
+     * back. It sits here rather than on the path a change takes because reading the durable plane costs
+     * more than assembling a document does, and because reclaiming memory later than possible costs
+     * nothing - what a busy operator postpones, an idle one does.
+     */
+    @Override
+    public boolean tryProcess() {
+        Iterator<Map.Entry<Object, Map<String, ChainPosition>>> candidates = deleted.entrySet().iterator();
+        while (candidates.hasNext()) {
+            Map.Entry<Object, Map<String, ChainPosition>> candidate = candidates.next();
+            RootAssembly assembly = store.load(candidate.getKey());
+            if (assembly == null) {
+                candidates.remove();
+            } else if (assembly.rootPresent()) {
+                candidates.remove();
+            } else if (forgettable(assembly, candidate.getValue())) {
+                store.remove(candidate.getKey());
+                candidates.remove();
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether what is left of a deleted root can be dropped: the assembly is holding nothing it has not
+     * shown anyone, and every position its deletion covered sits below where a restart would resume.
+     *
+     * <p>A chain whose floor is not known holds the whole thing back. That is the safe way round: dropping
+     * the record early lets a replayed insert build the root again with nothing left to say it was deleted,
+     * whereas dropping it late costs one entry until the next sweep.
+     */
+    private boolean forgettable(RootAssembly assembly, Map<String, ChainPosition> covered) {
+        if (!assembly.lowestHeldByChain().isEmpty()) {
+            return false;
+        }
+        for (Map.Entry<String, ChainPosition> position : covered.entrySet()) {
+            Optional<SourceOrder> resumesAt = floor.of(position.getKey());
+            if (resumesAt.isEmpty() || position.getValue().order().compareTo(resumesAt.get()) >= 0) {
+                return false;
+            }
+        }
+        return !covered.isEmpty();
     }
 
     @Override
@@ -189,12 +260,15 @@ public final class AssemblerProcessor extends AbstractProcessor {
                         outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null)
                                 .withPositions(document.assembly.covered()));
                         document.assembly.documentSent();
+                        deleted.remove(key);
                     },
                     () -> {
                         if (document.rootDeleted) {
+                            Map<String, ChainPosition> covered = document.assembly.coveredByADeletion();
                             outgoing.add(Envelope.delete(document.ts, outputStream, keyRow(key), null)
-                                    .withPositions(document.assembly.coveredByADeletion()));
+                                    .withPositions(covered));
                             document.assembly.deletionSent();
+                            deleted.put(key, covered);
                         }
                     });
             store.save(key, document.assembly);
