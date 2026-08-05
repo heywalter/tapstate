@@ -12,6 +12,10 @@ import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.io.Writer;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The MCP stdio process creating a Source through the remote control contract.
+ * The MCP stdio process drafting a Source through the remote control contract.
  *
  * <p>The declarative end-to-end vocabulary describes pipeline state and target rows. It has no word
  * for a JSON-RPC stdio process, tool discovery, or the HTTP request a tool sends, so this case drives
@@ -43,32 +47,24 @@ class McpOnlineControlIT {
     private Path temporaryDirectory;
 
     @Test
-    void sourceCreateUsesTheLiveConnectorSpecAndKeepsTheExpandedSecretOffMcpOutput() throws Exception {
+    void sourceDraftUsesOneDirectRequestAndKeepsTheSecretOffMcpStderr() throws Exception {
         AtomicReference<Map<?, ?>> sourceRequest = new AtomicReference<>();
         AtomicReference<String> authorization = new AtomicReference<>();
         List<String> requests = new CopyOnWriteArrayList<>();
         HttpServer server = server(exchange -> {
             authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
             requests.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath());
-            if (exchange.getRequestMethod().equals("GET")) {
-                answer(exchange, 200, """
-                        {"id":"mysql","origin":"registered","runtimeAvailable":true,
-                         "spec":{"contentHash":"e2e-spec-hash",
-                         "text":"{\\"properties\\":{\\"host\\":{\\"type\\":\\"string\\"},
-                         \\"password\\":{\\"type\\":\\"string\\",\\"secret\\":true}}}",
-                         "unavailable":null}}
-                        """);
+            if (exchange.getRequestURI().getPath().equals("/_ready")) {
+                answer(exchange, 200, "{}");
                 return;
             }
             sourceRequest.set((Map<?, ?>) JsonReader.parse(new String(
                     exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-            answer(exchange, 201, """
-                    {"id":"orders","connector":"mysql","config":{"host":"db.internal",
-                     "password":"********"},"configuredSecrets":["password"],
-                     "contentHash":"source-content-hash"}
-                    """);
+            answer(exchange, 200, sourceDraftResponse());
         });
         Path stderr = temporaryDirectory.resolve("mcp.stderr");
+        awaitServer(server);
+        requests.clear();
         Process process = startMcp(server, stderr);
         try (Writer input = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
                 BufferedReader output = process.inputReader(StandardCharsets.UTF_8)) {
@@ -92,19 +88,19 @@ class McpOnlineControlIT {
             assertThat(tools.stream()
                     .map(tool -> String.valueOf(((Map<?, ?>) tool).get("name")))
                     .toList())
-                    .contains("connector_get", "source_create", "artifact_apply", "pipeline_stop");
+                    .contains("source_draft", "artifact_apply", "pipeline_stop")
+                    .doesNotContain("source_create");
 
             send(input, """
                     {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
-                      "name":"source_create","arguments":{"id":"orders","connector":"mysql",
-                      "config":{"host":"db.internal","password":"${MYSQL_PASSWORD}"}}}}
-                    """);
-            Map<?, ?> created = receive(output);
-            Map<?, ?> result = (Map<?, ?>) created.get("result");
+                      "name":"source_draft","arguments":{"id":"orders","connector":"mysql",
+                      "config":{"host":"db.internal","password":"%s"}}}}
+                    """.formatted(SENTINEL_SECRET));
+            Map<?, ?> drafted = receive(output);
+            Map<?, ?> result = (Map<?, ?>) drafted.get("result");
             assertThat(result.get("isError")).isEqualTo(false);
-            assertThat(result.toString()).doesNotContain(SENTINEL_SECRET);
-            assertThat(((Map<?, ?>) result.get("structuredContent")).get("configuredSecrets"))
-                    .isEqualTo(List.of("password"));
+            String yaml = String.valueOf(((Map<?, ?>) result.get("structuredContent")).get("yaml"));
+            assertThat(yaml).contains("id: orders", "password: " + SENTINEL_SECRET);
         } finally {
             process.getOutputStream().close();
             if (!process.waitFor(5, TimeUnit.SECONDS)) {
@@ -113,9 +109,8 @@ class McpOnlineControlIT {
             }
             server.stop(0);
         }
-
         assertThat(process.exitValue()).isZero();
-        assertThat(requests).containsExactly("GET /api/connectors/mysql", "POST /api/sources");
+        assertThat(requests).containsExactly("POST /api/sources:draft");
         assertThat(authorization.get()).isEqualTo("Bearer " + MACHINE_TOKEN);
         assertThat(((Map<?, ?>) sourceRequest.get().get("config")).get("password"))
                 .isEqualTo(SENTINEL_SECRET);
@@ -139,9 +134,24 @@ class McpOnlineControlIT {
         builder.environment().put("TAPSTATE_SERVER_URL",
                 "http://127.0.0.1:" + server.getAddress().getPort());
         builder.environment().put("TAPSTATE_TOKEN", MACHINE_TOKEN);
-        builder.environment().put("MYSQL_PASSWORD", SENTINEL_SECRET);
         builder.redirectError(stderr.toFile());
         return builder.start();
+    }
+
+    private static void awaitServer(HttpServer server) throws Exception {
+        HttpResponse<Void> response = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create(
+                        "http://127.0.0.1:" + server.getAddress().getPort() + "/_ready"))
+                        .GET()
+                        .build(),
+                HttpResponse.BodyHandlers.discarding());
+        assertThat(response.statusCode()).isEqualTo(200);
+    }
+
+    private static String sourceDraftResponse() {
+        return """
+                {"yaml":"version: tapstate/v1\\nkind: source\\nid: orders\\nconnector: mysql\\nconfig:\\n  host: db.internal\\n  password: %s\\n"}
+                """.formatted(SENTINEL_SECRET);
     }
 
     private static Path mcpBootJar() {
