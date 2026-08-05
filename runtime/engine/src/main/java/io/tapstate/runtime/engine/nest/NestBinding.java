@@ -1,7 +1,10 @@
 package io.tapstate.runtime.engine.nest;
 
+import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.map.IMap;
 import io.tapstate.runtime.engine.ReplayFloorFactory;
 import java.io.Serializable;
+import java.util.Objects;
 import java.util.function.Function;
 
 /**
@@ -35,6 +38,17 @@ public record NestBinding(
     /** Where each kind of nest vertex keeps its state. */
     public interface NestStores extends Serializable {
 
+        /**
+         * Binds this factory to the member whose vertices it is about to serve, returning what to ask from
+         * there on. It exists because the factory is serialized when the job is submitted while the thing a
+         * distributed store is reached through is not: only coordinates travel, and the live handle is
+         * picked up once the vertex is where it will run. A factory that needs nothing from the member
+         * answers itself, which is why the default is to do so.
+         */
+        default NestStores bind(HazelcastInstance member) {
+            return this;
+        }
+
         /** The store for one resolver's mappings and the children waiting in it. */
         NestStore<ResolverState> forResolver(NestVertex vertex);
 
@@ -56,5 +70,54 @@ public record NestBinding(
                 return new HeapNestStore<>();
             }
         };
+    }
+
+    /**
+     * Stores backed by one distributed map per vertex, the map named by whatever name the topology computed
+     * for that vertex. That name has until now been derived and never consulted; here is where it starts to
+     * decide which entries a vertex addresses, and so where two vertices stop being able to answer each
+     * other's keys.
+     *
+     * <p>The returned factory carries no member and must be {@link NestStores#bind bound} to one before it
+     * is asked for a store. Asking too early is a wiring mistake rather than anything a user did, so it
+     * fails on the spot rather than degrading to a store that quietly keeps nothing.
+     */
+    public static NestStores onMap() {
+        return new MapNestStores(null);
+    }
+
+    /** The factory behind {@link #onMap()}: coordinates while it travels, a live handle once it lands. */
+    private static final class MapNestStores implements NestStores {
+
+        private static final long serialVersionUID = 1L;
+
+        private final transient HazelcastInstance member;
+
+        private MapNestStores(HazelcastInstance member) {
+            this.member = member;
+        }
+
+        @Override
+        public NestStores bind(HazelcastInstance member) {
+            return new MapNestStores(Objects.requireNonNull(member, "member"));
+        }
+
+        @Override
+        public NestStore<ResolverState> forResolver(NestVertex vertex) {
+            return new MapNestStore<>(mapOf(vertex));
+        }
+
+        @Override
+        public NestStore<RootAssembly> forAssembler(NestVertex vertex) {
+            return new MapNestStore<>(mapOf(vertex));
+        }
+
+        private <S> IMap<Object, S> mapOf(NestVertex vertex) {
+            if (member == null) {
+                throw new IllegalStateException(
+                        "nest stores were asked for " + vertex.name() + " before being bound to a member");
+            }
+            return member.getMap(vertex.mapName());
+        }
     }
 }

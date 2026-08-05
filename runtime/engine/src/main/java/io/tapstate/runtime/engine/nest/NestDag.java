@@ -221,6 +221,7 @@ public final class NestDag {
         private final Map<Integer, List<String>> chainsByOrdinal;
         private final ReplayFloorFactory replayFloor;
         private transient ReplayFloor floor;
+        private transient NestBinding.NestStores bound;
 
         private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
                 NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
@@ -238,6 +239,7 @@ public final class NestDag {
         @Override
         public void init(Context context) {
             floor = replayFloor.resolve(context.hazelcastInstance());
+            bound = stores.bind(context.hazelcastInstance());
         }
 
         @Override
@@ -245,9 +247,9 @@ public final class NestDag {
             List<Processor> processors = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
                 processors.add(spec.isAssembler()
-                        ? new AssemblerProcessor(spec, slots, stores.forAssembler(spec), outputStream,
+                        ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
                                 axes, chainsByOrdinal, floor)
-                        : new ResolverProcessor(spec, stores.forResolver(spec), deadLetter, axes,
+                        : new ResolverProcessor(spec, bound.forResolver(spec), deadLetter, axes,
                                 chainsByOrdinal, floor));
             }
             return processors;
