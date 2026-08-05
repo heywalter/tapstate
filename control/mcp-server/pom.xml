@@ -164,6 +164,7 @@ web transports, and embedded web servers belong outside this process.
             <configuration>
               <imageName>tapstate-mcp</imageName>
               <mainClass>${mainClass}</mainClass>
+              <classesDirectory>${project.build.outputDirectory}</classesDirectory>
               <buildArgs>
                 <buildArg>--no-fallback</buildArg>
                 <buildArg>-H:IncludeResources=messages/.*\.yml</buildArg>

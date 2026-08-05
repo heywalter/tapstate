@@ -126,22 +126,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
-          distribution: 'liberica'   # Liberica NIK 21 (GPLv2+CPE) — the release toolchain; Oracle GraalVM (GFTC) is local dev only
+          java-version: '25'
+          distribution: 'liberica'   # Liberica NIK 25 (GPLv2+CPE) — the release toolchain; Oracle GraalVM (GFTC) is local dev only
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: register the Liberica NIK JDK as the Maven toolchain (version 21, any vendor)
-        shell: bash
-        run: |
-          mkdir -p ~/.m2
-          cat > ~/.m2/toolchains.xml <<EOF
-          <toolchains>
-            <toolchain>
-              <type>jdk</type>
-              <provides><version>21</version></provides>
-              <configuration><jdkHome>${JAVA_HOME}</jdkHome></configuration>
-            </toolchain>
-          </toolchains>
-          EOF
       - name: build the native CLI, MCP sidecar, and bundle assembly
         run: mvn -B -Pnative -pl cli,control/mcp-server,distribution/cli-bundle -am -DskipTests package
       - name: native smoke (black-box against the produced binary, offline + online)

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "ch.qos.logback.core.status.NopStatusListener",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "io.tapstate.mcp.TapstateMcpApplication__ApplicationContextInitializer",
+    "allDeclaredConstructors": true
+  }
+]
