@@ -51,6 +51,7 @@ public final class SinkProcessor extends AbstractProcessor {
     private final SinkWriter writer;
     private final SinkAck sinkAck;
     private final SinkFrontier frontier;
+    private final FrontierGauge gauge;
     private final int maxInFlight;
     private final int maxBatchSize;
     private final List<InFlightBatch> inFlight = new ArrayList<>();
@@ -61,9 +62,16 @@ public final class SinkProcessor extends AbstractProcessor {
         this(writer, null, null, maxInFlight, maxBatchSize);
     }
 
+    /** An ack-bearing sink whose frontier readings go nowhere: for driving one outside a running job. */
     public SinkProcessor(SinkWriter writer, SinkAck sinkAck, SinkFrontier frontier,
             int maxInFlight, int maxBatchSize) {
+        this(writer, sinkAck, frontier, maxInFlight, maxBatchSize, FrontierGauge.none());
+    }
+
+    SinkProcessor(SinkWriter writer, SinkAck sinkAck, SinkFrontier frontier,
+            int maxInFlight, int maxBatchSize, FrontierGauge gauge) {
         this.writer = Objects.requireNonNull(writer, "writer");
+        this.gauge = Objects.requireNonNull(gauge, "gauge");
         if (maxInFlight < 1) {
             throw new IllegalArgumentException("maxInFlight must be at least 1: " + maxInFlight);
         }
@@ -166,6 +174,7 @@ public final class SinkProcessor extends AbstractProcessor {
     public boolean tryProcessWatermark(Watermark watermark) {
         if (frontier != null) {
             frontier.bound(watermark, sinkAck);
+            reportTrailing();
         }
         return true;
     }
@@ -202,6 +211,20 @@ public final class SinkProcessor extends AbstractProcessor {
             }
             return true;
         });
+        if (frontier != null) {
+            reportTrailing();
+        }
+    }
+
+    /**
+     * Takes a reading of how far the frontier trails its bounds. Taken both here and where a bound arrives,
+     * because either one alone goes quiet in the case that matters: a chain starved of positions to advance
+     * to has nothing settling, and a chain whose last batch settles into a lull gets no further bound. Left
+     * to one of them the last reading before the stall would stand as the current one for as long as the
+     * stall lasts, which reads as a healthy distance rather than a stalled measurement.
+     */
+    private void reportTrailing() {
+        gauge.trailing(frontier.gaps());
     }
 
     /** What this batch contributes to the frontier, empty when no frontier is tracked. */
@@ -262,8 +285,10 @@ public final class SinkProcessor extends AbstractProcessor {
         public Collection<? extends Processor> get(int count) {
             List<Processor> processors = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
+                // A gauge per processor, not one shared: the handles it keeps belong to the sink that took
+                // the reading, and a shared one would have each sink's readings land under the other's.
                 processors.add(new SinkProcessor(writerFactory.get(), sinkAck, frontierFactory.get(),
-                        DEFAULT_MAX_IN_FLIGHT, DEFAULT_MAX_BATCH_SIZE));
+                        DEFAULT_MAX_IN_FLIGHT, DEFAULT_MAX_BATCH_SIZE, new JetFrontierGauge()));
             }
             return processors;
         }

@@ -11,6 +11,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 /**
  * How far a sink may say it has landed when what reaches it was assembled from several chains at once.
@@ -210,6 +211,93 @@ class SettledFloorTest {
         assertThat(acked.calls).hasSize(1);
         int reached = Integer.parseInt(acked.calls.get(0).replaceAll("\\D+", ""));
         assertThat(reached).isLessThanOrEqualTo(50);
+    }
+
+    @Test
+    void reports_how_far_a_chain_s_bound_runs_ahead_of_what_it_reached() {
+        RecordingAck acked = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+
+        floor.settled(entries("orders", 1, 2), acked);
+        floor.bound(boundAt("orders", 5), acked);
+
+        // The bound reached 5, the highest entry at or below it was 2, and the three positions between
+        // them are what the frontier could have covered and did not.
+        assertThat(floor.gaps()).containsExactly(entry("orders", 3L));
+    }
+
+    @Test
+    void reports_no_gap_for_a_frontier_its_bound_is_holding_back() {
+        RecordingAck acked = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+
+        for (int seq = 1; seq <= 10; seq++) {
+            floor.settled(entries("orders", seq), acked);
+        }
+        floor.bound(boundAt("orders", 3), acked);
+
+        // Seven entries sit settled above the bound, and none of them is a gap: the frontier is exactly
+        // where its bound lets it be. This is the reading that tells the two stalls apart - a frontier
+        // pinned by real pending upstream reports nothing here however long it sits, so a gap that grows
+        // can only be the other one, and the two are worked on from opposite ends.
+        assertThat(floor.gaps()).containsExactly(entry("orders", 0L));
+    }
+
+    @Test
+    void widens_the_gap_as_a_bound_climbs_with_nothing_settling_beneath_it() {
+        RecordingAck acked = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+
+        floor.settled(entries("orders", 1), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        List<Long> widening = new ArrayList<>();
+        for (int reached : new int[] {10, 20, 30}) {
+            floor.bound(boundAt("orders", reached), acked);
+            widening.add(floor.gaps().get("orders"));
+        }
+
+        // Nothing new settles, so every bound finds the same entry to advance to and the distance from it
+        // grows. A frontier starved of positions to advance to looks exactly like this and is the only
+        // thing that does; without it the starvation is indistinguishable from being held back.
+        assertThat(widening).containsExactly(9L, 19L, 29L);
+    }
+
+    @Test
+    void reports_nothing_for_a_chain_that_has_never_reached_a_position() {
+        RecordingAck acked = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+
+        floor.settled(entries("orders", 5, 6), acked);
+        floor.bound(boundAt("orders", 4), acked);
+
+        // A gap is measured from the position the frontier reached, and this chain has reached none. A
+        // zero here would read as a frontier keeping up with its bound, which is the opposite of the case.
+        assertThat(floor.gaps()).isEmpty();
+    }
+
+    @Test
+    void reports_nothing_for_a_chain_no_bound_has_arrived_for() {
+        RecordingAck acked = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+
+        floor.settled(entries("orders", 1, 2), acked);
+
+        assertThat(floor.gaps()).isEmpty();
+    }
+
+    @Test
+    void measures_each_chain_against_its_own_bound() {
+        RecordingAck acked = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+
+        floor.settled(entries("orders", 1), acked);
+        floor.settled(entries("lines", 1), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        floor.bound(boundAt("lines", 8), acked);
+
+        // One chain starved while another keeps up is the case worth seeing; a single number over the two
+        // would report the average of a healthy chain and a stalled one and read as neither.
+        assertThat(floor.gaps()).containsOnly(entry("orders", 0L), entry("lines", 7L));
     }
 
     /** The entries a batch of changes on {@code chain} contributes, one per ring sequence. */

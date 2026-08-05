@@ -18,6 +18,7 @@ import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import com.hazelcast.jet.core.ProcessorSupplier;
 import com.hazelcast.jet.core.Vertex;
 import java.time.Duration;
+import java.util.Map;
 import java.util.OptionalLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -248,6 +249,116 @@ class EngineTest {
         engine.cancel("orders-pipe");
         awaitStatus(job, JobStatus.FAILED);
         assertThat(engine.recordCount("orders-pipe")).isEmpty();
+    }
+
+    @Test
+    void frontierGaps_reads_back_how_far_each_chain_trails_its_bound() {
+        Engine engine = new Engine(member);
+        engine.submit("orders-pipe", trailingDag(Map.of("orders", 9L, "lines", 0L)));
+        awaitStatus(member.getJet().getJob("orders-pipe"), JobStatus.RUNNING);
+
+        // Per chain rather than one number for the job: a chain keeping up alongside a chain that has
+        // stalled is the case the reading exists for, and either one alone answers it wrongly.
+        awaitFrontierGaps(engine, "orders-pipe", Map.of("orders", 9L, "lines", 0L));
+    }
+
+    @Test
+    void frontierGaps_keeps_the_widest_reading_when_more_than_one_sink_reports_a_chain() {
+        Engine engine = new Engine(member);
+        engine.submit("orders-pipe", trailingDag(Map.of("orders", 4L), Map.of("orders", 11L)));
+        awaitStatus(member.getJet().getJob("orders-pipe"), JobStatus.RUNNING);
+
+        // Two sinks fed the same chain are two frontiers over it, and the pipeline has only got as far as
+        // the one furthest behind. Averaging them, or taking whichever was read first, would report a
+        // pipeline healthier than any sink in it actually is.
+        awaitFrontierGaps(engine, "orders-pipe", Map.of("orders", 11L));
+    }
+
+    @Test
+    void frontierGaps_is_empty_for_a_pipeline_with_no_live_job() {
+        Engine engine = new Engine(member);
+        assertThat(engine.frontierGaps("ghost")).isEmpty();
+
+        engine.submit("orders-pipe", foreverDag());
+        Job job = member.getJet().getJob("orders-pipe");
+        awaitStatus(job, JobStatus.RUNNING);
+        engine.cancel("orders-pipe");
+        awaitStatus(job, JobStatus.FAILED);
+        assertThat(engine.frontierGaps("orders-pipe")).isEmpty();
+    }
+
+    @Test
+    void frontierGaps_is_empty_for_a_job_whose_sinks_report_no_such_distance() {
+        Engine engine = new Engine(member);
+        engine.submit("orders-pipe", countingDag(3));
+        awaitStatus(member.getJet().getJob("orders-pipe"), JobStatus.RUNNING);
+        awaitRecordCount(engine, "orders-pipe", 3);
+
+        // The job is running and its statistics are being collected; it simply has no frontier of this
+        // shape. Absence has to survive that, or "not measured" and "measured at zero" become one answer.
+        assertThat(engine.frontierGaps("orders-pipe")).isEmpty();
+    }
+
+    /**
+     * A streaming DAG of one idling vertex per given set of readings, each publishing them as the sink
+     * adapter does. It stands in for the sinks rather than assembling one: what is under test here is the
+     * reading back, and a real frontier publishing a real distance is witnessed against a real nest.
+     */
+    @SafeVarargs
+    private static DAG trailingDag(Map<String, Long>... readings) {
+        DAG dag = new DAG();
+        for (int i = 0; i < readings.length; i++) {
+            Map<String, Long> reported = readings[i];
+            dag.newVertex("serve.out" + i, ProcessorMetaSupplier.forceTotalParallelismOne(
+                    ProcessorSupplier.of((SupplierEx<Processor>) () -> new TrailingSource(reported))));
+        }
+        return dag;
+    }
+
+    /** Publishes a fixed set of frontier readings on every call, then idles so the job stays RUNNING. */
+    private static final class TrailingSource extends AbstractProcessor {
+        private final Map<String, Long> reported;
+        private final JetFrontierGauge gauge = new JetFrontierGauge();
+
+        private TrailingSource(Map<String, Long> reported) {
+            this.reported = reported;
+        }
+
+        @Override
+        public boolean isCooperative() {
+            return false;
+        }
+
+        @Override
+        public boolean complete() {
+            gauge.trailing(reported);
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return true;
+            }
+            return false;
+        }
+    }
+
+    /** Polls the frontier readings until they match, failing if they do not within budget. */
+    private static void awaitFrontierGaps(Engine engine, String pipelineId, Map<String, Long> expected) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        Map<String, Long> last = Map.of();
+        while (System.nanoTime() < deadline) {
+            last = engine.frontierGaps(pipelineId);
+            if (last.equals(expected)) {
+                return;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        assertThat(last).isEqualTo(expected);
     }
 
     /**

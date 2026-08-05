@@ -8,6 +8,7 @@ import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.Job;
+import com.hazelcast.jet.config.JobConfig;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.Edge;
@@ -90,6 +91,9 @@ class NestAdvancesTheDurableFrontierTest {
         ACKED.clear();
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(4);
+        // Collect the job's statistics once a second, so a frontier reading is readable well inside a test
+        // budget rather than after the five seconds the engine waits by default.
+        config.getMetricsConfig().setCollectionFrequencySeconds(1);
         config.setProperty("hazelcast.phone.home.enabled", "false");
         config.setProperty("hazelcast.shutdownhook.enabled", "false");
         JoinConfig join = config.getNetworkConfig().getJoin();
@@ -138,6 +142,41 @@ class NestAdvancesTheDurableFrontierTest {
                 .doesNotContain(acked(CLAIMS, CLAIM_AT));
     }
 
+    @Test
+    void theDistanceTheFrontierTrailsIsPublishedAsAStatisticOfTheJob() {
+        run(true);
+
+        await(() -> ACKED.contains(acked(CLAIMS, CLAIM_AT)));
+
+        // The sink is the only thing that can see this: it holds both the bound and the position it
+        // reached, and neither is written anywhere a later reader could compare them. A sink assembled
+        // without the gauge advances the frontier exactly as correctly as this one and publishes nothing,
+        // so what is asserted is that the sink the builder really wires is the one taking readings.
+        Map<String, Long> published = publishedGapsWithin(TimeUnit.SECONDS.toNanos(30));
+
+        assertThat(published)
+                .describedAs("a reading per chain the sink advanced, named by that chain")
+                .containsOnlyKeys(CUSTOMERS, POLICIES, CLAIMS)
+                .allSatisfy((chain, gap) -> assertThat(gap).isNotNegative());
+    }
+
+    /** The readings once every chain the sink advanced has one, or the last seen when the budget runs out. */
+    private Map<String, Long> publishedGapsWithin(long budgetNanos) {
+        long deadline = System.nanoTime() + budgetNanos;
+        Map<String, Long> published = publishedGaps();
+        while (System.nanoTime() < deadline
+                && !published.keySet().containsAll(List.of(CUSTOMERS, POLICIES, CLAIMS))) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+            published = publishedGaps();
+        }
+        return published;
+    }
+
+    /** The frontier readings the running job has collected so far, keyed by chain. */
+    private Map<String, Long> publishedGaps() {
+        return new Engine(member).frontierGaps(job.getName());
+    }
+
     // ---- the job under test ------------------------------------------------------------
 
     /**
@@ -184,7 +223,8 @@ class NestAdvancesTheDurableFrontierTest {
                 () -> new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN)));
         dag.edge(Edge.from(assembled, outbound.merge(assembled, 1, Integer::sum) - 1)
                 .to(sink, 0).distributed());
-        job = member.getJet().newJob(dag);
+        // Named so the run's statistics can be read back the way the read face reads them - by pipeline.
+        job = member.getJet().newJob(dag, new JobConfig().setName("nest-frontier"));
     }
 
     /** One row a source emits, with the order the engine would have stamped on it. */

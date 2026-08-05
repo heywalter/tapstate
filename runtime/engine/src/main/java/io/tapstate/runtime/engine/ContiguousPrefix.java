@@ -71,4 +71,14 @@ final class ContiguousPrefix implements SinkFrontier {
     @Override
     public void bound(Watermark bound, SinkAck ack) {
     }
+
+    /**
+     * Reports no distance, because there is none to report rather than because none was measured. Nothing
+     * runs ahead of this frontier: what a settled batch proves is already complete on its own, so the
+     * position acked is the highest one provably durable and there is no second reading to fall behind.
+     */
+    @Override
+    public Map<String, Long> gaps() {
+        return Map.of();
+    }
 }

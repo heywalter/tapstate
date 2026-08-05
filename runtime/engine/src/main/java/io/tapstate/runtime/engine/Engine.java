@@ -6,10 +6,12 @@ import com.hazelcast.jet.config.JobConfig;
 import com.hazelcast.jet.config.ProcessingGuarantee;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.JobStatus;
+import com.hazelcast.jet.core.metrics.JobMetrics;
 import com.hazelcast.jet.core.metrics.Measurement;
 import com.hazelcast.jet.core.metrics.MetricNames;
 import com.hazelcast.jet.core.metrics.MetricTags;
 import io.tapstate.core.common.TapstateException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -114,6 +116,38 @@ public final class Engine {
                 .mapToLong(Measurement::value)
                 .sum();
         return OptionalLong.of(reached);
+    }
+
+    /**
+     * How far each chain of the pipeline's live job trails the bound combined for it, keyed by chain;
+     * empty when it has no live job and for a job whose sinks have no such distance to report.
+     *
+     * <p>A chain reported by more than one sink is kept at its widest reading. Two sinks fed the same
+     * chain are two frontiers over it, and the pipeline has only got as far as whichever is furthest
+     * behind; combining them any other way reports a pipeline healthier than any sink in it really is.
+     *
+     * <p>Like the record count this reads the job's last collected statistics, so a freshly submitted job
+     * reports nothing until the first collection. Absence here is "not measured", never "measured at
+     * zero" - the two call for opposite responses, and a zero standing in for an unwired reading is the
+     * frontier-lag alarm's blind spot rather than its quiet state.
+     */
+    public Map<String, Long> frontierGaps(String pipelineId) {
+        Job job = liveJob(pipelineId);
+        if (job == null) {
+            return Map.of();
+        }
+        JobMetrics collected = job.getMetrics();
+        Map<String, Long> widest = new HashMap<>();
+        for (String metric : collected.metrics()) {
+            String chain = JetFrontierGauge.chainOf(metric);
+            if (chain == null) {
+                continue;
+            }
+            for (Measurement measurement : collected.get(metric)) {
+                widest.merge(chain, measurement.value(), Math::max);
+            }
+        }
+        return widest;
     }
 
     /** Whether a measurement belongs to a serve-sink vertex, which the builder names by that prefix. */

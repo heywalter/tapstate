@@ -4,6 +4,7 @@ import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
 import java.util.List;
+import java.util.Map;
 
 /**
  * How far a sink may say each chain has durably landed. What that takes depends on the shape of the graph
@@ -46,4 +47,17 @@ interface SinkFrontier {
      * arrive at every sink, and only one shape has anything to do with them.
      */
     void bound(Watermark bound, SinkAck ack);
+
+    /**
+     * How far each chain's bound runs ahead of the position this frontier reached, keyed by chain; empty
+     * where there is no such distance to report.
+     *
+     * <p>This is what tells apart the two ways a frontier stalls, which are acted on from opposite ends. A
+     * chain held back by changes still pending upstream has a bound that stops climbing, so the frontier
+     * sits right on it and reports no distance however long the stall lasts — the work is upstream, on
+     * whatever is holding those changes. A chain whose bound keeps climbing over positions it was never
+     * given reports a distance that grows, and nothing upstream is stuck at all — it is short of positions
+     * to advance to, and only supplying them shortens it. Without the number the two are one symptom.
+     */
+    Map<String, Long> gaps();
 }

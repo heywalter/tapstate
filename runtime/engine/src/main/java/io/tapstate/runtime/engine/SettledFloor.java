@@ -116,6 +116,28 @@ final class SettledFloor implements SinkFrontier {
         advance(chain, ack);
     }
 
+    /**
+     * How far each chain's bound runs ahead of the position this frontier reached. A chain that has reached
+     * none is absent rather than zero: the distance is measured from the position acked, and answering zero
+     * where there is none reads as a frontier keeping up with its bound, which is its opposite.
+     *
+     * <p>What is measured is the packed distance, so within one generation of a chain's ring it counts the
+     * positions the frontier could have covered and did not. A bound a whole generation ahead reads as an
+     * enormous distance rather than a count of changes - far past any threshold worth setting, which is the
+     * direction to be wrong in for something read to raise an alarm.
+     */
+    @Override
+    public Map<String, Long> gaps() {
+        Map<String, Long> gaps = new HashMap<>();
+        ackedByChain.forEach((chain, reached) -> {
+            Long bound = boundByChain.get(chain);
+            if (bound != null) {
+                gaps.put(chain, bound - reached);
+            }
+        });
+        return gaps;
+    }
+
     /** How many settled entries this chain still holds - the capacity line the thinning keeps. */
     int held(String chain) {
         NavigableMap<Long, ChainPosition> entries = settledByChain.get(chain);

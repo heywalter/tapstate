@@ -34,10 +34,18 @@ import java.util.function.Function;
  */
 public final class ObservationPublisher {
 
+    /**
+     * What a per-chain frontier reading is named in the metrics map, with the chain's own name appended.
+     * The name is this layer's to choose: the metrics map is what a read face presents, and how a run
+     * happens to publish its statistics internally is the engine's business behind its port.
+     */
+    private static final String FRONTIER_GAP_PREFIX = "frontierGap.";
+
     private final StateStore state;
     private final ObservationStore observations;
     private final Function<String, OptionalLong> recordCounts;
     private final Function<String, Map<String, String>> positions;
+    private final Function<String, Map<String, Long>> frontierGaps;
 
     /**
      * A publisher with no metric or position source: recordCount stays absent and positions stay empty,
@@ -56,10 +64,22 @@ public final class ObservationPublisher {
      */
     public ObservationPublisher(StateStore state, ObservationStore observations,
             Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions) {
+        this(state, observations, recordCounts, positions, id -> Map.of());
+    }
+
+    /**
+     * A publisher also wired to the per-chain frontier readings: {@code frontierGaps} yields how far each
+     * chain of a pipeline's live run trails the bound combined for it (empty when nothing reports one).
+     * A third port for the same reason as the other two - the scheduler stays clear of what backs them.
+     */
+    public ObservationPublisher(StateStore state, ObservationStore observations,
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
+            Function<String, Map<String, Long>> frontierGaps) {
         this.state = Objects.requireNonNull(state, "state");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.recordCounts = Objects.requireNonNull(recordCounts, "recordCounts");
         this.positions = Objects.requireNonNull(positions, "positions");
+        this.frontierGaps = Objects.requireNonNull(frontierGaps, "frontierGaps");
     }
 
     /** Publishes the pipeline's latest observation from its actual state; a no-op if it has no checkpoint. */
@@ -95,6 +115,10 @@ public final class ObservationPublisher {
         Map<String, Long> metrics = new HashMap<>();
         metrics.put("errorCount", actual == PipelineState.FAILED ? 1L : 0L);
         recordCounts.apply(pipelineId).ifPresent(count -> metrics.put("recordCount", count));
+        // One entry per chain that reported a reading, so a chain keeping up and a chain that has stalled
+        // stay distinguishable; a chain that reported none is absent rather than zero, which would read as
+        // the healthy end of the same scale.
+        frontierGaps.apply(pipelineId).forEach((chain, gap) -> metrics.put(FRONTIER_GAP_PREFIX + chain, gap));
         return metrics;
     }
 }

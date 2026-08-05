@@ -388,6 +388,90 @@ class SinkProcessorTest {
         assertThat(ack.calls).isEmpty();
     }
 
+    @Test
+    void a_sink_fed_by_one_chain_advances_the_same_sequence_whether_or_not_bounds_arrive() throws Exception {
+        List<Envelope> changes =
+                List.of(at("orders", "p1"), at("orders", "p2"), at("orders", "p3"), at("orders", "p4"));
+
+        RecordingAck withoutBounds = new RecordingAck();
+        SinkProcessor bare =
+                init(new SinkProcessor(new RecordingWriter(), withoutBounds, new ContiguousPrefix(), 1, 1));
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(changes);
+        pump(bare, inbox);
+
+        RecordingAck withBounds = new RecordingAck();
+        SinkProcessor bounded =
+                init(new SinkProcessor(new RecordingWriter(), withBounds, new ContiguousPrefix(), 1, 1));
+        // Bounds a sink fed by an assembly would act on: one beneath everything settled, which would hold
+        // that sink where it is, and one above, which would carry it to the top. Neither may show here.
+        bounded.tryProcessWatermark(boundAt("orders", 1));
+        TestInbox bothInbox = new TestInbox();
+        bothInbox.addAll(changes);
+        pump(bounded, bothInbox);
+        bounded.tryProcessWatermark(boundAt("orders", 9));
+        drain(bounded);
+
+        // Bounds are stamped at the source whatever the graph does with them, so a linear pipeline gets
+        // them whether or not it has any use for them - there is no longer a way to run one without. What
+        // keeps that from being a change in behaviour is that this frontier discards them, and the only
+        // way to say so is that the two sequences are the same one, position for position.
+        assertThat(withBounds.calls).isEqualTo(withoutBounds.calls);
+        assertThat(withBounds.calls).containsExactly("orders=p1", "orders=p2", "orders=p3");
+    }
+
+    @Test
+    void reports_how_far_the_frontier_trails_its_bound_each_time_a_bound_arrives() throws Exception {
+        RecordingGauge gauge = new RecordingGauge();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+        SinkProcessor processor =
+                init(new SinkProcessor(new RecordingWriter(), new RecordingAck(), floor, 1, 1, gauge));
+
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1")));
+        pump(processor, inbox);
+        processor.tryProcessWatermark(boundAt("orders", 1));
+        processor.tryProcessWatermark(boundAt("orders", 20));
+
+        // A bound is the only thing that moves while a chain is starved of positions, so a reading taken
+        // only when something settles would go quiet exactly when the number starts to matter.
+        assertThat(gauge.reported).last().isEqualTo(Map.of("orders", 19L));
+    }
+
+    @Test
+    void reports_a_frontier_that_caught_up_with_its_bound_as_trailing_by_nothing() throws Exception {
+        RecordingGauge gauge = new RecordingGauge();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+        SinkProcessor processor =
+                init(new SinkProcessor(new RecordingWriter(), new RecordingAck(), floor, 1, 1, gauge));
+
+        processor.tryProcessWatermark(boundAt("orders", 3));
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2"), at("orders", "p3")));
+        pump(processor, inbox);
+
+        // The batch settles after the bound that covers it, so the reading has to be taken when a write
+        // settles too - otherwise the last one before a lull reports the trailing distance forever.
+        assertThat(gauge.reported).last().isEqualTo(Map.of("orders", 0L));
+    }
+
+    @Test
+    void reports_nothing_for_a_sink_fed_by_one_chain_in_its_own_order() throws Exception {
+        RecordingGauge gauge = new RecordingGauge();
+        SinkProcessor processor = init(new SinkProcessor(
+                new RecordingWriter(), new RecordingAck(), new ContiguousPrefix(), 1, 1, gauge));
+
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2")));
+        pump(processor, inbox);
+        processor.tryProcessWatermark(boundAt("orders", 2));
+
+        // Nothing runs ahead of that frontier to trail, so there is no distance rather than a zero one.
+        // Readings were taken, and every one of them was empty: without the first half this passes just as
+        // well on a sink that never reports at all, which is a different claim and not the one made here.
+        assertThat(gauge.reported).isNotEmpty().allMatch(Map::isEmpty);
+    }
+
     /** The bound the engine combined across every input queue for {@code chain}, at ring sequence {@code seq}. */
     private static Watermark boundAt(String chain, int seq) {
         return new Watermark(FrontierOrders.pack(chain, new SourceOrder(1, seq)), AXES.axisOf(chain));
@@ -478,6 +562,16 @@ class SinkProcessorTest {
         @Override
         public void advance(String chain, ChainPosition position) {
             calls.add(chain + "=" + position.token());
+        }
+    }
+
+    /** Records every reading of how far each chain's frontier trails its bound, in the order taken. */
+    private static final class RecordingGauge implements FrontierGauge {
+        private final List<Map<String, Long>> reported = new ArrayList<>();
+
+        @Override
+        public void trailing(Map<String, Long> gapsByChain) {
+            reported.add(Map.copyOf(gapsByChain));
         }
     }
 

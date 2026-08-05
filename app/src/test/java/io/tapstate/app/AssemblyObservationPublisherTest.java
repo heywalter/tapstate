@@ -70,4 +70,25 @@ class AssemblyObservationPublisherTest {
                 .containsEntry("errorCount", 0L)
                 .doesNotContainKey("recordCount");
     }
+
+    @Test
+    void projectsTheFrontierReadingsTheEnginePortReports() {
+        InMemoryStorePort store = new InMemoryStorePort(new InMemoryArtifactStore());
+        store.state().create(PIPELINE, StateJson.of(PipelineState.RUNNING), T0);
+
+        // The engine stands in for a live run here; that a real run publishes these is witnessed against a
+        // real nest job. What is pinned is that the factory binds the port at all - a publisher built
+        // without it goes on projecting every other statistic, and the one reading that tells a stalled
+        // frontier's two causes apart is simply never there to be missed.
+        Engine engine = mock(Engine.class);
+        when(engine.frontierGaps(PIPELINE)).thenReturn(Map.of(TABLE, 480L));
+        ObservationPublisher publisher =
+                new RuntimeConvergenceConfiguration().observationPublisher(store, engine);
+
+        publisher.publish(PIPELINE);
+
+        assertThat(store.observations().read(PIPELINE).orElseThrow().metrics())
+                .as("the factory binds the frontier port and the publisher names each reading by its chain")
+                .containsEntry("frontierGap." + TABLE, 480L);
+    }
 }

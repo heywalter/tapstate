@@ -77,6 +77,35 @@ class ObservationPublisherTest {
     }
 
     @Test
+    void publishWiresHowFarEachChainsFrontierTrailsIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of("orders", 0L, "order_items", 480L));
+
+        wired.publish("orders");
+
+        // One entry per chain, named by it. A frontier standing still is one symptom of two causes, and the
+        // distance is what tells them apart: order_items is running ahead of positions it was ever given,
+        // while orders is exactly where its bound lets it be. A zero and a large number are both readings.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L),
+                        entry("frontierGap.orders", 0L), entry("frontierGap.order_items", 480L));
+    }
+
+    @Test
+    void theFrontierGapIsAbsentFromTheMetricsWhenNoSinkReportsOne() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(
+                state, observations, id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of());
+
+        wired.publish("orders");
+
+        // Absent means unmeasured, and a zero would read as a frontier keeping up with its bound - the
+        // opposite reading, and the one an alarm over this number would stay quiet on.
+        assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
+    }
+
+    @Test
     void publishWiresThePerTableSinkAckedPositionsFromItsSource() {
         state.seed("orders", PipelineState.RUNNING);
         ObservationPublisher wired = new ObservationPublisher(
