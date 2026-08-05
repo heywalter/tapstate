@@ -200,19 +200,19 @@ that executes those resources as live pipelines.
   releases, so every release names its own in its notes. Installing on an older system is
   allowed: the installer says what the build expects and carries on; whether it launches
   there is then up to you.
-- **To build from source:** **Maven 3.6+** and a plain **JDK 21** for JVM builds and
-  tests. Native artifacts require **Liberica NIK 25** or **Oracle GraalVM 25** with
-  `native-image` on `JAVA_HOME`.
+- **To build from source:** **Oracle GraalVM for JDK 21** (includes `native-image`)
+  and **Maven 3.6+**. A plain JDK 21 is enough to build and run the test suite;
+  GraalVM is only needed for the native image.
 
 ### Build
 
 From the repository root:
 
 ```sh
-# Full build + unit tests (JDK 21)
+# Full build + unit tests (needs a JDK 21 toolchain)
 mvn verify
 
-# Native CLI binary (Java 25 Native Image toolchain on JAVA_HOME)
+# Native CLI binary (needs GraalVM for JDK 21 on JAVA_HOME)
 mvn -Pnative -pl cli -am -DskipTests package
 ```
 
@@ -222,7 +222,7 @@ for offline authoring. `tapstate mcp` additionally needs the sibling sidecar,
 so install the complete bundle when exposing the command globally:
 
 ```sh
-# Build the native CLI and MCP sidecar, then assemble bin/ + libexec/.
+# Build the native CLI and MCP Boot JAR, then assemble bin/ + libexec/.
 mvn -Pnative -pl cli,control/mcp-server,distribution/cli-bundle -am -DskipTests package
 tar -xzf distribution/cli-bundle/target/cli-bundle-0.1.0-native.tar.gz
 mkdir -p "$HOME/.tapstate/versions/0.1.0" "$HOME/.tapstate/bin"

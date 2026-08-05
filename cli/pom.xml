@@ -235,7 +235,7 @@ control / runtime modules. Amend the recorded allowlist decision before adding a
   <profiles>
     <!--
       The production shape: a native-image binary `tapstate`. Off by default (the JVM jar builds
-      without native-image); activate with `-Pnative` on a machine with a Java 25 native-image
+      without native-image); activate with `-Pnative` on a machine with a JDK-21 native-image
       toolchain: Liberica NIK (GPLv2+CPE) for release builds, Oracle GraalVM for local dev.
 
       The bundled resources read at runtime via getResourceAsStream are not reachable in a native
