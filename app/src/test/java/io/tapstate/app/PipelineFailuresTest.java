@@ -69,6 +69,23 @@ class PipelineFailuresTest {
     }
 
     @Test
+    void aCodedCausesArgumentsAreBoundedTheSameWayAsAnUncodedDescription() {
+        // A coded exception's arguments are not all product-authored: a sink's write failure carries the
+        // driver's own message as its detail, which can be as long and as multiline as any uncoded cause.
+        // Whatever rides into the persisted observation and out through the CLI is bounded, coded or not.
+        String driverDump = "Deadlock found when trying to get lock\n\tat com.mysql.cj.jdbc.exceptions"
+                + "\n\tat com.mysql.cj.jdbc.ClientPreparedStatement";
+        TapstateException coded = new TapstateException(
+                EngineError.NO_SUCH_JOB, Map.of("pipeline", driverDump), null);
+
+        ObservationFailure failure = PipelineFailures.of("orders", coded);
+
+        String detail = failure.params().get("pipeline");
+        assertThat(detail).isEqualTo("Deadlock found when trying to get lock …");
+        assertThat(detail).doesNotContain("\n");
+    }
+
+    @Test
     void aMultiLineCauseIsCutToItsFirstLine() {
         // The shape Jet hands back once a job's live context is gone and it can only reconstruct a mock
         // throwable from stored text: the "message" is a full printStackTrace() dump, several lines long.

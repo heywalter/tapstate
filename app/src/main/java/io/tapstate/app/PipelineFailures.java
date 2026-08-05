@@ -37,12 +37,18 @@ final class PipelineFailures {
     private PipelineFailures() {
     }
 
-    /** The coded failure to publish for {@code pipelineId}, given the throwable that ended its run. */
+    /**
+     * The coded failure to publish for {@code pipelineId}, given the throwable that ended its run. A coded
+     * cause keeps its own code and named arguments, but the argument values are bounded the same way an
+     * uncoded description is: not every argument is product-authored — a sink's write failure carries the
+     * driver's own message as its detail, which can be as long and as multiline as any raw cause — and
+     * whatever rides here is persisted and printed verbatim by the read faces.
+     */
     static ObservationFailure of(String pipelineId, Throwable failure) {
         TapstateException coded = codedCause(failure);
         if (coded != null) {
             Map<String, String> params = new LinkedHashMap<>();
-            coded.args().forEach((name, value) -> params.put(name, String.valueOf(value)));
+            coded.args().forEach((name, value) -> params.put(name, bound(String.valueOf(value))));
             return new ObservationFailure(coded.code().code(), params);
         }
         return new ObservationFailure(EngineError.JOB_FAILED.code(),
