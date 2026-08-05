@@ -63,10 +63,16 @@ class RingDependencyRulesTest {
                         "io.tapstate.core..",
                         "com.fasterxml.jackson.annotation..",
                         // R1 named grants, core-dsl-only: the YAML parser (B3) and the CEL
-                        // expression compiler (B4). cel-java's transitive libraries (guava /
-                        // protobuf / antlr4) stay out of core-dsl's own bytecode surface.
+                        // expression compiler (B4). cel-java's other transitive libraries
+                        // (protobuf / antlr4) stay out of core-dsl's own bytecode surface.
                         "org.yaml.snakeyaml..",
-                        "dev.cel.."
+                        "dev.cel..",
+                        // Guava is not an independent grant: building a CEL type is impossible
+                        // without it, because cel's own type API takes and returns guava
+                        // collections in its signatures. It is confined to method bodies - no
+                        // core-dsl type exposes a guava type in its own signature - so widening
+                        // this grant does not widen what the rest of the platform can see.
+                        "com.google.common.."
                 )
                 .allowEmptyShould(true)
                 .because("the YAML parser and CEL compiler are granted to core-dsl alone; the rest "

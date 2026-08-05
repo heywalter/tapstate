@@ -435,7 +435,7 @@ class PipelineApiTest {
 
         @Bean
         ApplyService applyService(ArtifactStore store, AuditGate auditGate) {
-            return new ApplyService(TapstateCatalog::load, store, auditGate);
+            return new ApplyService(TapstateCatalog::load, store, auditGate, new EmptySchemaStore());
         }
 
         @Bean

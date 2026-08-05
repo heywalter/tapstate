@@ -38,7 +38,7 @@ class E2eExecutorTest {
      * and no key to upsert on. Discovering last is what makes the discovery real.
      */
     @Test
-    void provisionsInDependencyOrderAndDiscoversWhatTheSeedPutThere() {
+    void discoversBetweenTheSeedThatFeedsItAndTheApplyThatRequiresIt() {
         execute(
                 """
                 name: n
@@ -53,22 +53,78 @@ class E2eExecutorTest {
                   - start
                 """);
 
+        // Discovery is pinned from both sides, and this order is the whole assertion. It cannot precede
+        // the seed, which is what materializes the table it reads. It cannot follow the apply, because a
+        // pipeline whose expression reads a row field is refused unless its sources were discovered
+        // first. Reading the resources is therefore its own step: the seed needs the source's address
+        // and the discovery needs its connector and settings, both before the product is told anything.
         assertThat(binding.calls)
                 .containsExactly(
                         "register:mongodb",
-                        // One apply, not one per file: the product resolves references within the set
-                        // submitted together, so a pipeline and its source must arrive in the same batch.
-                        "apply:[src_mongo.tap.yml, tgt_mongo.tap.yml]",
+                        "read:[src_mongo.tap.yml, tgt_mongo.tap.yml]",
                         "seed:src_mongo.orders=3",
                         "discover:src_mongo",
+                        // One apply, not one per file: the product resolves references within the set
+                        // submitted together, so a pipeline and its source must arrive in the same batch.
+                        // The pipeline is in it without having been listed - it is applied because the
+                        // envelope names it, and the steps below drive exactly it.
+                        "apply:[src_mongo.tap.yml, tgt_mongo.tap.yml, p.tap.yml]",
                         "drive:START");
+    }
+
+    /**
+     * The pipeline the envelope names is applied, whether or not the author also listed it. It is the one
+     * resource every specification declares by a field of its own, and a step that drives it is the most
+     * ordinary thing a specification does - so a surface where naming it is not enough to have it exist is
+     * a surface that reads correct and fails at the verb.
+     *
+     * <p>It rides in the same batch rather than one of its own: the pipeline names its source and target
+     * by id, and the product resolves references within the set submitted together.
+     */
+    @Test
+    void appliesThePipelineTheEnvelopeNamesEvenWhenTheAuthorListedOnlyItsEndpoints() {
+        execute(
+                """
+                name: n
+                setup:
+                  apply: [src_mongo.tap.yml, tgt_mongo.tap.yml]
+                pipeline: p.tap.yml
+                steps:
+                  - start
+                """);
+
+        assertThat(binding.calls)
+                .contains("apply:[src_mongo.tap.yml, tgt_mongo.tap.yml, p.tap.yml]");
+    }
+
+    /**
+     * And listing it is still allowed, because every checked-in example does. Applying it twice would
+     * submit one id twice in a batch the product reads as a closure, so the spelling an author chooses
+     * cannot change what is submitted.
+     */
+    @Test
+    void appliesThePipelineOnceWhenTheAuthorListedItToo() {
+        execute(
+                """
+                name: n
+                setup:
+                  apply: [src_mongo.tap.yml, p.tap.yml]
+                pipeline: p.tap.yml
+                steps:
+                  - start
+                """);
+
+        assertThat(binding.calls).contains("apply:[src_mongo.tap.yml, p.tap.yml]");
     }
 
     @Test
     void drivesEveryLifecycleVerbInDeclarationOrder() {
         execute(minimal("steps:\n  - start\n  - pause\n  - resume\n  - stop\n"));
 
-        assertThat(binding.calls).containsExactly("drive:START", "drive:PAUSE", "drive:RESUME", "drive:STOP");
+        // The apply leads because the pipeline these verbs drive is what it submits.
+        assertThat(binding.calls)
+                .containsExactly(
+                        "apply:[p.tap.yml]", "drive:START", "drive:PAUSE", "drive:RESUME", "drive:STOP");
     }
 
     @Test
@@ -196,7 +252,7 @@ class E2eExecutorTest {
     void producesCdcChangesAgainstTheNamedTable() {
         execute(minimal("steps:\n  - cdc: { src_mongo.orders: insert 10 }\n"));
 
-        assertThat(binding.calls).containsExactly("cdc:src_mongo.orders=INSERT x10");
+        assertThat(binding.calls).containsExactly("apply:[p.tap.yml]", "cdc:src_mongo.orders=INSERT x10");
     }
 
     @Test
@@ -322,6 +378,11 @@ class E2eExecutorTest {
         @Override
         public void applyResources(List<String> resourceFiles) {
             calls.add("apply:" + resourceFiles);
+        }
+
+        @Override
+        public void readResources(List<String> resourceFiles) {
+            calls.add("read:" + resourceFiles);
         }
 
         @Override

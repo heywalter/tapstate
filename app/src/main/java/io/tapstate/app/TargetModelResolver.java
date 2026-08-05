@@ -67,11 +67,11 @@ final class TargetModelResolver {
         List<TargetField> fields = new ArrayList<>(source.fields().size());
         for (String keyColumn : primaryKey) {
             SourceField field = field(source, keyColumn);
-            fields.add(new TargetField(field.name(), field.type(), true));
+            fields.add(new TargetField(field.name(), field.dataType(), true));
         }
         for (SourceField field : source.fields()) {
             if (!primaryKey.contains(field.name())) {
-                fields.add(new TargetField(field.name(), field.type(), false));
+                fields.add(new TargetField(field.name(), field.dataType(), false));
             }
         }
         return new TargetTable(source.name(), fields);

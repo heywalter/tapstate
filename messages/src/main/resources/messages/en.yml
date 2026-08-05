@@ -74,6 +74,15 @@ dsl.illegal-value:
 dsl.illegal-expression:
   message: "Expression at {path} did not compile: {detail} (expression: {expr})."
   solution: "Fix the CEL expression; only the row envelope fields are in scope."
+dsl.row-expression-needs-discovery:
+  message: "Expression `{expr}` at {path} reads row fields, but source `{source}` has no discovered schema."
+  solution: "Discover the source before applying this: run `discover-schema {source}`."
+dsl.row-expression-type-unsupported:
+  message: "Expression `{expr}` at {path} computes on column `{column}` of table `{table}`, which is {type} and cannot be computed on without losing what it holds."
+  solution: "Compute on a column whose type survives the operation, or carry `{column}` through unchanged instead of computing on it."
+dsl.row-expression-type-unknown:
+  message: "Expression `{expr}` at {path} reads column `{column}` of table `{table}`, which nothing resolved a type for."
+  solution: "Whether this expression can run is unknown; drop the reference to `{column}`, or read a column whose type the source declares."
 dsl.composition:
   message: "Composition rule broken at {path}: {detail}."
   solution: "Review how the resources are wired together."

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.common.TapstateType;
 import io.tapstate.spi.store.ConnectionConfig;
 import io.tapstate.spi.store.SchemaDiscoverer;
 import io.tapstate.spi.store.SourceField;
@@ -44,7 +45,28 @@ class PdkSchemaDiscovererTest {
         assertThat(model.tables()).extracting(SourceTable::name).containsExactly("orders");
         SourceTable orders = model.tables().get(0);
         assertThat(orders.fields()).extracting(SourceField::name).containsExactly("id", "amount");
-        assertThat(orders.fields()).extracting(SourceField::type).containsExactly("int", "decimal");
+        assertThat(orders.fields()).extracting(SourceField::dataType).containsExactly("int", "decimal");
+    }
+
+    /** A connector declaring both of the discoverable source's column types, in its own spec's shape. */
+    private static final String SPEC = """
+            {"dataTypes": {"int": {"to": "TapNumber", "bit": 32},\
+             "decimal": {"to": "TapNumber", "fixed": true}}}""";
+
+    @Test
+    void carriesTheTapstateTypeEachColumnResolvesTo(@TempDir Path dir) {
+        // Discovery reports a column by the database's own spelling, which only the connector can read.
+        // Resolving it is the connector's own job and so has to happen while the connector is still open -
+        // once the model leaves here, nothing downstream can tell an exact column from an approximate one.
+        ConnectorRef ref = new ConnectorRef(
+                List.of(Synthetic.discoverableSource(dir)), "synthetic.Discoverable", "2.0.8", null, SPEC);
+        SchemaDiscoverer discoverer = new PdkSchemaDiscoverer(connectorId -> ref);
+
+        SourceModel model = discoverer.discover(config());
+
+        assertThat(model.tables().get(0).fields())
+                .extracting(SourceField::type)
+                .containsExactly(TapstateType.INT64, TapstateType.DECIMAL);
     }
 
     @Test

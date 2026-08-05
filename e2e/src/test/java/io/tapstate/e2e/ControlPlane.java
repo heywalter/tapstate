@@ -83,6 +83,22 @@ final class ControlPlane {
         expect(send(authed("/api/artifacts:apply", body)), 200, "apply " + contentBySource.keySet());
     }
 
+    /**
+     * Applies a batch the product is expected to refuse, and returns the refusal it answered with.
+     *
+     * <p>A separate verb rather than a flag on {@link #apply}, for the same reason registration has one:
+     * a caller that meant to apply and was refused has failed, and a caller that meant to witness a
+     * refusal and got an apply has failed too. One return value cannot mean both.
+     */
+    Refusal applyExpectingRefusal(Map<String, String> contentBySource) {
+        List<Map<String, String>> drafts = contentBySource.entrySet().stream()
+                .map(entry -> Map.of("source", entry.getKey(), "content", entry.getValue()))
+                .toList();
+        String body = JsonWriter.write(Map.of("drafts", drafts));
+        HttpResponse<String> response = send(authed("/api/artifacts:apply", body));
+        return interpretRefusal(response.statusCode(), response.body(), "applying " + contentBySource.keySet());
+    }
+
     /** The ids the server holds - read back from the server, which is the truth, not from the files sent. */
     List<String> artifactIds() {
         HttpResponse<String> response = send(authedGet("/api/artifacts"));
@@ -116,10 +132,33 @@ final class ControlPlane {
     Refusal registerConnectorExpectingRefusal(byte[] jar) {
         String body = JsonWriter.write(Map.of("artifact", Base64.getEncoder().encodeToString(jar)));
         HttpResponse<String> response = send(authed("/api/connectors:register", body));
-        if (response.statusCode() == 200) {
-            throw new AssertionError("expected the artifact to be refused, but it registered: " + response.body());
+        return interpretRefusal(response.statusCode(), response.body(), "registering the artifact");
+    }
+
+    /**
+     * What an answer to a verb the caller expected to be refused is allowed to mean. Only a client error
+     * is a refusal: it is the product having judged the request and declined it, which is the outcome
+     * such a caller is witnessing.
+     *
+     * <p>Every other answer is this specification's own failure and stays loud. A success is the refusal
+     * not happening at all - the regression these callers exist to catch. A server failure is the product
+     * unable to answer, which says nothing about whether the request was acceptable; read as the expected
+     * refusal it would let a server that fell over stand in for a gate that held, and the assertion on
+     * the code would then be the only thing between a green run and a hole, on a body that carries no
+     * code at all. A redirect is not a judgement either.
+     */
+    static Refusal interpretRefusal(int status, String body, String what) {
+        if (status < 400) {
+            throw new AssertionError(
+                    "expected " + what + " to be refused, but the product did not refuse it: HTTP " + status
+                            + " - " + body);
         }
-        return new Refusal(response.statusCode(), codeOf(response.body()));
+        if (status >= 500) {
+            throw new AssertionError(
+                    "expected " + what + " to be refused, but the server failed instead: HTTP " + status
+                            + " - " + body);
+        }
+        return new Refusal(status, codeOf(body));
     }
 
     /** Every connector id the online catalog answers with, registered rows and bundled ones alike. */

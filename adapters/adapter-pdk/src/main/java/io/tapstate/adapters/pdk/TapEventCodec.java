@@ -1,6 +1,9 @@
 package io.tapstate.adapters.pdk;
 
+import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import io.tapstate.core.event.Envelope;
@@ -26,9 +29,10 @@ import io.tapdata.entity.event.dml.TapUpdateRecordEvent;
  *
  * <p>Field projection: {@code src} is the event's table id (the logical stream name); {@code ts} is
  * the source reference time, falling back to the event time. Row data maps ({@code before}/
- * {@code after}) pass through as-is. A ddl event's {@code schema} carries the origin ddl when the
- * connector supplied one; precise per-kind ddl translation is deferred, so this stays a coarse,
- * pass-through "track" projection.
+ * {@code after}) keep every field the connector reported, with each value carried into the value
+ * model described below. A ddl event's {@code schema} carries the origin ddl when the connector
+ * supplied one; precise per-kind ddl translation is deferred, so this stays a coarse, pass-through
+ * "track" projection.
  */
 public final class TapEventCodec {
 
@@ -45,13 +49,14 @@ public final class TapEventCodec {
      */
     public static Envelope decodeChange(TapEvent event) {
         if (event instanceof TapInsertRecordEvent insert) {
-            return Envelope.insert(ts(insert), src(insert), insert.getAfter(), null);
+            return Envelope.insert(ts(insert), src(insert), row(insert.getAfter()), null);
         }
         if (event instanceof TapUpdateRecordEvent update) {
-            return Envelope.update(ts(update), src(update), update.getBefore(), update.getAfter(), null);
+            return Envelope.update(
+                    ts(update), src(update), row(update.getBefore()), row(update.getAfter()), null);
         }
         if (event instanceof TapDeleteRecordEvent delete) {
-            return Envelope.delete(ts(delete), src(delete), delete.getBefore(), null);
+            return Envelope.delete(ts(delete), src(delete), row(delete.getBefore()), null);
         }
         if (event instanceof TapDDLEvent ddl) {
             return Envelope.ddl(ts(ddl), src(ddl), ddlSchema(ddl));
@@ -65,11 +70,72 @@ public final class TapEventCodec {
      * @throws IllegalArgumentException if the event is not insert-shaped
      */
     public static Envelope decodeSnapshotRow(TapEvent event) {
-        if (event instanceof TapInsertRecordEvent row) {
-            return Envelope.read(ts(row), src(row), row.getAfter(), null);
+        if (event instanceof TapInsertRecordEvent read) {
+            return Envelope.read(ts(read), src(read), row(read.getAfter()), null);
         }
         throw new IllegalArgumentException(
                 "snapshot rows are insert-shaped; got: " + event.getClass().getName());
+    }
+
+    // ---- the value model a decoded row speaks --------------------------------------------
+
+    /**
+     * One row's values carried into the tapstate value model, or {@code null} when the map is absent.
+     *
+     * <p>A driver hands over whatever box its own client uses — an int column may arrive in any
+     * integral box, a real one as a float — while the type namespace a column resolves into names one
+     * width per kind. Converting here is what makes the two agree: the boundary that resolves a
+     * column's type is the boundary that delivers a value of that type, so nothing downstream has to
+     * reconcile a column declared 64-bit with a value that is not.
+     *
+     * <p>Every conversion widens or re-wraps and none of them rounds, so no value changes on the way
+     * in. Only a value the target actually holds is converted: a wider integer is left as it came,
+     * where narrowing it would hand every reader downstream a different number and report it as a
+     * success. An exact fixed-point number is left alone in every case — routing it through any
+     * binary floating point type drops digits silently, which is the one loss nothing downstream
+     * could detect.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> row(Map<String, Object> row) {
+        return row == null ? null : (Map<String, Object>) converted(row);
+    }
+
+    /**
+     * One value in that model. Nested values are converted too, since a document's own fields and an
+     * array's elements are as reachable from a reader as a top-level column is; a container whose
+     * contents all pass through unchanged is returned as it is, so the ordinary row costs no copy.
+     */
+    private static Object converted(Object value) {
+        if (value instanceof Integer || value instanceof Short || value instanceof Byte) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof Float f) {
+            return f.doubleValue();
+        }
+        if (value instanceof BigInteger big && big.bitLength() < Long.SIZE) {
+            return big.longValue();
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> converted = new LinkedHashMap<>(map.size());
+            boolean changed = false;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                Object element = converted(entry.getValue());
+                changed |= element != entry.getValue();
+                converted.put(entry.getKey(), element);
+            }
+            return changed ? converted : map;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> converted = new ArrayList<>(list.size());
+            boolean changed = false;
+            for (Object element : list) {
+                Object next = converted(element);
+                changed |= next != element;
+                converted.add(next);
+            }
+            return changed ? converted : list;
+        }
+        return value;
     }
 
     /**

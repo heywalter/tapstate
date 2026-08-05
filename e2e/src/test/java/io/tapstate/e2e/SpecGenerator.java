@@ -288,7 +288,8 @@ final class SpecGenerator {
         return switch (key) {
             case "connectors" -> "Connector ids whose runtime jars are registered; idempotent by content hash.";
             case "apply" -> "Product resource files, applied as one batch: the product resolves references "
-                    + "within the submitted set.";
+                    + "within the submitted set. The pipeline is applied in the same batch whether or not "
+                    + "it is listed here.";
             case "discover" -> "Resource ids whose source model is discovered, feeding target-table creation.";
             default -> throw new IllegalStateException(
                     "setup gained the key '" + key + "' with nothing to say about it");

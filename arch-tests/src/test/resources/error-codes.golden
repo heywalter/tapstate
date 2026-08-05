@@ -57,6 +57,9 @@ dsl.malformed-interpolation
 dsl.malformed-yaml
 dsl.missing-reference
 dsl.mode-mismatch
+dsl.row-expression-needs-discovery
+dsl.row-expression-type-unknown
+dsl.row-expression-type-unsupported
 dsl.undefined-variable
 dsl.unknown-field
 dsl.unsupported-mode

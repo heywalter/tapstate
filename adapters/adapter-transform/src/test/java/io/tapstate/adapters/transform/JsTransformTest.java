@@ -104,13 +104,13 @@ class JsTransformTest {
                         + "  ctx.emit(r);"
                         + "  ctx.emit({ op: r.op, ts: r.ts, src: r.src, before: null, after: { id: 2 }, schema: null });"
                         + "}");
-        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("id", 1)), null);
+        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("id", 1L)), null);
 
         List<Envelope> out = js.transform(row);
 
         assertThat(out).hasSize(2);
-        assertThat(after(out.get(0))).containsEntry("id", 1);
-        assertThat(after(out.get(1))).containsEntry("id", 2);
+        assertThat(after(out.get(0))).containsEntry("id", 1L);
+        assertThat(after(out.get(1))).containsEntry("id", 2L);
     }
 
     @Test
@@ -121,13 +121,13 @@ class JsTransformTest {
                         + "  ctx.emit({ op: 'i', ts: 1, src: 't', before: null, after: { n: 1 }, schema: null });"
                         + "  return { op: 'i', ts: 1, src: 't', before: null, after: { n: 2 }, schema: null };"
                         + "}");
-        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("n", 0)), null);
+        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("n", 0L)), null);
 
         List<Envelope> out = js.transform(row);
 
         assertThat(out).hasSize(2);
-        assertThat(after(out.get(0))).containsEntry("n", 1);
-        assertThat(after(out.get(1))).containsEntry("n", 2);
+        assertThat(after(out.get(0))).containsEntry("n", 1L);
+        assertThat(after(out.get(1))).containsEntry("n", 2L);
     }
 
     @Test
@@ -135,14 +135,14 @@ class JsTransformTest {
     void emitSnapshotsAtEmitTime() {
         TransformPort js = js(
                 "function process(r, ctx) { for (var i = 0; i < 3; i++) { r.after.seq = i; ctx.emit(r); } }");
-        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("id", 1)), null);
+        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("id", 1L)), null);
 
         List<Envelope> out = js.transform(row);
 
         assertThat(out).hasSize(3);
-        assertThat(after(out.get(0))).containsEntry("seq", 0);
-        assertThat(after(out.get(1))).containsEntry("seq", 1);
-        assertThat(after(out.get(2))).containsEntry("seq", 2);
+        assertThat(after(out.get(0))).containsEntry("seq", 0L);
+        assertThat(after(out.get(1))).containsEntry("seq", 1L);
+        assertThat(after(out.get(2))).containsEntry("seq", 2L);
     }
 
     @Test
@@ -258,9 +258,9 @@ class JsTransformTest {
     @DisplayName("a computed integer round-trips as an integer, not a double")
     void computedIntegerRoundTrips() {
         TransformPort js = js("function process(r, ctx) { r.after.doubled = r.after.n * 2; return r; }");
-        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("n", 21)), null);
+        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("n", 21L)), null);
 
-        assertThat(after(js.transform(row).get(0))).containsEntry("doubled", 42);
+        assertThat(after(js.transform(row).get(0))).containsEntry("doubled", 42L);
     }
 
     @Test
@@ -286,6 +286,22 @@ class JsTransformTest {
     }
 
     @Test
+    @DisplayName("a whole number the script computes leaves in the row's own integer width")
+    void aComputedWholeNumberLeavesAsTheSixtyFourBitInteger() {
+        // The escape hatch writes into the same rows every other step reads, so it owes them the same
+        // currency: one integer width, the one the type namespace names. Handing back a narrower box
+        // for the small values and a wider one for the large would make a column's type depend on the
+        // magnitude that happened to flow through it.
+        TransformPort js = js("function process(r, ctx) { r.after.small = 5; r.after.big = 9000000000; return r; }");
+        Envelope row = Envelope.insert(1L, "t", new LinkedHashMap<>(Map.of("id", 1L)), null);
+
+        Map<String, Object> out = after(js.transform(row).get(0));
+
+        assertThat(out.get("small")).isEqualTo(5L).isInstanceOf(Long.class);
+        assertThat(out.get("big")).isEqualTo(9000000000L);
+    }
+
+    @Test
     @DisplayName("nested objects and arrays the script builds round-trip to Map and List")
     void nestedValuesRoundTrip() {
         TransformPort js = js(
@@ -295,6 +311,6 @@ class JsTransformTest {
         Map<String, Object> after = after(js.transform(row).get(0));
 
         assertThat(after.get("tags")).isEqualTo(List.of("a", "b"));
-        assertThat(after.get("meta")).isEqualTo(Map.of("k", 1));
+        assertThat(after.get("meta")).isEqualTo(Map.of("k", 1L));
     }
 }

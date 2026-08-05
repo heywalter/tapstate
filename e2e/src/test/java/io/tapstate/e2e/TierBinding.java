@@ -30,6 +30,16 @@ public interface TierBinding {
      */
     void applyResources(List<String> resourceFiles);
 
+    /**
+     * Learns what the same resource files declare, without applying them.
+     *
+     * <p>Separate from the apply because two things now need a source's address before the product has
+     * been told anything: the harness seeds the table over its own driver, and a discovery has to be
+     * asked for before the apply rather than after it. The declaration is the same either way - this
+     * reads it, the apply submits it.
+     */
+    void readResources(List<String> resourceFiles);
+
     /** Discovers and persists a source model, feeding target-table creation. */
     void discoverSchema(String resourceId);
 

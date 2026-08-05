@@ -47,6 +47,16 @@ final class MongoEndpoints implements Endpoints {
         }
     }
 
+    /**
+     * Every document in the collection, read the way a user would - from outside the product, by a
+     * driver that is not it. Whole documents rather than one field: what a value should be is the
+     * caller's assertion to make, and a reader that already knows which field to look at cannot report
+     * a document that landed in an unexpected shape.
+     */
+    public List<Document> documents(String uri, String table) {
+        return collection(uri, table).find().into(new ArrayList<>());
+    }
+
     @Override
     public long count(String uri, String table) {
         return collection(uri, table).countDocuments();

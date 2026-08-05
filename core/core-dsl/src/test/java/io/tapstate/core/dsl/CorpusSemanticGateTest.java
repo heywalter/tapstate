@@ -69,17 +69,29 @@ class CorpusSemanticGateTest {
     void everyCodeIsWitnessed() {
         Set<DslError> witnessed = EnumSet.noneOf(DslError.class);
         invalidCases().forEach(a -> witnessed.add(DslError.ofSymbol((String) a.get()[1])));
-        // Online-only and pre-semantic codes are exempt, each proven by a direct test instead.
-        // CONFIG_REQUIRED depends on the live connector catalog and is intentionally not enforced
-        // by the offline WorkspaceLoader exercised by this corpus.
-        // MALFORMED_YAML: a syntax error cannot be a well-formed corpus artifact (DslMalformedYamlTest).
-        // UNDEFINED_VARIABLE / MALFORMED_INTERPOLATION: interpolation runs on raw text before the parse,
-        // and whether a reference resolves depends on the environment rather than on the document — so
-        // no artifact can witness them, and a corpus that tried would pass or fail by ambient state
-        // (InterpolatorTest).
+        // A corpus artifact witnesses a code by being that code's whole cause. Where it cannot be,
+        // the code is exempt here and proven by a direct test instead. Two reasons, and the exemption
+        // holds only for as long as its reason does:
+        //
+        // pre-semantic - the code fires before there is an artifact to serve as the witness.
+        //   MALFORMED_YAML: a syntax error cannot be a well-formed corpus artifact (DslMalformedYamlTest).
+        //   UNDEFINED_VARIABLE / MALFORMED_INTERPOLATION: interpolation runs on raw text before the
+        //   parse, and whether a reference resolves depends on the environment rather than on the
+        //   document, so a corpus that tried would pass or fail by ambient state (InterpolatorTest).
+        //
+        // post-semantic - the artifact is well-formed and complete, but the code needs knowledge that
+        // lives outside it.
+        //   CONFIG_REQUIRED: the verdict depends on the live connector catalog, which the offline
+        //   WorkspaceLoader this corpus exercises does not consult.
+        //   ROW_EXPRESSION_NEEDS_DISCOVERY / ROW_EXPRESSION_TYPE_UNSUPPORTED /
+        //   ROW_EXPRESSION_TYPE_UNKNOWN: the verdict depends on whether a source has been discovered
+        //   and on the column types that discovery resolved, neither of which a document declares nor
+        //   an offline check can reach (RowExpressionDiscoveryRulesTest / RowExpressionTypeRulesTest).
         Set<DslError> requiresCorpusWitness = EnumSet.complementOf(EnumSet.of(
-                DslError.CONFIG_REQUIRED, DslError.MALFORMED_YAML,
-                DslError.UNDEFINED_VARIABLE, DslError.MALFORMED_INTERPOLATION));
+                DslError.MALFORMED_YAML, DslError.UNDEFINED_VARIABLE, DslError.MALFORMED_INTERPOLATION,
+                DslError.CONFIG_REQUIRED,
+                DslError.ROW_EXPRESSION_NEEDS_DISCOVERY, DslError.ROW_EXPRESSION_TYPE_UNSUPPORTED,
+                DslError.ROW_EXPRESSION_TYPE_UNKNOWN));
         assertThat(witnessed).containsExactlyInAnyOrderElementsOf(requiresCorpusWitness);
     }
 

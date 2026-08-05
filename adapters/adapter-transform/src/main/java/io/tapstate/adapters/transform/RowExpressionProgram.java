@@ -1,13 +1,18 @@
 package io.tapstate.adapters.transform;
 
+import com.google.protobuf.ByteString;
 import dev.cel.common.CelAbstractSyntaxTree;
 import dev.cel.runtime.CelEvaluationException;
 import dev.cel.runtime.CelRuntime;
 import dev.cel.runtime.CelRuntimeFactory;
 import io.tapstate.core.dsl.RowExpressions;
 import io.tapstate.core.event.Envelope;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.function.UnaryOperator;
 
 /**
  * One compiled row expression, ready to evaluate against an event. The compiler environment is the
@@ -18,7 +23,9 @@ import java.util.Map;
  * <p>Evaluation binds the envelope as the expression root the same way the compiler declared it:
  * {@code op} as its wire symbol, {@code ts} / {@code src} as scalars, and {@code before} / {@code
  * after} / {@code schema} as maps (an absent map binds empty, so a present-field test is well
- * defined rather than a null dereference).
+ * defined rather than a null dereference). The row's values already speak the tapstate value model,
+ * having been carried into it where the columns' types were resolved; the only thing binding adds is
+ * the byte string this language uses for bytes, which evaluation takes back off again.
  */
 final class RowExpressionProgram {
 
@@ -61,16 +68,78 @@ final class RowExpressionProgram {
         vars.put("op", event.op().symbol());
         vars.put("ts", event.ts());
         vars.put("src", event.src());
-        vars.put("before", event.before() == null ? Map.of() : event.before());
-        vars.put("after", event.after() == null ? Map.of() : event.after());
-        vars.put("schema", event.schema() == null ? Map.of() : event.schema());
+        vars.put("before", bind(event.before()));
+        vars.put("after", bind(event.after()));
+        vars.put("schema", bind(event.schema()));
         try {
-            return program.eval(vars);
+            return unbound(program.eval(vars));
         } catch (CelEvaluationException e) {
             // A row-level evaluation failure (a missing field, a type clash on a dyn value, a function
             // that type-checks but is unbound at runtime) is a user-diagnosable condition: surface it
             // as a coded diagnostic naming the expression, not a bare crash that fails the job opaquely.
             throw TransformErrors.expressionFailed(expr, e);
         }
+    }
+
+    // A row image as the expression sees it. An absent map binds empty, so a present-field test is
+    // well defined rather than a null dereference.
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> bind(Map<String, Object> row) {
+        return row == null ? Map.of() : (Map<String, Object>) bound(row);
+    }
+
+    // The row already speaks the value model — its numbers were carried into it at the boundary that
+    // resolved the columns' types, so an integral column is already the one integer width an
+    // expression can do arithmetic on. Nothing here re-decides that: a second widening would be a
+    // second opinion about what a column is, and the one thing it could add is a disagreement.
+    //
+    // What is left is the one representation this language needs and the row does not have. Bytes
+    // travel as the language's own byte string, which is a wrapper rather than a value: it goes on
+    // here and comes back off in unbound, so a sink is still owed the row's own bytes.
+    //
+    // Nested values are wrapped too, since a document's own fields and an array's elements are as
+    // reachable from an expression as a top-level column. A container whose contents all pass through
+    // unchanged is returned as it is, so the common row costs no copy.
+    private static Object bound(Object value) {
+        if (value instanceof byte[] bytes) {
+            return ByteString.copyFrom(bytes);
+        }
+        return mapped(value, RowExpressionProgram::bound);
+    }
+
+    // The reverse, for what an expression hands back. The byte string is the expression language's
+    // own wrapper; a sink is owed the row's bytes, so a value that merely travelled through an
+    // expression leaves as the kind of value it arrived as.
+    private static Object unbound(Object value) {
+        if (value instanceof ByteString bytes) {
+            return bytes.toByteArray();
+        }
+        return mapped(value, RowExpressionProgram::unbound);
+    }
+
+    // Applies a conversion through a map or a list, returning the original container when nothing
+    // inside it changed. Any other value is its own conversion.
+    private static Object mapped(Object value, UnaryOperator<Object> conversion) {
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> converted = new LinkedHashMap<>(map.size());
+            boolean changed = false;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                Object element = conversion.apply(entry.getValue());
+                changed |= element != entry.getValue();
+                converted.put(entry.getKey(), element);
+            }
+            return changed ? converted : map;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> converted = new ArrayList<>(list.size());
+            boolean changed = false;
+            for (Object element : list) {
+                Object next = conversion.apply(element);
+                changed |= next != element;
+                converted.add(next);
+            }
+            return changed ? converted : list;
+        }
+        return value;
     }
 }

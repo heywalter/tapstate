@@ -51,7 +51,7 @@
         },
         "apply": {
           "type": "array",
-          "description": "Product resource files, applied as one batch: the product resolves references within the submitted set.",
+          "description": "Product resource files, applied as one batch: the product resolves references within the submitted set. The pipeline is applied in the same batch whether or not it is listed here.",
           "items": {
             "type": "string"
           }
