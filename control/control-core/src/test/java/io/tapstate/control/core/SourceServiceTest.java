@@ -57,6 +57,7 @@ class SourceServiceTest {
         assertThat(drafted.yaml())
                 .contains("version: tapstate/v1", "kind: source", "id: orders", "connector: mysql")
                 .contains("password: draft-secret");
+        assertThat(drafted).hasToString("SourceDraftResult[yaml=<redacted>]");
         assertThat(store.list()).isEmpty();
     }
 
