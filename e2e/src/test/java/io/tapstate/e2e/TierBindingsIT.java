@@ -86,7 +86,7 @@ class TierBindingsIT {
 
             assertThatThrownBy(() -> binding.count(new TableAlias("never_applied", "orders")))
                     .isInstanceOf(EnvelopeException.class)
-                    .hasMessageContaining("no source applied for never_applied");
+                    .hasMessageContaining("no source declared for never_applied");
         }
     }
 

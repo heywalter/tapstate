@@ -14,6 +14,7 @@ import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactMutation;
 import io.tapstate.spi.store.ArtifactStore;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 
 import java.util.ArrayList;

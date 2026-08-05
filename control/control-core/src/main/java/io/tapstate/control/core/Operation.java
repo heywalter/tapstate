@@ -17,6 +17,7 @@ import java.util.regex.Pattern;
  *   <li>{@code audited} — whether an invocation must record an audit entry (write / admin operations do;
  *       a failed audit write means the operation does not execute).
  *   <li>{@code schema} — references into the shared schema for request and result, or {@code null}.
+ *   <li>{@code description} — protocol-neutral guidance for an AI or human caller.
  *   <li>{@code exposure} — the stage at which this operation is open on each face. An absent face means
  *       "not exposed there"; the map is defensively copied and unmodifiable.
  * </ul>
@@ -25,7 +26,13 @@ import java.util.regex.Pattern;
  * chains several operations) and offline-only local computation are not operations and get no entry —
  * a face may compose registered operations, it may not invent semantics.
  */
-public record Operation(String id, Scope scope, boolean audited, SchemaRef schema, Map<Frontend, Maturity> exposure) {
+public record Operation(
+        String id,
+        Scope scope,
+        boolean audited,
+        SchemaRef schema,
+        String description,
+        Map<Frontend, Maturity> exposure) {
 
     private static final Pattern ID = Pattern.compile("[a-z0-9]+(\\.[a-z0-9-]+)+");
 
@@ -39,6 +46,9 @@ public record Operation(String id, Scope scope, boolean audited, SchemaRef schem
         if (scope == null) {
             throw new IllegalArgumentException("operation scope must be set: " + id);
         }
+        if (description == null || description.isBlank()) {
+            throw new IllegalArgumentException("operation description must be non-blank: " + id);
+        }
         EnumMap<Frontend, Maturity> copy = new EnumMap<>(Frontend.class);
         if (exposure != null) {
             for (Map.Entry<Frontend, Maturity> e : exposure.entrySet()) {
@@ -50,5 +60,10 @@ public record Operation(String id, Scope scope, boolean audited, SchemaRef schem
             }
         }
         exposure = Collections.unmodifiableMap(copy);
+    }
+
+    /** Compatibility constructor for operations that do not yet need specialized caller guidance. */
+    public Operation(String id, Scope scope, boolean audited, SchemaRef schema, Map<Frontend, Maturity> exposure) {
+        this(id, scope, audited, schema, id, exposure);
     }
 }

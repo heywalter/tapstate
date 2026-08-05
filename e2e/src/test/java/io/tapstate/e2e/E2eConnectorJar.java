@@ -39,8 +39,18 @@ final class E2eConnectorJar {
     /** The resource the entry class's {@code @TapConnectorClass} names, resolved as a jar entry. */
     private static final String SPEC_ENTRY = "e2e-file-spec.json";
 
-    /** {@code properties.id} is the identity registration files the artifact under. */
-    private static final String SPEC_JSON = "{\"properties\":{\"id\":\"" + CONNECTOR_ID + "\"}}";
+    /**
+     * {@code properties.id} is the identity registration files the artifact under, and {@code dataTypes}
+     * is how the connector's own word for a column type becomes a type the product knows.
+     *
+     * <p>Declaring the one type this connector has is not decoration. A discovered column whose native
+     * type maps to nothing resolves as unknown, and an expression reading an unknown column is refused
+     * at apply - so without this, every specification whose pipeline reads a row field is refused
+     * before it runs. The connector already says every column is text; this is where it says it in the
+     * vocabulary the mapping reads.
+     */
+    private static final String SPEC_TEMPLATE =
+            "{\"properties\":{\"id\":\"%s\"},\"dataTypes\":{\"string\":{\"to\":\"TapString\",\"byte\":65535}}}";
 
     /**
      * The API version the product's level table registers. An unregistered version does not refuse the
@@ -54,7 +64,18 @@ final class E2eConnectorJar {
 
     /** Writes the connector jar into {@code directory} and returns it, named so the id finds it. */
     static Path buildInto(Path directory) {
-        Path jar = directory.resolve(CONNECTOR_ID + ".jar");
+        return buildInto(directory, CONNECTOR_ID);
+    }
+
+    /**
+     * The same connector packaged under a different declared id.
+     *
+     * <p>Identity is the specification's, not the class's, so one connector can be packaged as any id -
+     * which is what lets a test hand the product an artifact that is well formed in every way except
+     * that its id is one this release does not support.
+     */
+    static Path buildInto(Path directory, String connectorId) {
+        Path jar = directory.resolve(connectorId + ".jar");
         Path classes = packageDirectory();
         try (OutputStream out = Files.newOutputStream(jar);
                 JarOutputStream jos = new JarOutputStream(out, manifest())) {
@@ -64,10 +85,10 @@ final class E2eConnectorJar {
                 jos.closeEntry();
             }
             jos.putNextEntry(new JarEntry(SPEC_ENTRY));
-            jos.write(SPEC_JSON.getBytes(StandardCharsets.UTF_8));
+            jos.write(SPEC_TEMPLATE.formatted(connectorId).getBytes(StandardCharsets.UTF_8));
             jos.closeEntry();
         } catch (IOException e) {
-            throw new UncheckedIOException("building the " + CONNECTOR_ID + " connector jar at " + jar, e);
+            throw new UncheckedIOException("building the " + connectorId + " connector jar at " + jar, e);
         }
         return jar;
     }

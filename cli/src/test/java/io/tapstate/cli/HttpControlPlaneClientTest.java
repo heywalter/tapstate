@@ -215,7 +215,7 @@ class HttpControlPlaneClientTest {
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             captured.set(new CapturedRequest(
                     exchange.getRequestMethod(),
-                    exchange.getRequestURI().getPath(),
+                    exchange.getRequestURI().getRawPath(),
                     exchange.getRequestURI().getQuery(),
                     exchange.getRequestHeaders().getFirst("Authorization"),
                     body));
@@ -269,6 +269,57 @@ class HttpControlPlaneClientTest {
             Map<?, ?> sent = (Map<?, ?>) JsonReader.parse(seen.get().body());
             assertThat(sent.get("drafts")).isInstanceOf(List.class);
             assertThat(seen.get().body()).contains("src_kfk.tap.yml").contains("kind: source");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void tokenCreatePostsScopeAndReturnsTheOneTimeBearer() throws Exception {
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/tokens", 201,
+                "{\"tokenId\":\"tok_01\",\"scope\":\"WRITE\",\"token\":\"ts_live_secret\","
+                        + "\"createdAt\":\"2026-07-30T01:02:03Z\"}", seen);
+        try (HttpControlPlaneClient client = new HttpControlPlaneClient()) {
+            TokenCreateOutcome outcome = client.tokenCreate(baseOf(server), "admin-token", "write");
+            assertThat(outcome).isEqualTo(new TokenCreateOutcome.Issued(
+                    new RemoteCreatedToken("tok_01", "WRITE", "ts_live_secret", "2026-07-30T01:02:03Z")));
+            assertThat(seen.get().method()).isEqualTo("POST");
+            assertThat(seen.get().path()).isEqualTo("/api/tokens");
+            assertThat(seen.get().authorization()).isEqualTo("Bearer admin-token");
+            assertThat(JsonReader.parse(seen.get().body())).isEqualTo(Map.of("scope", "write"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void tokenListDecodesOnlySecretFreeDescriptors() throws Exception {
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/tokens", 200,
+                "{\"tokens\":[{\"tokenId\":\"tok_01\",\"scope\":\"READ\",\"revoked\":false,"
+                        + "\"createdAt\":\"2026-07-30T01:02:03Z\"}]}", seen);
+        try (HttpControlPlaneClient client = new HttpControlPlaneClient()) {
+            TokenListOutcome outcome = client.tokenList(baseOf(server), "admin-token");
+            assertThat(outcome).isEqualTo(new TokenListOutcome.Listed(List.of(
+                    new RemoteToken("tok_01", "READ", false, "2026-07-30T01:02:03Z"))));
+            assertThat(seen.get().method()).isEqualTo("GET");
+            assertThat(seen.get().authorization()).isEqualTo("Bearer admin-token");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void tokenRevokeUsesTheTokenIdAsAnEncodedPathSegment() throws Exception {
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/tokens/", 204, null, seen);
+        try (HttpControlPlaneClient client = new HttpControlPlaneClient()) {
+            assertThat(client.tokenRevoke(baseOf(server), "admin-token", "token/one"))
+                    .isEqualTo(new TokenRevokeOutcome.Revoked());
+            assertThat(seen.get().method()).isEqualTo("POST");
+            assertThat(seen.get().path()).isEqualTo("/api/tokens/token%2Fone:revoke");
+            assertThat(seen.get().authorization()).isEqualTo("Bearer admin-token");
         } finally {
             server.stop(0);
         }
@@ -393,8 +444,9 @@ class HttpControlPlaneClientTest {
         try (ServerSocket socket = new ServerSocket(0)) {
             closedPort = socket.getLocalPort();
         }
-        ApplyOutcome outcome = new HttpControlPlaneClient().apply(URI.create("http://127.0.0.1:" + closedPort),
-                "tok", List.of(new LocalDraft("a.tap.yml", "kind: source\n")));
+        ApplyOutcome outcome = new HttpControlPlaneClient(Duration.ofMillis(400), Duration.ofMillis(400))
+                .apply(URI.create("http://127.0.0.1:" + closedPort),
+                        "tok", List.of(new LocalDraft("a.tap.yml", "kind: source\n")));
         assertThat(outcome).isInstanceOf(ApplyOutcome.Unreachable.class);
     }
 

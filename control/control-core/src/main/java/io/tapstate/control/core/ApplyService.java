@@ -1,27 +1,48 @@
 package io.tapstate.control.core;
 
 import io.tapstate.core.catalog.TapstateCatalog;
+import io.tapstate.core.common.TapstateType;
 import io.tapstate.core.dsl.DslException;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.dsl.DslParser;
+import io.tapstate.core.dsl.DiscoveredTable;
+import io.tapstate.core.dsl.RowExpressionTypeRules;
 import io.tapstate.core.dsl.Workspace;
+import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.Resource;
+import io.tapstate.core.model.SourceResource;
+import io.tapstate.core.model.TableRef;
 import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactStore;
+import io.tapstate.spi.store.SchemaStore;
+import io.tapstate.spi.store.SourceField;
+import io.tapstate.spi.store.SourceTable;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * The resource-type-agnostic apply pipeline. {@link #plan} is the front half — validate -> canonical
  * -> hash: it parses each draft (structural + expression checks), validates the whole batch as one
  * closure (duplicate ids, reference closure, mode rules, and the connector capability matrix against
- * the catalog), then emits each resource's canonical form and content hash, touching no store.
+ * the catalog), judges the batch's row expressions against the columns of the tables its sources were
+ * discovered to hold, then emits each resource's canonical form and content hash. It writes nothing, and the only
+ * store it reads is the schema store — an observation of what discovery found, never the config truth
+ * layer, which apply is the one writer of.
  * {@link #apply} runs a plan and then upserts each artifact into the store by its id, skipping the
  * write when the stored artifact's content hash is unchanged (a no-op).
+ *
+ * <p>The row-expression type check is the one layer that cannot run offline: the columns' types exist
+ * only once a connection has been discovered, so an expression the data cannot survive is refused
+ * here rather than at the offline check, which has nothing to judge it against.
  *
  * <p>Any validation failure aborts with the first coded {@code dsl.*} diagnostic before any upsert;
  * nothing is written on a validation failure. The batch is the closure: references resolve within the
@@ -41,13 +62,16 @@ public final class ApplyService {
     private final Supplier<TapstateCatalog> catalog;
     private final ArtifactStore store;
     private final AuditGate auditGate;
+    private final SchemaStore schemas;
     private final DslParser parser = new DslParser();
     private final CanonicalWriter writer = new CanonicalWriter();
 
-    public ApplyService(Supplier<TapstateCatalog> catalog, ArtifactStore store, AuditGate auditGate) {
+    public ApplyService(
+            Supplier<TapstateCatalog> catalog, ArtifactStore store, AuditGate auditGate, SchemaStore schemas) {
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.store = Objects.requireNonNull(store, "store");
         this.auditGate = Objects.requireNonNull(auditGate, "auditGate");
+        this.schemas = Objects.requireNonNull(schemas, "schemas");
     }
 
     /**
@@ -62,12 +86,31 @@ public final class ApplyService {
             resources.add(parse(draft));
         }
         Workspace workspace = Workspace.of(resources, catalog.get());
+        RowExpressionTypeRules.validate(resources, discoveredTables(resources));
         List<PreparedArtifact> prepared = new ArrayList<>();
         for (Resource resource : workspace.resources()) {
             String canonicalForm = writer.write(resource);
             prepared.add(new PreparedArtifact(resource, canonicalForm, CanonicalHash.of(canonicalForm)));
         }
         return new ApplyPlan(prepared);
+    }
+
+    /** Validates and plans a batch while performing no store or audit write. */
+    public ArtifactValidationResult validate(List<ArtifactDraft> drafts) {
+        final ApplyPlan planned;
+        try {
+            planned = plan(drafts);
+        } catch (TapstateException diagnostic) {
+            return new ArtifactValidationResult(
+                    false,
+                    List.of(),
+                    List.of(new ValidationDiagnostic(diagnostic.code().code(), diagnostic.args())));
+        }
+        List<ArtifactOutcome> outcomes = new ArrayList<>();
+        for (PreparedArtifact prepared : planned.artifacts()) {
+            outcomes.add(outcome(prepared));
+        }
+        return new ArtifactValidationResult(true, outcomes, List.of());
     }
 
     /**
@@ -90,21 +133,15 @@ public final class ApplyService {
         List<Resource> toWrite = new ArrayList<>();
         List<AuditContext> audited = new ArrayList<>();
         for (PreparedArtifact prepared : plan.artifacts()) {
-            Optional<Resource> existing = store.get(prepared.id());
-            ArtifactOutcome.Change change;
-            if (existing.isEmpty()) {
-                change = ArtifactOutcome.Change.CREATED;
-                toWrite.add(prepared.resource());
-            } else if (storedHash(existing.get()).equals(prepared.contentHash())) {
-                change = ArtifactOutcome.Change.UNCHANGED;
-            } else {
-                change = ArtifactOutcome.Change.UPDATED;
+            ArtifactOutcome outcome = outcome(prepared);
+            ArtifactOutcome.Change change = outcome.change();
+            if (change != ArtifactOutcome.Change.UNCHANGED) {
                 toWrite.add(prepared.resource());
             }
             if (change != ArtifactOutcome.Change.UNCHANGED) {
                 audited.add(new AuditContext(principal, prepared.id()));
             }
-            outcomes.add(new ArtifactOutcome(prepared.id(), prepared.kind(), change, prepared.contentHash()));
+            outcomes.add(outcome);
         }
         // The changed set is audited per artifact, then written as one atomic batch: all of it lands or,
         // on a write failure, none does.
@@ -112,6 +149,119 @@ public final class ApplyService {
             store.saveAll(toWrite);
             return new ApplyResult(outcomes);
         });
+    }
+
+    /**
+     * The tables each source in the batch was discovered to hold, keyed by the source's id — which is
+     * also the connection id its discovery is stored under. A source that has never been discovered is
+     * absent from the result rather than present and empty, so the rules can tell "discovered nothing"
+     * apart from "not discovered".
+     *
+     * <p>Each table keeps its own columns. Pooling a source's tables into one column list would have to
+     * call a column two of them type differently unresolved, and one database naming a column
+     * {@code id} in two unrelated tables, typed differently, is the ordinary shape of a database rather
+     * than a corner of it — pooled, the gate would refuse most expressions on most real databases. The
+     * rules judge an expression against the table it reads, so the tables are handed over apart.
+     *
+     * <p>A model counts only when it was discovered through the connector this source now names. Types
+     * are resolved against the declaring connector's own vocabulary, so a model another connector
+     * produced carries types this source's columns were never described in - reading it would be
+     * judging one source's expression against a different source's answers. Keeping the connection's id
+     * across such a change does not make the old model apply to the new connector, so a mismatch reads
+     * as undiscovered: the author is asked to discover, and discovering is what makes it true.
+     *
+     * <p>What this does not check is whether the model is current. The stored model is what the last
+     * discovery found, and the source it describes can change afterwards without anything here
+     * changing - the connection settings can be edited, or the database itself altered under settings
+     * that never moved. The check is against the last discovery, by design, and only a fresh discovery
+     * makes it fresh.
+     *
+     * <p>A batch carrying no pipeline is answered without reading the store at all. Only a pipeline
+     * holds a row expression, so there would be nothing to judge what was read against - and a batch
+     * of endpoints alone is an ordinary thing to apply, which would otherwise pay a store round trip
+     * per source for an answer nobody consults.
+     */
+    private Map<String, List<DiscoveredTable>> discoveredTables(List<Resource> resources) {
+        Map<String, List<DiscoveredTable>> bySource = new LinkedHashMap<>();
+        if (resources.stream().noneMatch(PipelineResource.class::isInstance)) {
+            return bySource;
+        }
+        for (Resource resource : resources) {
+            if (!(resource instanceof SourceResource source)) {
+                continue;
+            }
+            schemas.get(source.id())
+                    .filter(discovered -> discovered.connectorId().equals(source.connector()))
+                    .ifPresent(discovered -> {
+                        List<DiscoveredTable> tables = new ArrayList<>();
+                        for (SourceTable table : selectedTables(source, discovered.model().tables())) {
+                            Map<String, TapstateType> columns = new LinkedHashMap<>();
+                            for (SourceField field : table.fields()) {
+                                columns.put(field.name(), field.type());
+                            }
+                            tables.add(new DiscoveredTable(table.name(), columns));
+                        }
+                        bySource.put(source.id(), tables);
+                    });
+        }
+        return bySource;
+    }
+
+    /**
+     * The discovered tables {@code source} reads. Discovery runs per connection, so the stored model
+     * carries every table the connection can see - including the ones this source's selector leaves
+     * out. Those are not this source's to answer for, and the wiring can point an expression at a table
+     * only through the source that selects it.
+     *
+     * <p>A selector matching nothing in the model narrows nothing — the names cannot be lined up (the
+     * connector may report qualified names, or the model may predate the selector), so no table is
+     * ruled out. Where the wiring names the table it reads, this changes no verdict: a name absent
+     * from the model is filtered out downstream either way. Where it cannot — a regex {@code from:},
+     * which only a connection can resolve — it is what keeps the whole model in play; narrowing to
+     * the empty set there would leave every column absent, and an absent column stays untyped and
+     * passes, so the gate would quietly stop refusing anything at all for that source. A pattern that
+     * will not compile matches nothing on its own rather than failing the apply.
+     */
+    private static List<SourceTable> selectedTables(SourceResource source, List<SourceTable> discovered) {
+        List<TableRef> selectors = source.tables();
+        if (selectors == null || selectors.isEmpty()) {
+            return discovered;      // no selector: the source reads whatever the connection holds
+        }
+        List<SourceTable> selected = new ArrayList<>();
+        for (SourceTable table : discovered) {
+            if (selectors.stream().anyMatch(selector -> selects(selector, table.name()))) {
+                selected.add(table);
+            }
+        }
+        return selected.isEmpty() ? discovered : selected;
+    }
+
+    /** Whether one {@code tables} entry selects the named discovered table. */
+    private static boolean selects(TableRef selector, String table) {
+        return switch (selector) {
+            case TableRef.Literal literal -> literal.name().equals(table);
+            case TableRef.Spec spec -> spec.name().equals(table);
+            case TableRef.Regex regex -> matches(regex.pattern(), table);
+        };
+    }
+
+    private static boolean matches(String pattern, String table) {
+        try {
+            return Pattern.matches(pattern, table);
+        } catch (PatternSyntaxException e) {
+            return false;
+        }
+    }
+
+    /** Classifies one prepared artifact without mutating the store. */
+    private ArtifactOutcome outcome(PreparedArtifact prepared) {
+        Optional<Resource> existing = store.get(prepared.id());
+        ArtifactOutcome.Change change = existing.isEmpty()
+                ? ArtifactOutcome.Change.CREATED
+                : storedHash(existing.get()).equals(prepared.contentHash())
+                        ? ArtifactOutcome.Change.UNCHANGED
+                        : ArtifactOutcome.Change.UPDATED;
+        return new ArtifactOutcome(prepared.id(), prepared.kind(), change, prepared.contentHash());
     }
 
     /** The content hash of a stored artifact, recomputed over its canonical form for the no-op check. */

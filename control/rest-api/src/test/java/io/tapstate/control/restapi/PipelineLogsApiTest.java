@@ -110,6 +110,30 @@ class PipelineLogsApiTest {
                 });
     }
 
+    @Test
+    void logsHonorsTheRequestedLineLimit() {
+        PipelineLogs body = client().get().uri("/api/pipelines/pl1/logs?limit=1")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .retrieve().toEntity(PipelineLogs.class).getBody();
+
+        assertThat(body.lines()).extracting(LogLine::message)
+                .containsExactly("converged to RUNNING");
+    }
+
+    @Test
+    void logsRejectsNonPositiveLimitsAsClientErrors() {
+        for (String limit : List.of("0", "-1")) {
+            ApiError body = client().get().uri("/api/pipelines/pl1/logs?limit=" + limit)
+                    .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                    .exchange((request, response) -> {
+                        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                        return response.bodyTo(ApiError.class);
+                    });
+
+            assertThat(body.code()).isEqualTo("control.malformed-request");
+        }
+    }
+
     // ---- a read of a pipeline with no lines is a benign empty tail (200), never a 404 ----
 
     @Test

@@ -112,7 +112,7 @@ class AuditedSourceServiceTest {
                 id,
                 new Metadata(Map.of(), description),
                 "mysql",
-                Map.of("host", "localhost", "port", "3306"),
+                Map.of("host", "localhost", "port", "3306", "database", "orders", "username", "app"),
                 "snapshot",
                 List.of(new SourceTableDraft("literal", "orders", null, null, null, null)),
                 Map.of(),

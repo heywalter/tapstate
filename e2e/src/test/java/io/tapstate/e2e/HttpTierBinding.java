@@ -89,7 +89,14 @@ final class HttpTierBinding implements TierBinding {
         control.apply(yamlByFile);
     }
 
-    /** The connector and settings come from the applied source, which is the only place they are stated. */
+    @Override
+    public void readResources(List<String> resourceFiles) {
+        for (String resourceFile : resourceFiles) {
+            rememberEndpoint(resourceFile, read(resourceFile));
+        }
+    }
+
+    /** The connector and settings come from the declared source, which is the only place they are stated. */
     @Override
     public void discoverSchema(String resourceId) {
         SourceResource source = requireSource(resourceId);
@@ -149,7 +156,7 @@ final class HttpTierBinding implements TierBinding {
         SourceResource source = sourcesById.get(resourceId);
         if (source == null) {
             throw new EnvelopeException(
-                    "no source applied for " + resourceId + "; list its resource under setup.apply");
+                    "no source declared for " + resourceId + "; list its resource under setup.apply");
         }
         return source;
     }

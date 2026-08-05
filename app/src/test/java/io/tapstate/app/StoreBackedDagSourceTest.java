@@ -22,6 +22,7 @@ import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.CatalogStore;
 import io.tapstate.spi.store.ConnectionTestResultStore;
 import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.DesiredStore;
 import io.tapstate.spi.store.ObservationStore;
@@ -202,6 +203,11 @@ class StoreBackedDagSourceTest {
 
         @Override
         public ConnectorCatalogStore connectorCatalog() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ConnectorSpecStore connectorSpecs() {
             throw new UnsupportedOperationException();
         }
 

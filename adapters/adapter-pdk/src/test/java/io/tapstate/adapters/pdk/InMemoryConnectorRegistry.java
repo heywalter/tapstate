@@ -50,6 +50,11 @@ final class InMemoryConnectorRegistry implements ConnectorRegistry {
         return bytes == null ? Optional.empty() : Optional.of(bytes.clone());
     }
 
+    @Override
+    public boolean hasArtifact(String contentHash) {
+        return artifact(contentHash).isPresent();
+    }
+
     /** A registration whose bytes were never stored — the store inconsistency the provisioner refuses. */
     void addDanglingRegistration(String connectorId, String contentHash, String pdkApiVersion) {
         registrations.add(new ConnectorRegistration(

@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ThrowableProxyUtil;
 import ch.qos.logback.core.AppenderBase;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.LogSink;
+import io.tapstate.core.logging.SecretRedactor;
 
 import java.util.Objects;
 
@@ -23,9 +24,11 @@ final class PipelineLogAppender extends AppenderBase<ILoggingEvent> {
     static final String PIPELINE_ID_MDC_KEY = "pipeline_id";
 
     private final LogSink sink;
+    private final SecretRedactor redactor;
 
-    PipelineLogAppender(LogSink sink) {
+    PipelineLogAppender(LogSink sink, SecretRedactor redactor) {
         this.sink = Objects.requireNonNull(sink, "sink");
+        this.redactor = Objects.requireNonNull(redactor, "redactor");
     }
 
     @Override
@@ -35,7 +38,7 @@ final class PipelineLogAppender extends AppenderBase<ILoggingEvent> {
             return;
         }
         sink.append(pipelineId,
-                new LogLine(event.getTimeStamp(), event.getLevel().toString(), render(event)));
+                new LogLine(event.getTimeStamp(), event.getLevel().toString(), redactor.redact(render(event))));
     }
 
     /** The formatted message, with the exception's stack trace appended when the event carries one. */

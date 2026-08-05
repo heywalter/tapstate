@@ -6,6 +6,7 @@ import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.CatalogStore;
 import io.tapstate.spi.store.ConnectionTestResultStore;
 import io.tapstate.spi.store.ConnectorCatalogStore;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.DesiredStore;
 import io.tapstate.spi.store.ObservationStore;
@@ -44,6 +45,9 @@ public final class MongoStorePort implements StorePort {
     public static final String CONNECTOR_ARTIFACTS = "connector_artifacts";
     /** The collection holding one derived catalog row per registered connector. */
     public static final String CONNECTOR_CATALOG = "connector_catalog";
+
+    /** Spec sources kept beside the derived rows, keyed by content hash. */
+    public static final String CONNECTOR_SPECS = "connector_specs";
     /** The collection holding the latest connection-test result per connection. */
     public static final String CONNECTION_TEST_RESULTS = "connection_test_results";
     /** The collection holding one SRS coordination record per mining chain. */
@@ -56,6 +60,7 @@ public final class MongoStorePort implements StorePort {
     private final SchemaStore schemas;
     private final ConnectorRegistry connectors;
     private final ConnectorCatalogStore connectorCatalog;
+    private final ConnectorSpecStore connectorSpecs;
     private final ConnectionTestResultStore connectionTestResults;
     private final ObservationStore observations;
     private final SrsMetaStore meta;
@@ -75,6 +80,7 @@ public final class MongoStorePort implements StorePort {
         this.schemas = new MongoSchemaStore(database.getCollection(SOURCE_SCHEMAS));
         this.connectors = new MongoConnectorRegistry(GridFSBuckets.create(database, CONNECTOR_ARTIFACTS));
         this.connectorCatalog = new MongoConnectorCatalogStore(database.getCollection(CONNECTOR_CATALOG));
+        this.connectorSpecs = new MongoConnectorSpecStore(database.getCollection(CONNECTOR_SPECS));
         this.connectionTestResults =
                 new MongoConnectionTestResultStore(database.getCollection(CONNECTION_TEST_RESULTS));
         this.observations = new MongoObservationStore(database.getCollection(PIPELINE_OBSERVATION));
@@ -114,6 +120,11 @@ public final class MongoStorePort implements StorePort {
     @Override
     public ConnectorCatalogStore connectorCatalog() {
         return connectorCatalog;
+    }
+
+    @Override
+    public ConnectorSpecStore connectorSpecs() {
+        return connectorSpecs;
     }
 
     @Override

@@ -3,6 +3,7 @@ package io.tapstate.adapters.mongostore;
 import com.mongodb.MongoException;
 import com.mongodb.MongoSecurityException;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.spi.store.IoError;
 
 import java.util.Map;
 import java.util.function.Supplier;

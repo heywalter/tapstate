@@ -86,7 +86,8 @@ final class RealProcessServer implements ServerHandle {
                 "--tapstate.store.mongo.server-selection-timeout=5s",
                 // A staging directory of this launch's own, for the same reason the other tier gets one:
                 // the cache is content-addressed and reused, so a shared one serves a stale connector.
-                "--" + ServerHandle.PLUGINS_DIRECTORY_SETTING + "=" + ServerHandle.privateStagingDirectory());
+                "--" + ServerHandle.PLUGINS_DIRECTORY_SETTING + "=" + ServerHandle.privateStagingDirectory(),
+                "--" + ServerHandle.ALSO_ACCEPT_IDS_SETTING + "=" + E2eConnectorJar.CONNECTOR_ID);
         try {
             return new ProcessBuilder(command)
                     .directory(workingDirectory.toFile())

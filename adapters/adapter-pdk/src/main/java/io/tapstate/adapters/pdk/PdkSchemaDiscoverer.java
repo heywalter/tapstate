@@ -27,10 +27,11 @@ import java.util.Set;
  * model carries any of them.
  *
  * <p>A connector that throws out of {@code discoverSchema} could not complete discovery — a coded
- * connector-domain failure, distinct from an empty source. A field's type is carried through exactly as
- * the connector reported it; mapping it onto the tapstate type namespace is a separate step not done
- * here. An un-loadable or level-incompatible connector is refused up front by the shared open path,
- * never downgraded into an empty model.
+ * connector-domain failure, distinct from an empty source. A field carries both the type the connector
+ * reported it with, verbatim, and that type resolved onto the tapstate type namespace — resolved here,
+ * because the connector's own declarations are what resolves it and they are unreachable once it closes.
+ * An un-loadable or level-incompatible connector is refused up front by the shared open path, never
+ * downgraded into an empty model.
  */
 public final class PdkSchemaDiscoverer implements SchemaDiscoverer {
 
@@ -63,6 +64,9 @@ public final class PdkSchemaDiscoverer implements SchemaDiscoverer {
                 connector.connector().init(connector.context());
                 List<TapTable> tables = new ArrayList<>();
                 connector.connector().discoverSchema(connector.context(), List.of(), Integer.MAX_VALUE, tables::addAll);
+                // Resolving a column's type is the connector's own job, off its own declarations, so it
+                // happens here while the connector is still open - never after the model has left.
+                tables.forEach(connector::fillFieldTypes);
                 return tables;
             });
         } catch (TapstateException e) {
@@ -84,7 +88,8 @@ public final class PdkSchemaDiscoverer implements SchemaDiscoverer {
     private static List<SourceField> fields(TapTable table) {
         List<SourceField> fields = new ArrayList<>();
         if (table.getNameFieldMap() != null) {
-            table.getNameFieldMap().forEach((name, field) -> fields.add(new SourceField(name, field.getDataType())));
+            table.getNameFieldMap().forEach((name, field) ->
+                    fields.add(new SourceField(name, field.getDataType(), PdkTypeMapping.of(field.getTapType()))));
         }
         return fields;
     }

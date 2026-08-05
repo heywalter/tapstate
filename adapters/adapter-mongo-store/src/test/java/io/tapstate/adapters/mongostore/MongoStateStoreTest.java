@@ -6,6 +6,7 @@ import com.mongodb.ServerAddress;
 import com.mongodb.WriteError;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.CheckpointDoc;
+import io.tapstate.spi.store.IoError;
 import org.bson.BsonDocument;
 import org.bson.Document;
 import org.junit.jupiter.api.Test;

@@ -63,10 +63,16 @@ class RingDependencyRulesTest {
                         "io.tapstate.core..",
                         "com.fasterxml.jackson.annotation..",
                         // R1 named grants, core-dsl-only: the YAML parser (B3) and the CEL
-                        // expression compiler (B4). cel-java's transitive libraries (guava /
-                        // protobuf / antlr4) stay out of core-dsl's own bytecode surface.
+                        // expression compiler (B4). cel-java's other transitive libraries
+                        // (protobuf / antlr4) stay out of core-dsl's own bytecode surface.
                         "org.yaml.snakeyaml..",
-                        "dev.cel.."
+                        "dev.cel..",
+                        // Guava is not an independent grant: building a CEL type is impossible
+                        // without it, because cel's own type API takes and returns guava
+                        // collections in its signatures. It is confined to method bodies - no
+                        // core-dsl type exposes a guava type in its own signature - so widening
+                        // this grant does not widen what the rest of the platform can see.
+                        "com.google.common.."
                 )
                 .allowEmptyShould(true)
                 .because("the YAML parser and CEL compiler are granted to core-dsl alone; the rest "
@@ -96,15 +102,45 @@ class RingDependencyRulesTest {
                         "java..",
                         "io.tapstate.cli..",
                         "io.tapstate.core..",
+                        "io.tapstate.control.client..",
                         // the shared error-code message catalog + renderer (presentation layer)
                         "io.tapstate.messages..",
                         // the CLI's own facade libraries
                         "picocli..",
                         "org.jline..")
                 .allowEmptyShould(true)
-                .because("the CLI talks to services over HTTP only; it must have no compile "
-                        + "dependency on control or runtime modules; the shared message catalog is "
+                .because("the CLI talks to services through the framework-free HTTP client only; it "
+                        + "must have no dependency on control services or runtime modules; the message catalog is "
                         + "a presentation-layer leaf, not a service ring")
+                .check(tapstateClasses);
+    }
+
+    @Test
+    @DisplayName("control-client depends only on the core ring and the JDK HTTP client")
+    void controlClientIsAFrameworkFreeTransportLeaf() {
+        classes().that().resideInAPackage("io.tapstate.control.client..")
+                .should().onlyDependOnClassesThat().resideInAnyPackage(
+                        "java..",
+                        "io.tapstate.control.client..",
+                        "io.tapstate.core..")
+                .because("the shared HTTP client is a framework-free transport leaf usable by the CLI and MCP")
+                .check(tapstateClasses);
+    }
+
+    @Test
+    @DisplayName("R5: mcp-server is a presentation sidecar over control-core and control-client")
+    void r5_mcpServerLayering() {
+        classes().that().resideInAPackage("io.tapstate.mcp..")
+                .should().onlyDependOnClassesThat().resideInAnyPackage(
+                        "java..",
+                        "io.tapstate.mcp..",
+                        "io.tapstate.control.client..",
+                        "io.tapstate.control.core..",
+                        "io.tapstate.core..",
+                        "io.tapstate.messages..",
+                        "io.modelcontextprotocol..",
+                        "org.springframework..")
+                .because("the local MCP presentation sidecar delegates only through the HTTP control contract")
                 .check(tapstateClasses);
     }
 

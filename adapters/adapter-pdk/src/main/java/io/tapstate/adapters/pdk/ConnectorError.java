@@ -49,6 +49,15 @@ public enum ConnectorError implements TapstateErrorCode {
     REGISTRATION_CONFLICT("connector.registration-conflict", Set.of("connector", "existing", "incoming")),
 
     /**
+     * A runtime register names a connector outside the officially supported set, so it is refused
+     * rather than stored. This is a support boundary, not a defect in the artifact: the set grows as
+     * connectors are certified, and a refused artifact may well be perfectly functional.
+     * {@code connector} is the id the artifact declared; {@code official} lists the ids supported
+     * today, so the message states the boundary rather than leaving the caller to guess it.
+     */
+    NOT_OFFICIAL("connector.not-official", Set.of("connector", "official")),
+
+    /**
      * The connector jar or its classpath could not be opened / linked. {@code connector} is the
      * connector id being loaded.
      */

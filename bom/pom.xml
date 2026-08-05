@@ -72,6 +72,9 @@
          algorithm, not the full security framework — so it cannot skew the classpath. The assembly
          root is the only consumer. -->
     <spring-security.version>7.1.0</spring-security.version>
+    <!-- Spring AI is confined to the local MCP sidecar. The dedicated stdio server starter brings
+         protocol transport and tool APIs only; no model provider, chat client, RAG, or web starter
+         is admitted to the sidecar dependency graph. -->
     <!-- PDK API: the frozen connector contract surface (TapConnector / TapEvent / ConnectorFunctions
          and the tapdata-api entity types they reference). It is the single shared layer the isolated
          connector class loaders delegate to, so every connector binds to the same contract types; rule
@@ -143,6 +146,13 @@
         <groupId>dev.cel</groupId>
         <artifactId>cel</artifactId>
         <version>${cel.version}</version>
+      </dependency>
+      <!-- CEL and Spring AI both use ANTLR at runtime. CEL requires the newer patch level, so the
+           shared pin keeps the MCP sidecar graph converged without changing parser semantics. -->
+      <dependency>
+        <groupId>org.antlr</groupId>
+        <artifactId>antlr4-runtime</artifactId>
+        <version>4.13.2</version>
       </dependency>
       <!-- Convergence pin for the cel closure: cel depends on error_prone_annotations 2.38.0
            directly while its transitive guava depends on 2.36.0. Pin the higher version so
@@ -295,6 +305,13 @@
         <groupId>org.testcontainers</groupId>
         <artifactId>testcontainers-bom</artifactId>
         <version>${testcontainers.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>${spring-ai.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>

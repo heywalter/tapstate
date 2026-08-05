@@ -2,6 +2,7 @@ package io.tapstate.adapters.mongostore;
 
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.ConnectionConfig;
+import io.tapstate.spi.store.IoError;
 import org.bson.Document;
 import org.bson.types.Binary;
 import org.bson.types.Decimal128;

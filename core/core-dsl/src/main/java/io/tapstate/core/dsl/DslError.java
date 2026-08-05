@@ -7,10 +7,16 @@ import java.util.Set;
 
 /**
  * The {@code dsl} domain's error codes (ADR-0024 D1; the domain's first consumer, plan poc1 B3-7).
- * Each semantic constant maps 1:1 to a corpus rule-vocabulary key (corpus/README.md) — the symbol is
- * the vocabulary key, the canonical code prefixes it with the {@code dsl.} domain. The one exception
- * is {@link #MALFORMED_YAML}: a pure syntax error cannot be a well-formed corpus artifact, so it has
- * no corpus witness and is proven by a direct parser test instead.
+ * Each constant a well-formed artifact can raise on its own maps 1:1 to a corpus rule-vocabulary key
+ * (corpus/README.md) — the symbol is the vocabulary key, the canonical code prefixes it with the
+ * {@code dsl.} domain.
+ *
+ * <p>The exceptions are the codes no corpus artifact can witness, each proven by a direct test
+ * instead. They are exempt for one of two reasons, and every exemption states which: a code is
+ * <em>pre-semantic</em> when it fires before an artifact exists to be a witness ({@link #MALFORMED_YAML}
+ * on unparseable text, the two interpolation codes on raw text), or <em>post-semantic</em> when it
+ * needs knowledge no artifact carries — the row-expression type codes need a source model that only
+ * exists once a connection has been discovered.
  *
  * <p>{@code placeholders()} is the named-argument contract: every throw site supplies a value for
  * each name, and (once the catalog lands in the presentation layer) the build-time placeholder
@@ -45,6 +51,8 @@ public enum DslError implements TapstateErrorCode {
     /** A connector config value whose type does not match the connector's declared field type
      *  (C3); {@code expected} names the declared type. */
     CONFIG_TYPE_MISMATCH("dsl.config-type-mismatch", Set.of("connector", "field", "expected", "path")),
+    /** A required connector config field is absent after its visibility conditions are applied. */
+    CONFIG_REQUIRED("dsl.config-required", Set.of("connector", "field", "path")),
     /** A connector config value outside the connector's declared enum choices (C3); {@code allowed}
      *  lists the legal values. */
     INVALID_CONFIG_VALUE("dsl.invalid-config-value", Set.of("connector", "field", "value", "allowed", "path")),
@@ -62,7 +70,28 @@ public enum DslError implements TapstateErrorCode {
      *  reference, an unknown prefix, or a name that is not a variable name. Pre-semantic and without a
      *  corpus witness, for the same reasons as {@link #UNDEFINED_VARIABLE}; {@code ref} echoes the
      *  offending reference. */
-    MALFORMED_INTERPOLATION("dsl.malformed-interpolation", Set.of("ref"));
+    MALFORMED_INTERPOLATION("dsl.malformed-interpolation", Set.of("ref")),
+    /** A row expression reading a column of a source whose schema has never been discovered, so there
+     *  is nothing to judge the expression against. {@code source} names the source to discover.
+     *  Post-semantic: it turns on what has been discovered, not on the document, so it has no corpus
+     *  witness and is proven by a direct test. */
+    ROW_EXPRESSION_NEEDS_DISCOVERY(
+            "dsl.row-expression-needs-discovery", Set.of("expr", "source", "path")),
+    /** A row expression computing on a column whose type cannot survive the operation — an exact
+     *  fixed-point number, a temporal value, a shape only known to be JSON. {@code column} names the
+     *  column, {@code type} what it resolved to, and {@code table} the discovered table it resolved to
+     *  that there - an expression reading several is judged against each, so which one refused it is
+     *  the difference between a fixable diagnostic and a puzzle. Post-semantic: it needs a discovered
+     *  source model, which no offline artifact carries, so it has no corpus witness and is proven by a
+     *  direct test. */
+    ROW_EXPRESSION_TYPE_UNSUPPORTED(
+            "dsl.row-expression-type-unsupported", Set.of("expr", "column", "type", "table", "path")),
+    /** A row expression reading a column the source declared a type outside the tapstate namespace
+     *  for, so nothing resolved what it holds. {@code table} names the discovered table the column was
+     *  read from. Post-semantic and without a corpus witness, for the same reason as
+     *  {@link #ROW_EXPRESSION_TYPE_UNSUPPORTED}. */
+    ROW_EXPRESSION_TYPE_UNKNOWN(
+            "dsl.row-expression-type-unknown", Set.of("expr", "column", "table", "path"));
 
     private final String code;
     private final Set<String> placeholders;

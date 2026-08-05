@@ -15,6 +15,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.utility.DockerImageName;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,6 +65,41 @@ class MongoConnectorRegistryIT {
             // the no-op returns what is stored (the original SEED source), and stores no second copy
             assertThat(again.registration()).isEqualTo(first.registration());
             assertThat(registry.list()).hasSize(1);
+        });
+    }
+
+    @Test
+    void findAnswersAboutOneConnectorAndIsEmptyForAnUnregisteredOne() {
+        withRegistry(registry -> {
+            registry.register("mysql", "1.3.5", RegistrationSource.SEED, jar("mysql-bytes"));
+            registry.register("mongodb", "1.3.5", RegistrationSource.REGISTER, jar("mongodb-bytes"));
+
+            assertThat(registry.findAll("mysql"))
+                    .singleElement()
+                    .satisfies(found -> assertThat(found.connectorId()).isEqualTo("mysql"));
+            assertThat(registry.findAll("postgres")).isEmpty();
+        });
+    }
+
+    @Test
+    void findAllReportsBothArtifactsAndInAStableOrderWhenAnIdCarriesTwo() {
+        // One artifact per id is the intended state and a register refuses a second - but two concurrent
+        // registers can both pass that check before either stores, and an operator can write out of band.
+        // Both have to be reported: a register that saw only one could call a duplicate "already
+        // registered", and a read face that saw only one would call an unloadable connector available.
+        // And the order has to hold across calls, or anything downstream flips for no observable reason.
+        withRegistry(registry -> {
+            registry.register("mysql", "1.3.5", RegistrationSource.SEED, jar("mysql-bytes-one"));
+            registry.register("mysql", "1.3.5", RegistrationSource.REGISTER, jar("mysql-bytes-two"));
+
+            List<ConnectorRegistration> first = registry.findAll("mysql");
+
+            // Both are reported - a caller that must refuse the duplicate has to be able to see it.
+            assertThat(first).hasSize(2);
+            assertThat(registry.list()).hasSize(2);
+            // And reported in the same order every time, so nothing downstream flips between calls.
+            assertThat(registry.findAll("mysql")).containsExactlyElementsOf(first);
+            assertThat(registry.findAll("mysql")).containsExactlyElementsOf(first);
         });
     }
 

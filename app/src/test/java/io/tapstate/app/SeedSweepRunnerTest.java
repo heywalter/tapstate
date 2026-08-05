@@ -17,6 +17,7 @@ import io.tapstate.spi.store.ConnectorCapabilities;
 import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorRegistration;
 import io.tapstate.spi.store.ConnectorRegistry;
+import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.RegistrationOutcome;
 import io.tapstate.spi.store.RegistrationSource;
 import java.nio.file.Files;
@@ -117,7 +118,22 @@ class SeedSweepRunnerTest {
             }
         };
         return new SeedConnectorSweep(
-                new ConnectorArtifactRegistrar(registry, new ConnectorIntrospector(), deriver, catalog));
+                new ConnectorArtifactRegistrar(
+                        registry, new ConnectorIntrospector(), deriver, catalog, discardingSpecStore()));
+    }
+
+    /** Spec sources are irrelevant to what this test drives (sweep outcomes), so they go nowhere. */
+    private static ConnectorSpecStore discardingSpecStore() {
+        return new ConnectorSpecStore() {
+            @Override
+            public void put(String contentHash, byte[] spec) {
+            }
+
+            @Override
+            public Optional<byte[]> get(String contentHash) {
+                return Optional.empty();
+            }
+        };
     }
 
     /** An in-memory register-if-absent stand-in that records what reached it. */
@@ -142,6 +158,11 @@ class SeedSweepRunnerTest {
         @Override
         public Optional<byte[]> artifact(String contentHash) {
             return Optional.empty();
+        }
+
+        @Override
+        public boolean hasArtifact(String contentHash) {
+            return artifact(contentHash).isPresent();
         }
     }
 }
