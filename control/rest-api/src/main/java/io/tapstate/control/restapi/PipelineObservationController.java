@@ -2,7 +2,7 @@ package io.tapstate.control.restapi;
 
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.PipelineSnapshot;
-import io.tapstate.control.core.PipelineStatus;
+import io.tapstate.messages.MessageCatalog;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -23,15 +23,17 @@ import org.springframework.web.bind.annotation.RestController;
 class PipelineObservationController {
 
     private final PipelineObservationQueryService observations;
+    private final MessageCatalog catalog;
 
-    PipelineObservationController(PipelineObservationQueryService observations) {
+    PipelineObservationController(PipelineObservationQueryService observations, MessageCatalog catalog) {
         this.observations = observations;
+        this.catalog = catalog;
     }
 
     @Verb("pipeline.status")
     @GetMapping("/pipelines/{id}/status")
-    PipelineStatus status(@PathVariable("id") String id) {
-        return observations.status(id);
+    PipelineStatusResponse status(@PathVariable("id") String id) {
+        return PipelineStatusResponse.of(observations.status(id), catalog);
     }
 
     @Verb("pipeline.metrics")

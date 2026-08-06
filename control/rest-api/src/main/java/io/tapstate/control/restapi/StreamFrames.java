@@ -3,12 +3,15 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.PipelineLogs;
 import io.tapstate.control.core.PipelineStatus;
 import io.tapstate.core.common.JsonWriter;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.logging.LogLine;
+import io.tapstate.messages.MessageCatalog;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Renders a streamed status or logs frame to the same compact JSON the one-shot {@code GET} read faces
@@ -22,12 +25,35 @@ final class StreamFrames {
     private StreamFrames() {
     }
 
-    /** A status frame: {@code {"pipelineId":..,"state":..}}, the state as its wire name. */
-    static String status(PipelineStatus status) {
+    /**
+     * A status frame: {@code {"pipelineId":..,"state":..,"failure":{"code":..,"params":..,"message":..}}},
+     * the state as its wire name and {@code failure} omitted while the pipeline is healthy — the identical
+     * shape {@code PipelineStatusResponse} sends for the one-shot {@code GET}, so a stream frame and a
+     * polled read decode through the exact same client-side code. A status with no failure to report is
+     * not the same information as "no failure was checked" (see the class javadoc), so the field is
+     * omitted here rather than serialized as null, matching {@code PipelineStatusResponse}'s own contract.
+     */
+    static String status(PipelineStatus status, MessageCatalog catalog) {
         Map<String, Object> frame = new LinkedHashMap<>();
         frame.put("pipelineId", status.pipelineId());
         frame.put("state", status.state().name());
+        Map<String, Object> failure = failure(status.failure(), catalog);
+        if (failure != null) {
+            frame.put("failure", failure);
+        }
         return JsonWriter.write(frame);
+    }
+
+    private static Map<String, Object> failure(ObservationFailure failure, MessageCatalog catalog) {
+        if (failure == null) {
+            return null;
+        }
+        Map<String, Object> params = new TreeMap<>(failure.params());
+        Map<String, Object> encoded = new LinkedHashMap<>();
+        encoded.put("code", failure.code());
+        encoded.put("params", params);
+        encoded.put("message", catalog.render(failure.code(), params).message());
+        return encoded;
     }
 
     /** A logs frame: {@code {"pipelineId":..,"lines":[{timestampMillis,level,message},..]}}. */

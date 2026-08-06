@@ -333,8 +333,9 @@ class ControlPlaneConfiguration {
     }
 
     @Bean
-    PipelineObservationQueryService pipelineObservationQueryService(StorePort storePort) {
-        return new PipelineObservationQueryService(storePort.observations());
+    PipelineObservationQueryService pipelineObservationQueryService(
+            ArtifactQueryService artifactQueryService, StorePort storePort) {
+        return new PipelineObservationQueryService(artifactQueryService, storePort.observations());
     }
 
     // ---- the node-local log tail: the sink, the appender that feeds it, and the read face over it ----

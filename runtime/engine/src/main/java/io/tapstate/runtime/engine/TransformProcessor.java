@@ -1,5 +1,6 @@
 package io.tapstate.runtime.engine;
 
+import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.Traversers;
 import com.hazelcast.jet.core.AbstractProcessor;
@@ -32,11 +33,24 @@ public final class TransformProcessor extends AbstractProcessor {
 
     private final FlatMapper<Envelope, Envelope> flatMapper;
 
+    // Resolved at init from the running job — see reapSettled's counterpart in SinkProcessor and
+    // JobFailureRegistry for why this is captured here rather than reconstructed after the job fails.
+    private String pipelineId;
+    private JobFailureRegistry failureRegistry;
+
     public TransformProcessor(TransformPort port) {
         Objects.requireNonNull(port, "port");
         this.flatMapper = flatMapper(event ->
                 Traversers.traverseIterable(port.transform(event))
                         .map(out -> out.withSrcPos(event.srcPos())));
+    }
+
+    /** Resolves this pipeline's id and the shared failure registry; see {@link SinkProcessor#init}. */
+    @Override
+    protected void init(Processor.Context context) {
+        this.pipelineId = context.jobConfig().getName();
+        HazelcastInstance instance = context.hazelcastInstance();
+        this.failureRegistry = instance != null ? JobFailureRegistry.of(instance) : null;
     }
 
     /**
@@ -53,6 +67,15 @@ public final class TransformProcessor extends AbstractProcessor {
 
     @Override
     protected boolean tryProcess(int ordinal, Object item) {
-        return flatMapper.tryProcess((Envelope) item);
+        try {
+            return flatMapper.tryProcess((Envelope) item);
+        } catch (RuntimeException | Error failure) {
+            // Recorded here, synchronously, before this rethrow ever reaches Jet's own tasklet
+            // machinery — see SinkProcessor.reapSettled for why that matters.
+            if (failureRegistry != null) {
+                failureRegistry.record(pipelineId, failure);
+            }
+            throw failure;
+        }
     }
 }

@@ -25,7 +25,11 @@ public enum LifecycleError implements TapstateErrorCode {
      */
     INCOMPATIBLE_REVISION("lifecycle.incompatible-revision", Set.of("requested", "latest")),
 
-    /** A lifecycle verb named a pipeline that was never applied: {@code pipeline} is the id the caller gave. */
+    /**
+     * A lifecycle verb, or a status/metrics/snapshot read, named a pipeline that was never applied:
+     * {@code pipeline} is the id the caller gave. Permanent -- unlike an applied pipeline with no
+     * observation published yet, waiting will never turn this into a usable id.
+     */
     UNKNOWN_PIPELINE("lifecycle.unknown-pipeline", Set.of("pipeline"));
 
     private final String code;

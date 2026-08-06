@@ -2,6 +2,7 @@ package io.tapstate.adapters.mongostore;
 
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.spi.store.IoError;
@@ -95,6 +96,76 @@ class MongoObservationStoreTest {
         Document legacy = new Document("_id", "p1").append("state", "RUNNING");
 
         assertThat(MongoObservationStore.toObservation(legacy).positions()).isEmpty();
+    }
+
+    @Test
+    void documentCarriesTheCodedFailure() {
+        Observation obs = new Observation("orders_sync", PipelineState.FAILED, Map.of(), Map.of(), Map.of(),
+                new ObservationFailure("engine.job-failed", Map.of("pipeline", "orders_sync", "cause", "sink refused")));
+
+        Document document = MongoObservationStore.toDocument(obs);
+
+        Document failure = (Document) document.get("failure");
+        assertThat(failure.getString("code")).isEqualTo("engine.job-failed");
+        assertThat(((Document) failure.get("params")).get("cause")).isEqualTo("sink refused");
+    }
+
+    @Test
+    void roundTripPreservesTheCodedFailure() {
+        Observation obs = new Observation("orders_sync", PipelineState.FAILED, Map.of("errorCount", 1L), Map.of(),
+                Map.of(), new ObservationFailure("engine.job-failed", Map.of("pipeline", "orders_sync")));
+
+        assertThat(MongoObservationStore.toObservation(MongoObservationStore.toDocument(obs))).isEqualTo(obs);
+    }
+
+    @Test
+    void aHealthyObservationStoresNoFailureFieldAndReadsBackNull() {
+        // Absence is the healthy case: a pipeline with nothing wrong must not store an empty-coded failure,
+        // and a document written before failures existed reads back null rather than crashing.
+        Observation healthy = new Observation("p1", PipelineState.RUNNING, Map.of(), Map.of());
+
+        Document document = MongoObservationStore.toDocument(healthy);
+
+        assertThat(document.get("failure")).isNull();
+        assertThat(MongoObservationStore.toObservation(document).failure()).isNull();
+    }
+
+    @Test
+    void toObservationOnAFailureStoredAsSomethingElseIsDocumentUnreadable() {
+        // A failure field stored as anything but a sub-document is store corruption, surfaced as a coded io
+        // diagnostic rather than a class-cast crash while reconstructing.
+        Document corrupt = new Document("_id", "p1").append("state", "FAILED").append("failure", "not-a-document");
+
+        Throwable thrown = catchThrowable(() -> MongoObservationStore.toObservation(corrupt));
+
+        assertThat(thrown).isInstanceOf(TapstateException.class);
+        assertThat(((TapstateException) thrown).code()).isEqualTo(IoError.DOCUMENT_UNREADABLE);
+    }
+
+    @Test
+    void toObservationOnAFailureMissingItsCodeIsDocumentUnreadable() {
+        // A failure sub-document with no code cannot be rendered by any read face; that is corruption, not a
+        // failure with a null code silently handed on.
+        Document corrupt = new Document("_id", "p1").append("state", "FAILED")
+                .append("failure", new Document("params", new Document("pipeline", "p1")));
+
+        Throwable thrown = catchThrowable(() -> MongoObservationStore.toObservation(corrupt));
+
+        assertThat(thrown).isInstanceOf(TapstateException.class);
+        assertThat(((TapstateException) thrown).code()).isEqualTo(IoError.DOCUMENT_UNREADABLE);
+    }
+
+    @Test
+    void toObservationOnAFailureCodeStoredAsANonStringIsDocumentUnreadable() {
+        // Document.getString is an unchecked cast (get(key, String.class)): a wrong-typed code must surface
+        // as this same coded diagnostic, not escape as a bare ClassCastException while reconstructing.
+        Document corrupt = new Document("_id", "p1").append("state", "FAILED")
+                .append("failure", new Document("code", 42).append("params", new Document()));
+
+        Throwable thrown = catchThrowable(() -> MongoObservationStore.toObservation(corrupt));
+
+        assertThat(thrown).isInstanceOf(TapstateException.class);
+        assertThat(((TapstateException) thrown).code()).isEqualTo(IoError.DOCUMENT_UNREADABLE);
     }
 
     @Test

@@ -15,6 +15,7 @@ import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.Job;
 import com.hazelcast.jet.core.JobStatus;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.PipelineStatus;
 import io.tapstate.core.event.Envelope;
@@ -201,6 +202,32 @@ class LifecycleVerbsOnRealChainE2ETest {
                 .containsEntry("errorCount", 0L);
     }
 
+    @Test
+    @DisplayName("the assembly-built publisher surfaces snapshot progress from the real capture coordinator")
+    void theWiredPublisherSurfacesSnapshotProgressFromTheRealCaptureCoordinator() {
+        // This is the seam the two capture-coordinator snapshot bugs shipped through untested: the only
+        // other place snapshotProgress is exercised uses a stub, so a coordinator built here but never
+        // actually wired into the publisher (or a publisher wired to a no-op stand-in) would still leave
+        // the whole reactor green. Wiring the real StoreBackedPipelineCaptureCoordinator all the way
+        // through -- the same one wireConvergeChain hands to the publisher -- closes that gap.
+        store = seedPipelineAndSchema();
+        makeMemberCapable(store);
+        FakeSource source = new FakeSource(List.of(read(1), read(2), read(3)), List.of());
+        wireConvergeChain(source);
+
+        desire(RUNNING);
+        Job job = member.getJet().getJob(PIPELINE);
+        awaitStatus(job, JobStatus.RUNNING);
+        awaitKeys("1", "2", "3");
+
+        Observation observed = awaitObservation(obs -> !obs.snapshot().isEmpty());
+
+        assertThat(observed.snapshot()).containsKey(TABLE);
+        assertThat(observed.snapshot().get(TABLE).rowsDone())
+                .as("the three rows the fake source's bounded snapshot batch drained")
+                .isEqualTo(3L);
+    }
+
     // ---- wiring ------------------------------------------------------------------------
 
     private void wireConvergeChain(FakeSource source) {
@@ -218,10 +245,14 @@ class LifecycleVerbsOnRealChainE2ETest {
         Clock clock = Clock.fixed(T0, ZoneOffset.UTC);
         PipelineConverger converger = new PipelineConverger(store.desired(), store.state(), actuator, clock);
         // Build the publisher through the production assembly factory, so the metric ports it binds
-        // (recordCount from the live job, per-table positions from the store) are the ones under test.
-        ObservationPublisher publisher = new RuntimeConvergenceConfiguration().observationPublisher(store, engine);
+        // (recordCount from the live job, per-table positions from the store, per-table snapshot progress
+        // from the capture coordinator) are the ones under test. The real coordinator built above -- the
+        // same one actuator.start() drives -- is passed here too, not a stub: that is what actually joins
+        // the capture seam to the publisher, the join a stub silently skips.
+        ObservationPublisher publisher = new RuntimeConvergenceConfiguration()
+                .observationPublisher(store, engine, coordinator);
         driver = new ConvergenceDriver(converger, store.desired(), publisher);
-        readFaces = new PipelineObservationQueryService(store.observations());
+        readFaces = new PipelineObservationQueryService(new ArtifactQueryService(store.artifacts()), store.observations());
     }
 
     private InMemoryStorePort seedPipelineAndSchema() {

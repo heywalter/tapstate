@@ -47,6 +47,14 @@ import java.util.stream.Collectors;
  */
 final class Repl {
 
+    /**
+     * Printed under a non-empty metrics read. The metric names are not a compatibility promise in this
+     * preview: they may be renamed as the metric model settles, and the read face is where a user decides
+     * whether to build on them, so the disclaimer belongs there rather than only in the documentation.
+     */
+    private static final String METRIC_NAMES_UNSTABLE =
+            "(metric names are unstable in this preview and may change)";
+
     /** REPL-only words handled here rather than by the command table; completed alongside the verbs. */
     static final List<String> BUILTINS =
             List.of("help", "exit", "quit", "cd", "pwd", "connect", "disconnect", "login", "logout");
@@ -1648,6 +1656,12 @@ final class Repl {
         return switch (outcome) {
             case StatusOutcome.Found found -> {
                 out.println(found.pipelineId() + "  " + found.state().toLowerCase(Locale.ROOT));
+                if (found.failureCode() != null) {
+                    // A failed state that cannot say what failed sends the user hunting through logs. This
+                    // read succeeded -- it is not a refusal -- so it renders to stdout, not alongside a
+                    // coded refusal on stderr.
+                    renderStatusFailure(found.failureCode(), found.failureMessage());
+                }
                 out.flush();
                 yield Cli.EXIT_OK;
             }
@@ -1680,6 +1694,11 @@ final class Repl {
                     out.println("no metrics");
                 } else {
                     lines.forEach((name, value) -> out.println(name + "  " + value));
+                    // The names above are not a compatibility promise yet. Saying so here, next to them, is
+                    // the difference between a user who knowingly accepts the churn and one who wires a
+                    // dashboard to them and is surprised later; a note buried in a document reaches neither.
+                    // Absent when nothing was named -- there is no naming promise to disclaim.
+                    out.println(METRIC_NAMES_UNSTABLE);
                 }
                 out.flush();
                 yield Cli.EXIT_OK;
@@ -1762,12 +1781,21 @@ final class Repl {
         }
         PrintWriter out = commandLine.getOut();
         streamCancelled = false;
-        controlPlane.watchStatus(session.landingNode(), session.credential(), id,
-                (pipelineId, state) -> {
+        String refusal = controlPlane.watchStatus(session.landingNode(), session.credential(), id,
+                (pipelineId, state, failureCode, failureMessage) -> {
                     out.println(pipelineId + "  " + state.toLowerCase(Locale.ROOT));
+                    if (failureCode != null) {
+                        // Mirrors the one-shot `status` read: a failed state that cannot say what failed
+                        // sends the watcher hunting through logs instead of the frame that just reported it.
+                        // This frame arrived over an open stream, not a refusal, so it renders to stdout.
+                        renderStatusFailure(failureCode, failureMessage);
+                    }
                     out.flush();
                 },
                 this::isStreamCancelled);
+        if (refusal != null) {
+            return renderStreamRefusal(refusal, id);
+        }
         // a stream ends because the user stopped it, which is the way it is meant to end
         return Cli.EXIT_OK;
     }
@@ -1784,14 +1812,30 @@ final class Repl {
         }
         PrintWriter out = commandLine.getOut();
         streamCancelled = false;
-        controlPlane.followLogs(session.landingNode(), session.credential(), id,
+        String refusal = controlPlane.followLogs(session.landingNode(), session.credential(), id,
                 (pipelineId, lines) -> {
                     lines.forEach(line -> out.println(renderLogLine(line)));
                     out.flush();
                 },
                 this::isStreamCancelled);
+        if (refusal != null) {
+            return renderStreamRefusal(refusal, id);
+        }
         // a stream ends because the user stopped it, which is the way it is meant to end
         return Cli.EXIT_OK;
+    }
+
+    /**
+     * Renders the coded refusal a stream was deliberately closed with — the server ended the watch or
+     * follow because it can never be served (e.g. the id was never applied), not because the connection
+     * dropped. The close frame carries only the code, so the message is rendered locally from the bundled
+     * catalog with the id this stream was for; it prints as a refusal, on stderr, exactly like its
+     * one-shot twin would have been.
+     */
+    private int renderStreamRefusal(String code, String pipelineId) {
+        MessageCatalog.Rendered rendered = MessageCatalog.bundled().render(code, Map.of("pipeline", pipelineId));
+        renderRejection(code, rendered.message());
+        return Cli.EXIT_DIAGNOSTIC;
     }
 
     /**
@@ -1943,6 +1987,23 @@ final class Repl {
         err.println("  " + message);
         err.flush();
         return Cli.EXIT_DIAGNOSTIC;
+    }
+
+    /**
+     * Renders why a pipeline died, for a status read that succeeded and simply reports an unhealthy
+     * pipeline -- distinct from {@link #renderRejection}, which reports that the command itself was
+     * refused. Both arrive as a code plus a rendered message, but this one is not a refusal: it prints to
+     * stdout, without the red {@code error:} banner, so a caller separating the streams (piped or
+     * redirected input, e.g. {@code status pl1 > out.txt 2> err.txt}) can still tell "your command was
+     * refused" from "the pipeline you asked about is dead" by which stream carried it.
+     */
+    private void renderStatusFailure(String code, String message) {
+        PrintWriter out = commandLine.getOut();
+        if (!code.isBlank()) {
+            out.println(Ansi.AUTO.string("@|bold reason:|@") + " " + code);
+        }
+        out.println("  " + message);
+        out.flush();
     }
 
     /**

@@ -2,11 +2,14 @@ package io.tapstate.control.restapi;
 
 import io.tapstate.control.core.PipelineLogs;
 import io.tapstate.control.core.PipelineStatus;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.logging.LogLine;
+import io.tapstate.messages.MessageCatalog;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -18,10 +21,35 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class StreamFramesTest {
 
+    private static final MessageCatalog CATALOG = MessageCatalog.bundled();
+
     @Test
     void statusFrameCarriesTheIdAndStateNameLikeTheReadFace() {
-        String frame = StreamFrames.status(new PipelineStatus("orders", PipelineState.RUNNING));
+        String frame = StreamFrames.status(new PipelineStatus("orders", PipelineState.RUNNING), CATALOG);
         assertThat(frame).isEqualTo("{\"pipelineId\":\"orders\",\"state\":\"RUNNING\"}");
+    }
+
+    @Test
+    void statusFrameOfAFailedPipelineCarriesTheCodedReasonLikeTheReadFace() {
+        // A watcher must be able to tell why a pipeline died from the same frame that reports it dead --
+        // otherwise the one frame that matters is reasonless and no later frame repeats it (the state
+        // does not change again on its own).
+        ObservationFailure failure = new ObservationFailure("engine.job-failed",
+                Map.of("pipeline", "orders", "cause", "sink refused the batch"));
+        String frame = StreamFrames.status(new PipelineStatus("orders", PipelineState.FAILED, failure), CATALOG);
+
+        assertThat(frame).contains("\"pipelineId\":\"orders\"");
+        assertThat(frame).contains("\"state\":\"FAILED\"");
+        assertThat(frame).contains("\"failure\":{");
+        assertThat(frame).contains("\"code\":\"engine.job-failed\"");
+        assertThat(frame).contains("\"cause\":\"sink refused the batch\"");
+        assertThat(frame).contains("\"message\":");
+    }
+
+    @Test
+    void statusFrameOfAHealthyPipelineOmitsFailureEntirely() {
+        String frame = StreamFrames.status(new PipelineStatus("orders", PipelineState.RUNNING), CATALOG);
+        assertThat(frame).doesNotContain("failure");
     }
 
     @Test

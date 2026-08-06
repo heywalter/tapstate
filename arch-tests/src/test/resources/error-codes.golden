@@ -63,6 +63,7 @@ dsl.row-expression-type-unsupported
 dsl.undefined-variable
 dsl.unknown-field
 dsl.unsupported-mode
+engine.job-failed
 engine.no-such-job
 io.document-unreadable
 io.store-unauthorized

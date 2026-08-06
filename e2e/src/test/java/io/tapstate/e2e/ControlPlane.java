@@ -222,6 +222,47 @@ final class ControlPlane {
     }
 
     /**
+     * The canonical code of the published failure, or empty when the pipeline has published none — it is
+     * healthy, or no convergence pass has reached it yet.
+     *
+     * <p>Empty is a reading and not a failure, on the same terms {@link #state} is. The two emptinesses are
+     * deliberately one here: a specification asserting a failure code is waiting for a run to die, and
+     * "not dead yet" and "no observation yet" are both answered by waiting.
+     */
+    Optional<String> failureCode(String pipelineId) {
+        HttpResponse<String> response = send(authedGet("/api/pipelines/" + pipelineId + "/status"));
+        return interpretFailureCode(response.statusCode(), response.body(), pipelineId);
+    }
+
+    /**
+     * What a status answer is allowed to say about a failure, read the way the two above are: only the
+     * product's own {@code monitor.no-observation} code reads as "nothing published yet", every other refusal
+     * stays loud. A healthy pipeline carries no failure field at all, which is the empty reading; a failure
+     * present but missing its code is a regression of the status contract and is surfaced rather than waited
+     * out.
+     */
+    static Optional<String> interpretFailureCode(int status, String body, String pipelineId) {
+        if (status == 404 && MonitorError.NO_OBSERVATION.code().equals(codeOf(body))) {
+            return Optional.empty();
+        }
+        if (status != 200) {
+            throw new AssertionError(
+                    "could not read the status of " + pipelineId + ": expected HTTP 200, got " + status
+                            + " - " + body);
+        }
+        if (!(JsonReader.parse(body) instanceof Map<?, ?> map)) {
+            throw new AssertionError("status answer was not an object: " + body);
+        }
+        if (!(map.get("failure") instanceof Map<?, ?> failure)) {
+            return Optional.empty();
+        }
+        if (!(failure.get("code") instanceof String code)) {
+            throw new AssertionError("status carried a failure with no code: " + body);
+        }
+        return Optional.of(code);
+    }
+
+    /**
      * What a status answer is allowed to mean. Only the product's own {@code monitor.no-observation} code
      * reads as "nothing published yet"; every other refusal stays loud, another code's 404 included. A rule
      * written on the status alone would let a route that 404s for its own reasons pass for a pipeline that

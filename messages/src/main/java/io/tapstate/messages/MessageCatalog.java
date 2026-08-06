@@ -49,9 +49,19 @@ public final class MessageCatalog {
 
     /** Renders the code's message and solution, substituting named placeholders from the args. */
     public Rendered render(TapstateErrorCode code, Map<String, Object> args) {
-        Entry entry = entries.get(code.code());
+        return render(code.code(), args);
+    }
+
+    /**
+     * Renders a canonical code in its String form — for a code that reached this process as data (read back
+     * from a store, or carried over the wire) and so has no enum constant in hand. The catalog is keyed by
+     * that same string, so this is a plain lookup: no reflection, and no enum is reconstructed. An unknown
+     * code renders as itself rather than blank, so a message never silently disappears.
+     */
+    public Rendered render(String code, Map<String, Object> args) {
+        Entry entry = entries.get(code);
         if (entry == null) {
-            return new Rendered(code.code(), null);
+            return new Rendered(code, null);
         }
         String solution = entry.solution() == null ? null : substitute(entry.solution(), args);
         return new Rendered(substitute(entry.message(), args), solution);

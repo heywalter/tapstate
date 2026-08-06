@@ -1,5 +1,6 @@
 package io.tapstate.control.restapi;
 
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.GeneratedSecret;
 import io.tapstate.control.core.PipelineLogQueryService;
@@ -11,10 +12,15 @@ import io.tapstate.control.core.TokenSigner;
 import io.tapstate.control.core.VerifiedToken;
 import io.tapstate.core.common.JsonReader;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.LogSink;
+import io.tapstate.messages.MessageCatalog;
 import io.tapstate.spi.store.ObservationStore;
+import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.Resource;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.TokenRecord;
 import io.tapstate.spi.store.TokenStore;
 import org.junit.jupiter.api.AfterAll;
@@ -114,6 +120,32 @@ class PipelineStreamApiTest {
         }
     }
 
+    // ---- the one frame reporting a death also carries why, over a real connection ----
+
+    @Test
+    void watchStreamsTheCodedFailureReasonInTheSameFrameThatReportsAPipelineDead() throws Exception {
+        FakeObservationStore observations = context.getBean(FakeObservationStore.class);
+        observations.save(new Observation("pl1", PipelineState.FAILED, Map.of("errorCount", 1L),
+                Map.of(), Map.of(), new ObservationFailure(
+                        "engine.job-failed", Map.of("pipeline", "pl1", "cause", "sink refused the batch"))));
+
+        FrameSink sink = new FrameSink();
+        WebSocket ws = connect("/api/pipelines/pl1/status/watch", readToken(), sink);
+        try {
+            Map<?, ?> frame = sink.nextFrame();
+            assertThat(frame.get("state")).isEqualTo("FAILED");
+            Object failure = frame.get("failure");
+            assertThat(failure).isInstanceOf(Map.class);
+            Map<?, ?> failureMap = (Map<?, ?>) failure;
+            assertThat(failureMap.get("code")).isEqualTo("engine.job-failed");
+            assertThat(failureMap.get("message")).isNotNull();
+            Map<?, ?> params = (Map<?, ?>) failureMap.get("params");
+            assertThat(params.get("cause")).isEqualTo("sink refused the batch");
+        } finally {
+            ws.abort();
+        }
+    }
+
     // ---- a follower gets existing lines, then a newly appended one ----
 
     @Test
@@ -189,6 +221,11 @@ class PipelineStreamApiTest {
     static class TestApp {
 
         @Bean
+        MessageCatalog messageCatalog() {
+            return MessageCatalog.bundled();
+        }
+
+        @Bean
         FakeObservationStore observationStore() {
             return new FakeObservationStore();
         }
@@ -200,7 +237,7 @@ class PipelineStreamApiTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore store) {
-            return new PipelineObservationQueryService(store);
+            return new PipelineObservationQueryService(new ArtifactQueryService(appliedPipelines()), store);
         }
 
         @Bean
@@ -330,4 +367,28 @@ class PipelineStreamApiTest {
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
         }
     }
+
+    /**
+     * An artifact store that answers for every id: this context is not about telling an applied pipeline
+     * from an unapplied one, so every read of an unobserved pipeline stays the transient window it was
+     * before the two were told apart.
+     */
+    private static ArtifactStore appliedPipelines() {
+        return new ArtifactStore() {
+            @Override
+            public void saveAll(List<Resource> artifacts) {
+            }
+
+            @Override
+            public Optional<Resource> get(String id) {
+                return Optional.of(new PipelineResource(id, null, List.of("src_x"), null, null, null, null, null));
+            }
+
+            @Override
+            public List<Resource> list() {
+                return List.of();
+            }
+        };
+    }
+
 }

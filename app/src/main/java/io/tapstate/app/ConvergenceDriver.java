@@ -1,5 +1,6 @@
 package io.tapstate.app;
 
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.runtime.scheduler.ConvergeResult;
 import io.tapstate.runtime.scheduler.ConvergeStatus;
 import io.tapstate.runtime.scheduler.ObservationPublisher;
@@ -49,13 +50,18 @@ final class ConvergenceDriver {
             MDC.put(PipelineLogAppender.PIPELINE_ID_MDC_KEY, pipelineId);
             try {
                 ConvergeResult result = converger.converge(pipelineId);
+                ObservationFailure failure = null;
                 if (result.status() == ConvergeStatus.FAILED) {
-                    // The job died on its own; the converge side moved the pipeline to the observable
-                    // FAILED state. Log the cause so a dead job is not the silent "found 0" it used to be.
-                    LOG.warn("Pipeline {} entered FAILED: its data-plane job died", pipelineId,
-                            result.failure().orElse(null));
+                    // The job died on its own; the converge side moved the pipeline to the observable FAILED
+                    // state. This is the only pass that holds the cause, so it goes two ways: coded onto the
+                    // observation, so a read face can say why, and into the log with its code and stack.
+                    // Every later pass while the checkpoint stays FAILED publishes null and the publisher
+                    // carries the stored reason forward — durably, so it survives a process restart too.
+                    failure = PipelineFailures.of(pipelineId, result.failure().orElse(null));
+                    LOG.warn("Pipeline {} entered FAILED [{}]: its data-plane job died", pipelineId,
+                            failure.code(), result.failure().orElse(null));
                 }
-                publisher.publish(pipelineId);
+                publisher.publish(pipelineId, failure);
                 // A clean pass ends the failure streak; the next throw starts counting from one again.
                 reconcileFailures.remove(pipelineId);
             } catch (RuntimeException e) {

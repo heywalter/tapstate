@@ -21,6 +21,9 @@ import java.util.Objects;
  *   <li>{@code positions} — per-table source positions ({@code table -> opaque srcpos}), the durable
  *       sink-acked position (binlog/GTID/LSN). A String, not a count, so it rides here rather than the
  *       numeric metrics map; a read face presents it alongside metrics. Empty when unwired.</li>
+ *   <li>{@code failure} — why the run died, coded, or {@code null} while the pipeline is healthy. The
+ *       state says a job died and the error count says it was counted; this says what killed it, so the
+ *       reason is readable as data rather than only as a log line.</li>
  * </ul>
  */
 public record Observation(
@@ -28,16 +31,31 @@ public record Observation(
         PipelineState state,
         Map<String, Long> metrics,
         Map<String, TableSnapshot> snapshot,
-        Map<String, String> positions) {
+        Map<String, String> positions,
+        ObservationFailure failure) {
 
     public Observation {
         Objects.requireNonNull(pipelineId, "pipelineId");
         Objects.requireNonNull(state, "state");
         // A state-only observation is normal before metric / snapshot / position sources are wired: null
-        // reads as an empty (unavailable) map, and the copy makes the stored projection immutable.
+        // reads as an empty (unavailable) map, and the copy makes the stored projection immutable. A null
+        // failure is the healthy case and stays null — absence, not an empty-coded failure.
         metrics = metrics == null ? Map.of() : Map.copyOf(metrics);
         snapshot = snapshot == null ? Map.of() : Map.copyOf(snapshot);
         positions = positions == null ? Map.of() : Map.copyOf(positions);
+    }
+
+    /**
+     * An observation of a pipeline with no failure to report — the shape callers used before the coded
+     * failure was added, and the one every healthy publish takes. Backward compatible: failure reads null.
+     */
+    public Observation(
+            String pipelineId,
+            PipelineState state,
+            Map<String, Long> metrics,
+            Map<String, TableSnapshot> snapshot,
+            Map<String, String> positions) {
+        this(pipelineId, state, metrics, snapshot, positions, null);
     }
 
     /**
@@ -46,6 +64,6 @@ public record Observation(
      */
     public Observation(
             String pipelineId, PipelineState state, Map<String, Long> metrics, Map<String, TableSnapshot> snapshot) {
-        this(pipelineId, state, metrics, snapshot, Map.of());
+        this(pipelineId, state, metrics, snapshot, Map.of(), null);
     }
 }

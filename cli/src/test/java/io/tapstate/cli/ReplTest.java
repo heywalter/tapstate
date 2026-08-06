@@ -110,6 +110,10 @@ class ReplTest {
         LogsOutcome logsOutcome = new LogsOutcome.Unreachable();
         /** The states a watch stream feeds, and the line batches a follow stream feeds, in order. */
         List<String> watchStates = List.of();
+        String streamRefusalCode;
+        /** The coded reason carried alongside every emitted watch state, when a test needs one. */
+        String watchFailureCode;
+        String watchFailureMessage;
         List<List<RemoteLogLine>> followBatches = List.of();
         final List<String> applyCalls = new ArrayList<>();
         /** The drafts each apply carried, kept whole: what reaches the wire is the thing under test. */
@@ -261,27 +265,29 @@ class ReplTest {
         }
 
         @Override
-        public void watchStatus(URI baseUrl, String credential, String pipelineId,
+        public String watchStatus(URI baseUrl, String credential, String pipelineId,
                 StatusStream sink, java.util.function.BooleanSupplier stop) {
             watchCalls.add(credential + "@" + baseUrl + "/" + pipelineId);
             for (String state : watchStates) {
                 if (stop.getAsBoolean()) {
-                    return;
+                    return null;
                 }
-                sink.state(pipelineId, state);
+                sink.state(pipelineId, state, watchFailureCode, watchFailureMessage);
             }
+            return streamRefusalCode;
         }
 
         @Override
-        public void followLogs(URI baseUrl, String credential, String pipelineId,
+        public String followLogs(URI baseUrl, String credential, String pipelineId,
                 LogStream sink, java.util.function.BooleanSupplier stop) {
             followCalls.add(credential + "@" + baseUrl + "/" + pipelineId);
             for (List<RemoteLogLine> batch : followBatches) {
                 if (stop.getAsBoolean()) {
-                    return;
+                    return null;
                 }
                 sink.lines(pipelineId, batch);
             }
+            return streamRefusalCode;
         }
     }
 
@@ -844,6 +850,28 @@ class ReplTest {
     }
 
     // --- online verbs: apply / get / ls routed to the server once authenticated -------------------
+
+    /** A harness whose stdout and stderr are kept apart, for asserting which stream a line landed on. */
+    private record SplitHarness(Repl repl, StringWriter out, StringWriter err) {
+    }
+
+    private static SplitHarness splitStreamHarness(Path workdir, ControlPlaneClient controlPlane) {
+        CommandLine cl = Cli.newCommandLine();
+        StringWriter out = new StringWriter();
+        StringWriter err = new StringWriter();
+        cl.setOut(new PrintWriter(out));
+        cl.setErr(new PrintWriter(err));
+        return new SplitHarness(new Repl(cl, workdir, controlPlane, new ScriptedPrompter("pw")), out, err);
+    }
+
+    /** An authenticated session with stdout and stderr kept apart. */
+    private static SplitHarness onlineSplitStreamSession(Path workdir, FakeControlPlane client) {
+        client.loginOutcome = new LoginOutcome.Success("jwt-tok");
+        SplitHarness h = splitStreamHarness(workdir, client);
+        h.repl().dispatch("connect node1:7900");
+        h.repl().dispatch("login alice");
+        return h;
+    }
 
     /** Connects to a single healthy node and logs in, so a test starts from an authenticated session. */
     private static Harness onlineSession(Path workdir, FakeControlPlane client) {
@@ -2370,6 +2398,57 @@ class ReplTest {
     }
 
     @Test
+    void statusOfAFailedPipelinePrintsWhyItDied() {
+        // A bare "failed" sends the user hunting through logs. The reason arrives coded with its arguments,
+        // so the CLI renders it from the bundled catalog the same way it renders every other coded message.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.statusOutcome = new StatusOutcome.Found("pl1", "FAILED", "engine.job-failed",
+                "Pipeline pl1 stopped because its job failed: the sink rejected the batch.");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("failed");
+        // Assert the code, not the prose: the code is the stable identity, and only this path can emit it.
+        assertThat(out).contains("engine.job-failed");
+        assertThat(out).contains("the sink rejected the batch");
+    }
+
+    @Test
+    void statusOfAFailedPipelinePrintsTheReasonToStdoutNotStderr() {
+        // The read succeeded -- it is not a refusal -- so the reason must land on the same stream as the
+        // state line above it. A caller separating the streams (status pl1 > out.txt 2> err.txt) must see
+        // both in out.txt; the merged single-sink harness the other status tests use cannot tell this apart.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.statusOutcome = new StatusOutcome.Found("pl1", "FAILED", "engine.job-failed",
+                "Pipeline pl1 stopped because its job failed: the sink rejected the batch.");
+        SplitHarness h = onlineSplitStreamSession(Path.of("tap-work"), client);
+        int outMark = h.out().toString().length();
+        int errMark = h.err().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1")).isTrue();
+
+        String stdout = h.out().toString().substring(outMark);
+        String stderr = h.err().toString().substring(errMark);
+        assertThat(stdout).contains("failed").contains("engine.job-failed").contains("the sink rejected the batch");
+        assertThat(stderr).isEmpty();
+    }
+
+    @Test
+    void statusOfAHealthyPipelinePrintsNoFailureLine() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.statusOutcome = new StatusOutcome.Found("pl1", "RUNNING");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).doesNotContain("engine.");
+    }
+
+    @Test
     void metricsWhileAuthenticatedPrintsEachStat() {
         FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
         client.metricsOutcome = new MetricsOutcome.Found("pl1", Map.of("recordCount", 42L, "errorCount", 0L));
@@ -2379,6 +2458,36 @@ class ReplTest {
         String out = h.sink().toString().substring(mark);
         assertThat(out).contains("recordCount").contains("42").contains("errorCount");
         assertThat(client.metricsCalls).containsExactly("jwt-tok@http://node1:7900/pl1");
+    }
+
+    @Test
+    void metricsSaysItsNamesAreUnstableSoNobodyBuildsAlertsOnThemUnwarned() {
+        // The metric names are not a compatibility promise in this preview. That has to be visible where
+        // the names are, not only in a document nobody reads before wiring up a dashboard.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.metricsOutcome = new MetricsOutcome.Found("pl1", Map.of("recordCount", 42L));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("metrics pl1")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).contains("unstable");
+    }
+
+    @Test
+    void theUnstableNoticeIsAbsentWhenThereAreNoMetricsToMislabel() {
+        // Nothing was named, so there is no naming promise to disclaim; the benign "no metrics" line
+        // should not be dressed up as a warning.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.metricsOutcome = new MetricsOutcome.Found("pl1", Map.of());
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("metrics pl1")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("no metrics");
+        assertThat(out).doesNotContain("unstable");
     }
 
     @Test
@@ -2479,6 +2588,87 @@ class ReplTest {
         assertThat(out).contains("running").contains("paused");
         assertThat(out.indexOf("running")).isLessThan(out.indexOf("paused"));
         assertThat(client.watchCalls).containsExactly("jwt-tok@http://node1:7900/pl1");
+    }
+
+    @Test
+    void statusWatchPrintsWhyAStreamedFailedStateDied() {
+        // Mirrors statusOfAFailedPipelinePrintsWhyItDied for the watch path: the frame reporting a death
+        // is the only frame that will ever carry the reason (state does not change again on its own), so
+        // the watcher must render it right there rather than needing a separate poll.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.watchStates = List.of("FAILED");
+        client.watchFailureCode = "engine.job-failed";
+        client.watchFailureMessage = "Pipeline pl1 stopped because its job failed: the sink rejected the batch.";
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1 --watch")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("failed");
+        assertThat(out).contains("engine.job-failed");
+        assertThat(out).contains("the sink rejected the batch");
+    }
+
+    @Test
+    void statusWatchPrintsTheFailureReasonToStdoutNotStderr() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.watchStates = List.of("FAILED");
+        client.watchFailureCode = "engine.job-failed";
+        client.watchFailureMessage = "Pipeline pl1 stopped because its job failed: the sink rejected the batch.";
+        SplitHarness h = onlineSplitStreamSession(Path.of("tap-work"), client);
+        int outMark = h.out().toString().length();
+        int errMark = h.err().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1 --watch")).isTrue();
+
+        String stdout = h.out().toString().substring(outMark);
+        String stderr = h.err().toString().substring(errMark);
+        assertThat(stdout).contains("failed").contains("engine.job-failed").contains("the sink rejected the batch");
+        assertThat(stderr).isEmpty();
+    }
+
+    @Test
+    void statusWatchOfAHealthyStreamedStatePrintsNoFailureLine() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.watchStates = List.of("RUNNING");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("status pl1 --watch")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).doesNotContain("engine.");
+    }
+
+    @Test
+    void statusWatchOfAnUnknownPipelineRendersTheCodedRefusalInsteadOfWatchingForever() {
+        // The one-shot `status ghost` is refused at once; its --watch twin must not silently outlive it.
+        // The server ends the stream deliberately with the coded reason, the client hands that code back,
+        // and the watch renders it as the refusal it is -- on stderr, like every other refused command.
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.streamRefusalCode = "lifecycle.unknown-pipeline";
+        SplitHarness h = onlineSplitStreamSession(Path.of("tap-work"), client);
+        int errMark = h.err().toString().length();
+
+        assertThat(h.repl().dispatch("status ghost --watch")).isTrue();
+
+        String stderr = h.err().toString().substring(errMark);
+        assertThat(stderr).contains("error:").contains("lifecycle.unknown-pipeline");
+        // The catalog's message renders locally with the id the watch was for, not a bare code.
+        assertThat(stderr).contains("ghost");
+    }
+
+    @Test
+    void logsFollowOfAnUnknownPipelineRendersTheCodedRefusalInsteadOfFollowingForever() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.streamRefusalCode = "lifecycle.unknown-pipeline";
+        SplitHarness h = onlineSplitStreamSession(Path.of("tap-work"), client);
+        int errMark = h.err().toString().length();
+
+        assertThat(h.repl().dispatch("logs ghost --follow")).isTrue();
+
+        String stderr = h.err().toString().substring(errMark);
+        assertThat(stderr).contains("error:").contains("lifecycle.unknown-pipeline");
     }
 
     @Test
