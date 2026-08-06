@@ -163,8 +163,9 @@ class JetFinishedQueuesRaiseTheBoundTest {
 
         assertThat(boundsSeen())
                 .describedAs("the low promise never arrived either, so the absence below would be about "
-                        + "the job never having run")
-                .contains(global(LOW), edge(LEFT, LOW));
+                        + "the job never having run; and the edge did complete, without which there is no "
+                        + "after for the absence below to be about")
+                .contains(global(LOW), edge(LEFT, LOW), edgeCompleted(LEFT));
         assertThat(boundsAfterEdgeCompleted(LEFT))
                 .describedAs("the raise worked out as the last edge finished was handed to the processor, "
                         + "where a sink is put straight into completing instead and never sees it. Asked "
