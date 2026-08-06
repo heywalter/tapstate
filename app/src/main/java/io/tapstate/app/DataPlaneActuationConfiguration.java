@@ -73,8 +73,13 @@ class DataPlaneActuationConfiguration {
     }
 
     @Bean
-    LifecycleActuator lifecycleActuator(
-            Engine engine, DagSource dagSource, PipelineCaptureCoordinator pipelineCaptureCoordinator) {
-        return new EngineLifecycleActuator(engine, dagSource, pipelineCaptureCoordinator);
+    NestStateTeardown nestStateTeardown(HazelcastInstance hazelcastMember, StorePort storePort) {
+        return new NestStateTeardown(hazelcastMember, storePort.keyedState());
+    }
+
+    @Bean
+    LifecycleActuator lifecycleActuator(Engine engine, DagSource dagSource,
+            PipelineCaptureCoordinator pipelineCaptureCoordinator, NestStateTeardown nestStateTeardown) {
+        return new EngineLifecycleActuator(engine, dagSource, pipelineCaptureCoordinator, nestStateTeardown);
     }
 }

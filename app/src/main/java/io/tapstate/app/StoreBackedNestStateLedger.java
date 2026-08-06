@@ -53,7 +53,11 @@ final class StoreBackedNestStateLedger implements NestStateLedger {
                 String.join(SEPARATOR, new TreeSet<>(paths)).getBytes(StandardCharsets.UTF_8));
     }
 
-    private static String namespaceOf(String pipelineId) {
+    /**
+     * The namespace this pipeline's records live in. Named here rather than spelled out by whoever needs
+     * it, so that what writes the records and what drops them cannot come to disagree about where they are.
+     */
+    static String namespaceOf(String pipelineId) {
         return NAMESPACE_PREFIX + pipelineId;
     }
 }

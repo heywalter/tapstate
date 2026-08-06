@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Supplier;
@@ -63,7 +64,8 @@ class EngineLifecycleActuatorTest {
         List<String> events = new CopyOnWriteArrayList<>();
         RecordingCaptureCoordinator coordinator = new RecordingCaptureCoordinator(events);
         RecordingDagSource dagSource = new RecordingDagSource(events);
-        LifecycleActuator actuator = new EngineLifecycleActuator(new Engine(member), dagSource, coordinator);
+        LifecycleActuator actuator =
+                new EngineLifecycleActuator(new Engine(member), dagSource, coordinator, teardown());
         // At stop the coordinator awaits the pipeline's job going terminal; that only happens if the cancel ran
         // before the capture stop, so it discriminates the stop ordering rather than racing it.
         coordinator.jobTerminalProbe = () -> awaitTerminal(member.getJet().getJob(PIPE));
@@ -94,7 +96,8 @@ class EngineLifecycleActuatorTest {
         RuntimeException boom = new RuntimeException("cdc tail died");
         RecordingCaptureCoordinator coordinator = new RecordingCaptureCoordinator(new CopyOnWriteArrayList<>());
         coordinator.captureFailure = boom;
-        LifecycleActuator actuator = new EngineLifecycleActuator(new Engine(member), new IdleDagSource(), coordinator);
+        LifecycleActuator actuator = new EngineLifecycleActuator(
+                new Engine(member), new IdleDagSource(), coordinator, teardown());
 
         // No job was submitted, so the engine reports no failure; the cdc capture's death still surfaces through
         // the seam the converge loop reads, which is what drives a pipeline whose tail died into FAILED even
@@ -105,9 +108,18 @@ class EngineLifecycleActuatorTest {
     @Test
     void reportsNoFailureWhenNeitherTheJobNorTheCaptureHasFailed() {
         RecordingCaptureCoordinator coordinator = new RecordingCaptureCoordinator(new CopyOnWriteArrayList<>());
-        LifecycleActuator actuator = new EngineLifecycleActuator(new Engine(member), new IdleDagSource(), coordinator);
+        LifecycleActuator actuator = new EngineLifecycleActuator(
+                new Engine(member), new IdleDagSource(), coordinator, teardown());
 
         assertThat(actuator.failure(PIPE)).isEmpty();
+    }
+
+    /**
+     * The state teardown these cases run against: the stand-in topology keeps no state, so what this drops
+     * is nothing. It is here because the actuator will not be built without one, which is the point.
+     */
+    private NestStateTeardown teardown() {
+        return new NestStateTeardown(member, new InMemoryKeyedStateStore());
     }
 
     private static void awaitStatus(Job job, JobStatus expected) {
@@ -187,6 +199,11 @@ class EngineLifecycleActuatorTest {
         public DAG dagFor(String pipelineId) {
             events.add("submit:" + pipelineId);
             return idle.dagFor(pipelineId);
+        }
+
+        @Override
+        public Set<String> stateNamespacesOf(String pipelineId) {
+            return idle.stateNamespacesOf(pipelineId);
         }
     }
 }

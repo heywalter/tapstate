@@ -35,9 +35,11 @@ import io.tapstate.spi.store.SrsMeta;
 import io.tapstate.spi.store.StorePort;
 import io.tapstate.spi.transform.TransformPort;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Builds the Jet topology a pipeline runs from its stored artifact. It loads the pipeline and the source and
@@ -81,6 +83,30 @@ final class StoreBackedDagSource implements DagSource {
         FrontierBinding frontier = frontierBinding(pipeline);
         return PipelineDagBuilder.build(pipeline, bindings(pipeline, sourceIdByTable(pipeline), target, frontier),
                 sinkAckFactory(pipeline, pipelineId), frontier);
+    }
+
+    /**
+     * Where this pipeline's nests keep state: the namespace each compiled vertex holds its entries in,
+     * plus the one its shape was written down in. The record goes with the state it describes - kept
+     * behind, it would refuse the next start of a pipeline that has nothing left to abandon, naming paths
+     * that no longer address anything.
+     *
+     * <p>The tree is compiled again here rather than remembered from the build, for the same reason the
+     * build compiles it rather than reading it back: the names come from the tree, so the tree is what is
+     * asked. A pipeline with no nest step keeps nothing and is named nothing, which is what leaves an
+     * ordinary pipeline's stop untouched by any of this.
+     */
+    @Override
+    public Set<String> stateNamespacesOf(String pipelineId) {
+        PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
+        if (!PipelineDagBuilder.hasNest(pipeline)) {
+            return Set.of();
+        }
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable(pipeline));
+        Set<String> namespaces =
+                new LinkedHashSet<>(PipelineDagBuilder.nestStateNamespaces(pipeline, byAlias::get));
+        namespaces.add(StoreBackedNestStateLedger.namespaceOf(pipelineId));
+        return namespaces;
     }
 
     /**

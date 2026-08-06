@@ -15,12 +15,16 @@ import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.nest.NestDag;
 import io.tapstate.runtime.engine.nest.NestFrontier;
 import io.tapstate.runtime.engine.nest.NestStateLedger;
+import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.runtime.engine.nest.NestTopology;
 import io.tapstate.spi.sink.SinkWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Compiles one pipeline into one Jet DAG: source vertices to a linear transform chain to serve
@@ -37,6 +41,60 @@ public final class PipelineDagBuilder {
     static final String SERVE_VERTEX_PREFIX = "serve.";
 
     private PipelineDagBuilder() {
+    }
+
+    /**
+     * Every namespace this pipeline's nests keep state in, empty for a pipeline that has none.
+     *
+     * <p>This is what a pipeline being taken down is dropped by, and it is answered by compiling the tree
+     * again rather than by reading back anything a run left behind. A record of where state went would be
+     * a second account of it, kept up to date by whoever remembered to - and the run that wrote the state
+     * took the names from the compiled tree, so compiling it is asking the same question of the same
+     * source. The pipeline handed in must be the one the run was built from: compiled from a later
+     * revision this names where the next run would write, not where the last one did.
+     *
+     * <p>Which steps are nests is decided by {@link #nestOf}, the same way the build decides it. Two
+     * walks that judged that differently would drop the namespaces of one set of steps while a run wrote
+     * to another's, and nothing would report the difference.
+     */
+    public static Set<String> nestStateNamespaces(PipelineResource pipeline, Function<String, NestTable> tables) {
+        if (pipeline.transforms() == null) {
+            return Set.of();
+        }
+        Set<String> namespaces = new LinkedHashSet<>();
+        for (Step step : pipeline.transforms()) {
+            TransformBody.Nest nest = nestOf(step);
+            if (nest != null) {
+                namespaces.addAll(NestTopology.compile(pipeline.id(), step.id(), nest, tables).stateNamespaces());
+            }
+        }
+        return namespaces;
+    }
+
+    /**
+     * Whether this pipeline nests at all. Distinct from having namespaces: a root declaring no embeds
+     * compiles to none yet is still a nest, and still writes down the shape it compiled to - so a caller
+     * clearing up after a pipeline has to know the difference between "kept no state" and "is not a nest".
+     */
+    public static boolean hasNest(PipelineResource pipeline) {
+        if (pipeline.transforms() == null) {
+            return false;
+        }
+        for (Step step : pipeline.transforms()) {
+            if (nestOf(step) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The nest this step declares, or {@code null} where the step is anything else. One place answers it
+     * so that everything walking a pipeline's transforms agrees on what a nest is. A step it answers for
+     * is necessarily a {@link Step.Inline}, which is what lets a caller narrow to one on a non-null answer.
+     */
+    private static TransformBody.Nest nestOf(Step step) {
+        return step instanceof Step.Inline inline && inline.body() instanceof TransformBody.Nest nest ? nest : null;
     }
 
     /** Builds the Jet DAG for a validated pipeline against the given leaf and reference bindings. */
@@ -88,7 +146,9 @@ public final class PipelineDagBuilder {
 
         if (pipeline.transforms() != null) {
             for (Step step : pipeline.transforms()) {
-                if (step instanceof Step.Inline inline && inline.body() instanceof TransformBody.Nest nest) {
+                TransformBody.Nest nest = nestOf(step);
+                if (nest != null) {
+                    Step.Inline inline = (Step.Inline) step;
                     // A nest draws its own vertices and edges: their count, their keys and the ordinal
                     // each stream arrives on were all settled while compiling the tree.
                     if (bindings.nest() == null) {

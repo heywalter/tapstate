@@ -11,6 +11,7 @@ import com.hazelcast.jet.core.metrics.Measurement;
 import com.hazelcast.jet.core.metrics.MetricNames;
 import com.hazelcast.jet.core.metrics.MetricTags;
 import io.tapstate.core.common.TapstateException;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -18,6 +19,9 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * The data-plane execution engine: the lifecycle actuator that maps a pipeline's lifecycle to Jet
@@ -89,6 +93,38 @@ public final class Engine {
             job.cancel();
         }
         JobFailureRegistry.of(member).clear(pipelineId);
+    }
+
+    /**
+     * Waits for the pipeline's job to be over, up to {@code budget}: true once it is, false if the budget
+     * ran out with the job still running. A pipeline with no job has nothing to wait for and is over by
+     * definition.
+     *
+     * <p>A cancel only asks. The job goes on running while it winds down, and a processor writing state
+     * as it closes writes it after the cancel has returned - so anything that lets go of what the job was
+     * writing to has to wait here first, or it lets go of it while the job is still filling it back in.
+     * How the job ended does not matter to the caller: cancelled, failed and completed are equally over.
+     *
+     * <p>The budget is what keeps a stuck job from holding up the caller indefinitely, and a false answer
+     * is a real answer rather than a failure - the caller is expected to have a way of finishing later
+     * what it could not safely do now.
+     */
+    public boolean awaitTerminal(String pipelineId, Duration budget) {
+        Job job = member.getJet().getJob(pipelineId);
+        if (job == null) {
+            return true;
+        }
+        try {
+            job.getFuture().toCompletableFuture().get(budget.toMillis(), TimeUnit.MILLISECONDS);
+            return true;
+        } catch (CancellationException | ExecutionException over) {
+            return true;
+        } catch (TimeoutException stillRunning) {
+            return false;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     /**

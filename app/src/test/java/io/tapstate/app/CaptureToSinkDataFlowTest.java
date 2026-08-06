@@ -156,7 +156,8 @@ class CaptureToSinkDataFlowTest {
                 (connectorId, settings, writeMode, ddl, target) -> (SupplierEx<SinkWriter>) CapturingSinkWriter::new;
         DagSource dagSource = new StoreBackedDagSource(store, capturingSink);
 
-        LifecycleActuator actuator = new EngineLifecycleActuator(new Engine(member), dagSource, coordinator);
+        LifecycleActuator actuator = new EngineLifecycleActuator(
+                new Engine(member), dagSource, coordinator, new NestStateTeardown(member, store.keyedState()));
 
         actuator.start(PIPELINE);
         try {

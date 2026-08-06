@@ -232,6 +232,28 @@ class NestTopologyTest {
     }
 
     @Test
+    void namesOneStateNamespacePerVertexAndNoneForALeaf() {
+        NestTopology topology = compiled();
+
+        // A leaf keeps no namespace of its own - its elements are filed inside its parent's state - so a
+        // set naming leaves too would name places nothing was ever stored, and a drop by it would look
+        // like it had let go of more than it had.
+        assertThat(topology.stateNamespaces()).containsExactlyInAnyOrderElementsOf(
+                topology.vertices().stream().map(NestVertex::mapName).toList());
+        assertThat(topology.stateNamespaces()).hasSize(topology.resolvers().size() + 1);
+    }
+
+    @Test
+    void aPassthroughKeepsStateNowhereAtAll() {
+        NestTopology topology = NestTopology.compile(PIPELINE, NODE,
+                nest("customer", List.of("customer_id")), tables());
+
+        assertThat(topology.stateNamespaces())
+                .describedAs("it holds no map, so a stop of it has nothing to name")
+                .isEmpty();
+    }
+
+    @Test
     void buildsNoResolverWhenEveryEmbedIsALeaf() {
         NestTopology topology = NestTopology.compile(PIPELINE, NODE,
                 nest("customer", List.of("customer_id"),

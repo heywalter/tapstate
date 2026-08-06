@@ -124,6 +124,24 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         return paths;
     }
 
+    /**
+     * Every namespace this tree keeps state in: one per vertex, named the same way the vertex asks for its
+     * map. A tree being taken down lets go of its state by naming these, which is why they are taken from
+     * the compiled vertices rather than from anything remembered - what a vertex wrote is by definition
+     * under the name that vertex was compiled with.
+     *
+     * <p>Narrower than {@link #statePaths()}, and deliberately so: a leaf has no namespace of its own, its
+     * elements being filed inside its parent's state. Dropping the parent's namespace takes them with it,
+     * so a set that named leaves would name places nothing was ever stored.
+     */
+    public Set<String> stateNamespaces() {
+        Set<String> namespaces = new LinkedHashSet<>();
+        for (NestVertex vertex : vertices) {
+            namespaces.add(vertex.mapName());
+        }
+        return namespaces;
+    }
+
     /** Whether the tree assembles nothing, so the node is wired as a passthrough with no state at all. */
     public boolean isPassthrough() {
         return vertices.isEmpty();

@@ -116,6 +116,32 @@ class EngineTest {
     }
 
     @Test
+    void awaitTerminal_says_no_while_the_job_is_still_running_and_yes_once_it_is_over() {
+        Engine engine = new Engine(member);
+        engine.submit("orders-pipe", foreverDag());
+        awaitStatus(member.getJet().getJob("orders-pipe"), JobStatus.RUNNING);
+
+        // A cancel only asks. Anything that lets go of what the job was writing to has to be told the
+        // difference between "asked to stop" and "stopped", which is the whole reason this exists.
+        assertThat(engine.awaitTerminal("orders-pipe", Duration.ofMillis(200)))
+                .describedAs("a job still running is not over, however long it has been asked to stop")
+                .isFalse();
+
+        engine.cancel("orders-pipe");
+
+        assertThat(engine.awaitTerminal("orders-pipe", Duration.ofSeconds(15)))
+                .describedAs("a cancelled job is over - how it ended is not the caller's question")
+                .isTrue();
+    }
+
+    @Test
+    void awaitTerminal_says_yes_for_a_pipeline_that_has_no_job_at_all() {
+        // Nothing was ever submitted, so there is nothing still writing: a caller waiting to clear up after
+        // this pipeline may go ahead rather than sit out its whole budget for a job that does not exist.
+        assertThat(new Engine(member).awaitTerminal("never-ran", Duration.ofSeconds(15))).isTrue();
+    }
+
+    @Test
     void failureOf_reports_the_cause_of_a_job_that_died_on_its_own() {
         Engine engine = new Engine(member);
         engine.submit("orders-pipe", failingDag());

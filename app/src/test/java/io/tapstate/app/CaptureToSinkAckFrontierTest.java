@@ -55,6 +55,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -203,12 +204,22 @@ class CaptureToSinkAckFrontierTest {
      * observed, which no sink writer can see because a bound is not a record.
      */
     private static DagSource withBoundProbe(DagSource product) {
-        return pipelineId -> {
-            DAG dag = product.dagFor(pipelineId);
-            Vertex probe = dag.newVertex("bound_probe", ProcessorMetaSupplier.forceTotalParallelismOne(
-                    ProcessorSupplier.of(BoundProbe::new)));
-            dag.edge(Edge.from(dag.getVertex(SOURCE_ID), 1).to(probe));
-            return dag;
+        return new DagSource() {
+
+            @Override
+            public DAG dagFor(String pipelineId) {
+                DAG dag = product.dagFor(pipelineId);
+                Vertex probe = dag.newVertex("bound_probe", ProcessorMetaSupplier.forceTotalParallelismOne(
+                        ProcessorSupplier.of(BoundProbe::new)));
+                dag.edge(Edge.from(dag.getVertex(SOURCE_ID), 1).to(probe));
+                return dag;
+            }
+
+            @Override
+            public Set<String> stateNamespacesOf(String pipelineId) {
+                // The probe adds a vertex, never state: whatever the product keeps is all there is to name.
+                return product.stateNamespacesOf(pipelineId);
+            }
         };
     }
 
@@ -296,7 +307,8 @@ class CaptureToSinkAckFrontierTest {
         StoreBackedDagSource.SinkWriterBinder capturingSink =
                 (connectorId, settings, writeMode, ddl, target) -> (SupplierEx<SinkWriter>) CapturingSinkWriter::new;
         DagSource dagSource = wrapDag.apply(new StoreBackedDagSource(store, capturingSink));
-        return new EngineLifecycleActuator(new Engine(member), dagSource, coordinator);
+        return new EngineLifecycleActuator(
+                new Engine(member), dagSource, coordinator, new NestStateTeardown(member, store.keyedState()));
     }
 
     private static Envelope change(int id) {
