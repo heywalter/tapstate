@@ -17,14 +17,15 @@ import java.util.function.Function;
  * choosing what happens to an unassemblable change is a product question, not a graph one; and the durable
  * position a restart resumes from lives in a store the engine ring is not allowed to reach for itself.
  *
- * <p>{@code tables} is asked while the graph is built and stays behind; the other three are carried to the
- * member that runs each vertex, which is why they are serializable.
+ * <p>{@code tables} and {@code ledger} are asked while the graph is built and stay behind; the other three
+ * are carried to the member that runs each vertex, which is why they are serializable.
  */
 public record NestBinding(
         Function<String, NestTable> tables,
         NestStores stores,
         NestDeadLetter deadLetter,
-        ReplayFloorFactory replayFloor) implements Serializable {
+        ReplayFloorFactory replayFloor,
+        NestStateLedger ledger) implements Serializable {
 
     /**
      * A binding with nothing to read a durable resume position through, for a job assembled without one.
@@ -33,6 +34,16 @@ public record NestBinding(
      */
     public NestBinding(Function<String, NestTable> tables, NestStores stores, NestDeadLetter deadLetter) {
         this(tables, stores, deadLetter, ReplayFloorFactory.NONE);
+    }
+
+    /**
+     * A binding that remembers nothing about where this nest last kept its state, and so compares nothing
+     * on the way up. It is the right default only where the state does not outlive the job: a heap-held
+     * nest starts empty every time, and there is nothing a renamed path could abandon.
+     */
+    public NestBinding(Function<String, NestTable> tables, NestStores stores, NestDeadLetter deadLetter,
+            ReplayFloorFactory replayFloor) {
+        this(tables, stores, deadLetter, replayFloor, NestStateLedger.NONE);
     }
 
     /** Where each kind of nest vertex keeps its state. */

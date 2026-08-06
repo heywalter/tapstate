@@ -105,6 +105,25 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         return assemble(pipelineId, nodeId, root, rootIdentity, top, all);
     }
 
+    /**
+     * Every path this tree addresses state by: one per embed, plus the root's own. It is the shape of the
+     * tree as the state layer sees it - two trees with the same set reach each other's entries and two
+     * with different sets reach none of them.
+     *
+     * <p>It is deliberately wider than the set of namespaces. A namespace exists only where an embed has
+     * children of its own, but a leaf's elements are filed inside its parent's state under the leaf's own
+     * path, so renaming a leaf abandons what was stored just as thoroughly while every map keeps its name.
+     * Comparing namespaces would see nothing at all in that case, which is the case an author is most
+     * likely to reach for.
+     */
+    public Set<String> statePaths() {
+        Set<String> paths = new LinkedHashSet<>();
+        for (NestStream stream : streams) {
+            paths.add(render(stream.pathId()));
+        }
+        return paths;
+    }
+
     /** Whether the tree assembles nothing, so the node is wired as a passthrough with no state at all. */
     public boolean isPassthrough() {
         return vertices.isEmpty();

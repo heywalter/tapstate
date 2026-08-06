@@ -68,6 +68,13 @@ public enum NestError implements TapstateErrorCode {
     CAPACITY_THRESHOLD_ORDER_INVALID(
             "nest.capacity-threshold-order-invalid", Set.of("namespace", "hotCapacity", "guardLimit")),
 
+    /**
+     * Starting up: the tree keeps its state under names it no longer compiles to, because an embed path
+     * was renamed or a level inserted. What was stored is left where nothing reads it and the new names
+     * answer nothing, so the run would rebuild from empty while reporting that it resumed.
+     */
+    STATE_PATHS_CHANGED("nest.state-paths-changed", Set.of("stepId", "recorded", "compiled")),
+
     /** Running: one document has grown past the elements a single document may hold. */
     ROOT_FANOUT_LIMIT_EXCEEDED("nest.root-fanout-limit-exceeded", Set.of("rootKey", "elements", "limit")),
 

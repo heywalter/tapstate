@@ -89,6 +89,7 @@ nest.root-fanout-limit-exceeded
 nest.root-key-required
 nest.sibling-embeds-target-different-parent-keys
 nest.snapshot-passthrough-forbidden
+nest.state-paths-changed
 role.unsupported
 source.already-exists
 source.id-mismatch

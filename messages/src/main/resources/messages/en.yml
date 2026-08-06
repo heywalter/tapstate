@@ -299,6 +299,9 @@ nest.snapshot-passthrough-forbidden:
 nest.capacity-threshold-order-invalid:
   message: "Namespace {namespace} evicts at {hotCapacity} but fails the job at {guardLimit}, so its cold tier is never reached."
   solution: "Set the eviction threshold strictly below the guard limit, or the deployment fails before using the capacity it was given."
+nest.state-paths-changed:
+  message: "Nest {stepId} stored its state under {recorded}, and now compiles to {compiled}."
+  solution: "Stop the pipeline and start it again rather than resuming: renaming an embed path or inserting a level leaves the stored state where nothing reads it, and the new paths start empty beside documents that are not."
 nest.root-fanout-limit-exceeded:
   message: "Document {rootKey} holds {elements} elements, past the per-document limit of {limit}."
   solution: "Raise the limit if the data really is this wide, or narrow what the nest embeds."

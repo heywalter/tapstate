@@ -177,11 +177,18 @@ final class StoreBackedDagSource implements DagSource {
      * <p>It also carries the read side of the durable frontier, which is how an assembler learns that a
      * root it deleted can no longer be built back by a replay and its record may be dropped. Without it
      * every deletion would leave something behind for as long as the job runs.
+     *
+     * <p>The last of the five is what makes the state layer's own name a checked thing rather than an
+     * assumed one: the paths a nest keeps state under are written down as it is built and compared against
+     * on the way up. Editing an embed's path is otherwise silent - it renames where the state is kept
+     * without moving anything into it, and the tree rebuilds from empty while the pipeline reports that it
+     * resumed.
      */
     private NestBinding nestBinding(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
         Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
         return new NestBinding(byAlias::get, NestBinding.onMap(), new CountingNestDeadLetter(),
-                new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()));
+                new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()),
+                new StoreBackedNestStateLedger(storePort.keyedState()));
     }
 
     /**

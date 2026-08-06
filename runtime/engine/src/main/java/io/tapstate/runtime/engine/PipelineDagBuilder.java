@@ -14,6 +14,7 @@ import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.nest.NestDag;
 import io.tapstate.runtime.engine.nest.NestFrontier;
+import io.tapstate.runtime.engine.nest.NestStateLedger;
 import io.tapstate.runtime.engine.nest.NestTopology;
 import io.tapstate.spi.sink.SinkWriter;
 import java.util.ArrayList;
@@ -94,8 +95,15 @@ public final class PipelineDagBuilder {
                         throw new IllegalStateException("transform step '" + step.id()
                                 + "' is a nest, but no nest binding was supplied to the builder");
                     }
-                    byKey.put(step.id(), NestDag.attach(dag,
-                            NestTopology.compile(pipeline.id(), step.id(), nest, bindings.nest().tables()),
+                    NestTopology topology =
+                            NestTopology.compile(pipeline.id(), step.id(), nest, bindings.nest().tables());
+                    // Before a vertex is drawn, not after: the paths a tree keeps its state under are
+                    // named by the tree, so a job built first and refused afterwards would already have
+                    // decided which entries it was about to read - and every one of them would be the
+                    // wrong entry, silently, with nothing downstream able to tell.
+                    NestStateLedger.reconcile(bindings.nest().ledger(), pipeline.id(), step.id(),
+                            topology.statePaths());
+                    byKey.put(step.id(), NestDag.attach(dag, topology,
                             step.id(), nest.root().from(), step.id(),
                             alias -> verticesOf(aliasUpstream(inline.from(), alias, bindings), byKey),
                             bindings.nest(),
