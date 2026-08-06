@@ -208,9 +208,13 @@ public final class EnvelopeParser {
      * A canonical code as written, checked only for shape ({@code <domain>.<symbol>}). The registry of codes
      * lives in the product and the specifications run outside it, so a spelling is held to the shape here
      * and to reality by the run: a code no failure carries simply never matches.
+     *
+     * <p>The value is read as written, padding included. Trimming it first would accept a quoted scalar the
+     * schema refuses -- its pattern anchors on the raw string -- and the two would then disagree about the
+     * same document, which is the one thing the schema must never do to an author.
      */
     private static String failureCode(Object node) {
-        String code = string(node, "failure_code").trim();
+        String code = string(node, "failure_code");
         if (!code.matches("[a-z0-9]+\\.[a-z0-9-]+")) {
             throw new EnvelopeException(
                     "a failure code reads '<domain>.<symbol>' in lower kebab-case, found: " + code);
