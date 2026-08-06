@@ -26,34 +26,7 @@
             <artifactId>maven-assembly-plugin</artifactId>
             <executions>
               <execution>
-                <id>native-cli-bundle</id>
-                <phase>package</phase>
-                <goals>
-                  <goal>single</goal>
-                </goals>
-                <configuration>
-                  <descriptors>
-                    <descriptor>src/assembly/native.xml</descriptor>
-                  </descriptors>
-                  <tarLongFileMode>posix</tarLongFileMode>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
-    </profile>
-
-    <profile>
-      <id>mcp-jar-fallback</id>
-      <build>
-        <plugins>
-          <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-assembly-plugin</artifactId>
-            <executions>
-              <execution>
-                <id>jar-fallback-cli-bundle</id>
+                <id>native-cli-jar-mcp-bundle</id>
                 <phase>package</phase>
                 <goals>
                   <goal>single</goal>

@@ -24,6 +24,11 @@ public final class AuditedSourceService {
         return sourceService.get(id);
     }
 
+    /** Validates and renders a Source draft without writing an audit record. */
+    public SourceDraftResult draft(SourceDraft draft) {
+        return sourceService.draft(draft);
+    }
+
     /** Creates one Source only after its audit record is stored. */
     public SourceView create(String principal, SourceDraft draft) {
         Objects.requireNonNull(draft, "draft");

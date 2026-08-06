@@ -12,7 +12,7 @@ class ControlApiSchemaTest {
 
     private static final Set<String> MCP_OPERATIONS = Set.of(
             "connector.list", "connector.get",
-            "source.list", "source.get", "source.create",
+            "source.list", "source.get", "source.draft",
             "connection.test", "connection.test-result", "connection.discover-schema", "connection.schema",
             "artifact.validate", "artifact.apply",
             "pipeline.start", "pipeline.stop", "pipeline.status", "pipeline.metrics",
@@ -47,15 +47,15 @@ class ControlApiSchemaTest {
     }
 
     @Test
-    void sourceCreateDescriptionRequiresTheLiveConnectorSpec() {
-        assertThat(ControlOperations.SOURCE_CREATE.description())
-                .contains("connector_get", "live connector spec", "config");
+    void sourceDraftDescriptionMakesTheServerOwnTheLiveConnectorContract() {
+        assertThat(ControlOperations.SOURCE_DRAFT.description())
+                .contains("known connector", "live connector contract", "canonical YAML");
     }
 
     @Test
-    void sourceCreateLeavesOnlyConnectorConfigOpenForTheLiveSpec() {
+    void sourceDraftLeavesOnlyConnectorConfigOpenForTheLiveContract() {
         Map<?, ?> definitions = (Map<?, ?>) ControlApiSchema.document().get("$defs");
-        Map<?, ?> request = (Map<?, ?>) definitions.get("SourceCreateRequest");
+        Map<?, ?> request = (Map<?, ?>) definitions.get("SourceDraftRequest");
         Map<?, ?> properties = (Map<?, ?>) request.get("properties");
         Map<?, ?> config = (Map<?, ?>) properties.get("config");
 
@@ -66,5 +66,12 @@ class ControlApiSchemaTest {
                 "options", "srs", "experimental", "clearSecrets");
         assertThat(config.get("type")).isEqualTo("object");
         assertThat(config.get("additionalProperties")).isEqualTo(true);
+        assertThat(definitions.get("SourceDraftResult")).isEqualTo(Map.of(
+                "type", "object",
+                "properties", Map.of("yaml", Map.of(
+                        "type", "string", "minLength", 1,
+                        "description", "Canonical tapstate/v1 Source YAML")),
+                "additionalProperties", false,
+                "required", java.util.List.of("yaml")));
     }
 }

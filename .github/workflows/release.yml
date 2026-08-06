@@ -2,7 +2,7 @@
 # tapstate binary for their platform instead of installing GraalVM and building it from source.
 #
 # Manual only (workflow_dispatch): nothing outward-facing fires on a push. On each of the four target
-# platforms it builds the native CLI and stdio MCP sidecar with Liberica NIK, runs their smoke suites, then
+# platforms it builds the native CLI and its stdio MCP Boot JAR sidecar with Liberica NIK, runs their smoke suites, then
 # packages tapstate-<version>-<os>-<arch>.tar.gz (the complete bin/ + libexec/ bundle + LICENSE + NOTICE).
 # A final job adds a per-asset
 # .sha256 and an aggregate checksums.txt and assembles a DRAFT, prerelease GitHub release. A human
@@ -126,6 +126,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: graalvm/setup-graalvm@v1
         with:
+          # The native artifact is the CLI only. The MCP sidecar remains a JVM Boot JAR, so this
+          # release stays on the project's JDK 21 baseline instead of requiring a Java 25 AOT toolchain.
           java-version: '21'
           distribution: 'liberica'   # Liberica NIK 21 (GPLv2+CPE) — the release toolchain; Oracle GraalVM (GFTC) is local dev only
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -142,13 +144,11 @@ jobs:
             </toolchain>
           </toolchains>
           EOF
-      - name: build the native CLI, MCP sidecar, and bundle assembly
+      - name: build the native CLI, MCP Boot JAR, and bundle assembly
         run: mvn -B -Pnative -pl cli,control/mcp-server,distribution/cli-bundle -am -DskipTests package
       - name: native smoke (black-box against the produced binary, offline + online)
         run: bash cli/native-smoke.sh cli/target/tapstate
-      - name: MCP stdio smoke (black-box against the produced sidecar)
-        run: bash control/mcp-server/mcp-smoke.sh control/mcp-server/target/tapstate-mcp
-      - name: MCP stdio smoke (Boot JAR fallback)
+      - name: MCP stdio smoke (Boot JAR sidecar)
         shell: bash
         run: |
           jar="$(find control/mcp-server/target -maxdepth 1 -name 'mcp-server-*-boot.jar' -print -quit)"
