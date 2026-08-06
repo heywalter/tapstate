@@ -122,6 +122,20 @@ class SourceApiTest {
     }
 
     @Test
+    void draftUsesReadScopeAndLeavesArtifactAndAuditStoresUntouched() throws Exception {
+        ResponseEntity<String> drafted = request("reader")
+                .post().uri("/api/sources:draft")
+                .contentType(MediaType.APPLICATION_JSON).body(sourceJson("orders", "draft"))
+                .retrieve().toEntity(String.class);
+
+        assertThat(drafted.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(JSON.readTree(drafted.getBody()).path("yaml").asText())
+                .contains("version: tapstate/v1", "kind: source", "id: orders", "password: " + SECRET);
+        assertThat(context.getBean(InMemoryArtifactStore.class).list()).isEmpty();
+        assertThat(context.getBean(RecordingAuditStore.class).records).isEmpty();
+    }
+
+    @Test
     void replaceRequiresOneStrongQuotedEtagAndDeleteUsesTheNewVersion() throws Exception {
         String etag = create("orders", "before").getHeaders().getETag();
 

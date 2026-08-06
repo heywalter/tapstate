@@ -53,6 +53,7 @@ public final class ControlApiSchema {
         bind(refs, "source.list", "SourceList");
         bind(refs, "source.get", "SourceGet");
         bind(refs, "source.create", "SourceCreate");
+        bind(refs, "source.draft", "SourceDraft");
         bind(refs, "connection.test", "ConnectionTest");
         bind(refs, "connection.test-result", "ConnectionTestResult");
         bind(refs, "connection.discover-schema", "ConnectionDiscoverSchema");
@@ -88,7 +89,7 @@ public final class ControlApiSchema {
         sourceProperties.put("metadata", object(List.of(), Map.of(
                 "labels", Map.of("type", "object", "additionalProperties", Map.of("type", "string")),
                 "description", string("Free-text Source description")), false));
-        sourceProperties.put("connector", string("Connector id returned by connector_get"));
+        sourceProperties.put("connector", string("Registered connector id"));
         sourceProperties.put("config", object(List.of(), Map.of(), true));
         sourceProperties.put("mode", enumString("snapshot", "cdc", "stream", "file", "api"));
         Map<String, Object> table = object(List.of("type"), Map.of(
@@ -108,7 +109,13 @@ public final class ControlApiSchema {
                 "enabled", Map.of("type", "boolean")), false));
         sourceProperties.put("experimental", opaque);
         sourceProperties.put("clearSecrets", array(string("Config secret field to clear")));
-        pair(defs, "SourceCreate", object(List.of("id", "connector", "config"), sourceProperties, false), opaque);
+        Map<String, Object> sourceRequest =
+                object(List.of("id", "connector", "config"), sourceProperties, false);
+        pair(defs, "SourceCreate", sourceRequest, opaque);
+        pair(defs, "SourceDraft", sourceRequest, object(
+                List.of("yaml"),
+                Map.of("yaml", string("Canonical tapstate/v1 Source YAML")),
+                false));
 
         Map<String, Object> connectionProperties = new LinkedHashMap<>();
         connectionProperties.put("id", id);

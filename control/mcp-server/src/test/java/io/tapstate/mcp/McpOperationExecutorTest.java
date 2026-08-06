@@ -58,7 +58,7 @@ class McpOperationExecutorTest {
                     Map.entry(ControlOperations.CONNECTOR_GET, Map.of("id", "mysql")),
                     Map.entry(ControlOperations.SOURCE_LIST, Map.of()),
                     Map.entry(ControlOperations.SOURCE_GET, Map.of("id", "orders")),
-                    Map.entry(ControlOperations.SOURCE_CREATE, source),
+                    Map.entry(ControlOperations.SOURCE_DRAFT, source),
                     Map.entry(ControlOperations.CONNECTION_TEST, connection),
                     Map.entry(ControlOperations.CONNECTION_TEST_RESULT, Map.of("id", "orders")),
                     Map.entry(ControlOperations.CONNECTION_DISCOVER_SCHEMA, connection),
@@ -79,7 +79,7 @@ class McpOperationExecutorTest {
             }
 
             assertThat(paths).contains(
-                    "/api/connectors", "/api/connectors/mysql", "/api/sources",
+                    "/api/connectors", "/api/connectors/mysql", "/api/sources:draft", "/api/sources",
                     "/api/sources/orders", "/api/connections:test",
                     "/api/connections/orders/test-result", "/api/connections:discover-schema",
                     "/api/connections/orders/schema", "/api/artifacts:validate", "/api/artifacts:apply",
@@ -92,96 +92,33 @@ class McpOperationExecutorTest {
     }
 
     @Test
-    void sourceCreateAcceptsTheRegisteredConnectorSpecContract() throws Exception {
+    void sourceDraftRoutesOnePostWithoutAConnectorLookup() throws Exception {
         AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
-        HttpServer server = server(exchange -> {
-            if (exchange.getRequestMethod().equals("GET")) {
-                answer(exchange, 200, """
-                        {"id":"mysql","origin":"registered","runtimeAvailable":true,
-                         "spec":{"contentHash":"abc123","text":"{}",
-                                 "unavailable":null}}
-                        """);
-            } else {
-                posted.set((Map<?, ?>) JsonReader.parse(new String(
-                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-                answer(exchange, 201, "{\"id\":\"orders\"}");
-            }
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of("MYSQL_PASSWORD", "sentinel-secret"), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_CREATE,
-                    Map.of("id", "orders", "connector", "mysql",
-                            "config", Map.of("password", "${MYSQL_PASSWORD}")));
-
-            assertThat(result.error()).isFalse();
-            assertThat(((Map<?, ?>) posted.get().get("config")).get("password"))
-                    .isEqualTo("sentinel-secret");
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    void sourceCreateRequiresLiveSpecAndExpandsEnvironmentOnlyInTheOutboundRequest() throws Exception {
-        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
-        AtomicReference<String> authorization = new AtomicReference<>();
-        HttpServer server = server(exchange -> {
-            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
-            if (exchange.getRequestMethod().equals("GET")) {
-                answer(exchange, 200, """
-                        {"id":"mysql","origin":"registered","runtimeAvailable":true,
-                         "spec":{"contentHash":"abc123","text":"{}",
-                                 "unavailable":null}}
-                        """);
-            } else {
-                posted.set((Map<?, ?>) JsonReader.parse(new String(
-                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-                answer(exchange, 201, """
-                        {"id":"orders","connector":"mysql","config":{"password":"********"},
-                         "configuredSecrets":["password"],"contentHash":"hash"}
-                        """);
-            }
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "machine-token", Map.of("MYSQL_PASSWORD", "sentinel-secret"), client);
-            Map<String, Object> config = new LinkedHashMap<>();
-            config.put("host", "db.internal");
-            config.put("password", "${MYSQL_PASSWORD}");
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_CREATE,
-                    Map.of("id", "${MYSQL_PASSWORD}", "connector", "mysql", "config", config));
-
-            assertThat(result.error()).isFalse();
-            assertThat(result.body().toString()).doesNotContain("sentinel-secret");
-            assertThat(authorization.get()).isEqualTo("Bearer machine-token");
-            assertThat(((Map<?, ?>) posted.get().get("config")).get("password"))
-                    .isEqualTo("sentinel-secret");
-            assertThat(posted.get().get("id")).isEqualTo("${MYSQL_PASSWORD}");
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    void sourceCreateFailsBeforeWriteWhenConnectorResponseHasNoCompleteSpec() throws Exception {
+        AtomicReference<String> path = new AtomicReference<>();
         AtomicInteger requests = new AtomicInteger();
         HttpServer server = server(exchange -> {
             requests.incrementAndGet();
-            answer(exchange, 200,
-                    "{\"id\":\"mysql\",\"origin\":\"bundled\",\"runtimeAvailable\":false}");
+            path.set(exchange.getRequestURI().toString());
+            posted.set((Map<?, ?>) JsonReader.parse(new String(
+                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+            answer(exchange, 200, "{\"yaml\":\"version: tapstate/v1\\nkind: source\\n\"}");
         });
         try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(baseOf(server), "token", Map.of(), client);
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
 
-            McpResult result = executor.execute(ControlOperations.SOURCE_CREATE,
-                    Map.of("id", "orders", "connector", "mysql", "config", Map.of()));
+            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
+                    Map.of("id", "orders", "connector", "mysql",
+                            "config", Map.of("password", "draft-secret")));
 
-            assertThat(result.error()).isTrue();
-            assertThat(result.body()).containsEntry("code", "mcp.connector-spec-unavailable");
+            assertThat(result.error()).isFalse();
+            assertThat(result.body()).containsEntry("yaml", "version: tapstate/v1\nkind: source\n");
             assertThat(requests.get()).isEqualTo(1);
+            assertThat(path.get()).isEqualTo("/api/sources:draft");
+            assertThat(posted.get().get("id")).isEqualTo("orders");
+            assertThat(posted.get().get("connector")).isEqualTo("mysql");
+            assertThat(((Map<?, ?>) posted.get().get("config")).get("password"))
+                    .isEqualTo("draft-secret");
         } finally {
             server.stop(0);
         }
@@ -197,41 +134,6 @@ class McpOperationExecutorTest {
 
             assertThat(result.error()).isTrue();
             assertThat(result.body()).containsEntry("code", "control.unreachable");
-        }
-    }
-
-    @Test
-    void sourceCreateSupportsExplicitDefaultsAndRejectsMissingEnvironment() throws Exception {
-        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
-        HttpServer server = server(exchange -> {
-            if (exchange.getRequestMethod().equals("GET")) {
-                answer(exchange, 200, """
-                        {"id":"mysql","origin":"registered","runtimeAvailable":true,
-                         "spec":{"contentHash":"abc123","text":"{}",
-                                 "unavailable":null}}
-                        """);
-            } else {
-                posted.set((Map<?, ?>) JsonReader.parse(new String(
-                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-                answer(exchange, 201, "{\"id\":\"orders\"}");
-            }
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(10), Duration.ofSeconds(10))) {
-            McpOperationExecutor executor = new McpOperationExecutor(baseOf(server), "token", Map.of(), client);
-
-            McpResult defaulted = executor.execute(ControlOperations.SOURCE_CREATE,
-                    Map.of("id", "orders", "connector", "mysql",
-                            "config", Map.of("host", "${var:MYSQL_HOST:localhost}")));
-            McpResult missing = executor.execute(ControlOperations.SOURCE_CREATE,
-                    Map.of("id", "orders", "connector", "mysql",
-                            "config", Map.of("password", "${MYSQL_PASSWORD}")));
-
-            assertThat(defaulted.error()).as(defaulted.body().toString()).isFalse();
-            assertThat(((Map<?, ?>) posted.get().get("config")).get("host")).isEqualTo("localhost");
-            assertThat(missing.error()).isTrue();
-            assertThat(missing.body()).containsEntry("code", "mcp.environment-missing");
-        } finally {
-            server.stop(0);
         }
     }
 
@@ -281,7 +183,7 @@ class McpOperationExecutorTest {
     }
 
     @Test
-    void sourceCreatePropagatesConnectorRejectionWithoutWritingSource() throws Exception {
+    void sourceDraftPropagatesServerRejection() throws Exception {
         AtomicInteger requests = new AtomicInteger();
         HttpServer server = server(exchange -> {
             requests.incrementAndGet();
@@ -291,29 +193,12 @@ class McpOperationExecutorTest {
             McpOperationExecutor executor = new McpOperationExecutor(
                     baseOf(server), "token", Map.of(), client);
 
-            McpResult result = executor.execute(ControlOperations.SOURCE_CREATE,
+            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
                     Map.of("id", "orders", "connector", "mysql", "config", Map.of()));
 
             assertThat(result.error()).isTrue();
             assertThat(result.body()).containsEntry("code", "mcp.server-rejected");
             assertThat(requests).hasValue(1);
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    void sourceCreateRejectsNonObjectConnectorResponse() throws Exception {
-        HttpServer server = server(exchange -> answer(exchange, 200, "[]"));
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(10), Duration.ofSeconds(10))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of(), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_CREATE,
-                    Map.of("id", "orders", "connector", "mysql", "config", Map.of()));
-
-            assertThat(result.error()).isTrue();
-            assertThat(result.body()).containsEntry("code", "mcp.connector-spec-unavailable");
         } finally {
             server.stop(0);
         }
