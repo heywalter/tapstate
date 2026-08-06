@@ -2,6 +2,7 @@ package io.tapstate.runtime.scheduler;
 
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
+import io.tapstate.core.lifecycle.NestStateReading;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.core.lifecycle.StateJson;
@@ -44,12 +45,24 @@ public final class ObservationPublisher {
      */
     private static final String FRONTIER_GAP_PREFIX = "frontierGap.";
 
+    /**
+     * What a per-namespace nest state reading is named, with the namespace appended. Four numbers rather
+     * than the hit ratio they imply: a ratio published here would be an average over the whole run, which
+     * is the one window in which a state layer that fell off its cliff a minute ago still reads as healthy.
+     * Two scrapes of counts give any window a reader wants, and the ratio is one division away.
+     */
+    private static final String NEST_ENTRIES_PREFIX = "nestStateEntries.";
+    private static final String NEST_ACCESSES_PREFIX = "nestStateAccesses.";
+    private static final String NEST_BACKFILLS_PREFIX = "nestStateBackfills.";
+    private static final String NEST_BACKFILL_MILLIS_PREFIX = "nestStateBackfillMillis.";
+
     private final StateStore state;
     private final ObservationStore observations;
     private final Function<String, OptionalLong> recordCounts;
     private final Function<String, Map<String, String>> positions;
     private final Function<String, Map<String, TableSnapshot>> snapshots;
     private final Function<String, Map<String, Long>> frontierGaps;
+    private final Function<String, Map<String, NestStateReading>> nestStateReadings;
 
     /**
      * A publisher with no metric, position or snapshot source: recordCount stays absent and positions and
@@ -77,7 +90,7 @@ public final class ObservationPublisher {
     public ObservationPublisher(StateStore state, ObservationStore observations,
             Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
             Function<String, Map<String, TableSnapshot>> snapshots) {
-        this(state, observations, recordCounts, positions, snapshots, id -> Map.of());
+        this(state, observations, recordCounts, positions, snapshots, id -> Map.of(), id -> Map.of());
     }
 
     /**
@@ -89,12 +102,26 @@ public final class ObservationPublisher {
             Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
             Function<String, Map<String, TableSnapshot>> snapshots,
             Function<String, Map<String, Long>> frontierGaps) {
+        this(state, observations, recordCounts, positions, snapshots, frontierGaps, id -> Map.of());
+    }
+
+    /**
+     * A publisher also wired to the per-namespace nest state readings: {@code nestStateReadings} yields how
+     * full each namespace of a pipeline's live run is, how much of the reading it served from memory and
+     * what the rest cost (empty when nothing reports any). A fifth port for the same reason as the others.
+     */
+    public ObservationPublisher(StateStore state, ObservationStore observations,
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
+            Function<String, Map<String, TableSnapshot>> snapshots,
+            Function<String, Map<String, Long>> frontierGaps,
+            Function<String, Map<String, NestStateReading>> nestStateReadings) {
         this.state = Objects.requireNonNull(state, "state");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.recordCounts = Objects.requireNonNull(recordCounts, "recordCounts");
         this.positions = Objects.requireNonNull(positions, "positions");
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.frontierGaps = Objects.requireNonNull(frontierGaps, "frontierGaps");
+        this.nestStateReadings = Objects.requireNonNull(nestStateReadings, "nestStateReadings");
     }
 
     /** Publishes the pipeline's latest observation from its actual state; a no-op if it has no checkpoint. */
@@ -156,6 +183,15 @@ public final class ObservationPublisher {
         // stay distinguishable; a chain that reported none is absent rather than zero, which would read as
         // the healthy end of the same scale.
         frontierGaps.apply(pipelineId).forEach((chain, gap) -> metrics.put(FRONTIER_GAP_PREFIX + chain, gap));
+        // One set per namespace that reported, so a resolver thrashing against its cold layer stays
+        // distinguishable from an assembler that is not; a namespace reporting nothing is absent rather
+        // than present at zero, which would read as a state layer that had emptied.
+        nestStateReadings.apply(pipelineId).forEach((namespace, reading) -> {
+            metrics.put(NEST_ENTRIES_PREFIX + namespace, reading.entries());
+            metrics.put(NEST_ACCESSES_PREFIX + namespace, reading.accesses());
+            metrics.put(NEST_BACKFILLS_PREFIX + namespace, reading.backfills());
+            metrics.put(NEST_BACKFILL_MILLIS_PREFIX + namespace, reading.backfillMillis());
+        });
         return metrics;
     }
 }

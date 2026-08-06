@@ -6,6 +6,7 @@ import io.tapstate.runtime.engine.ReplayFloorFactory;
 import java.io.Serializable;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * What the assembly root supplies for a nest node: where each embedded stream's table key comes from,
@@ -65,6 +66,21 @@ public record NestBinding(
 
         /** The store for the assembler's documents. */
         NestStore<RootAssembly> forAssembler(NestVertex vertex);
+
+        /**
+         * Binds as above, with somewhere for the stores to leave their namespaces' readings. Only the
+         * supplier building a vertex's processors calls this, because only there is it known that a job is
+         * what these are for; every other caller gets stores that report nothing, which is the honest
+         * answer where there is no run for a reading to belong to.
+         *
+         * <p>A new gauge per store, never one shared between them. A vertex runs as several processors on
+         * one member and each is a thread of its own, so a gauge holding the handles it has already looked
+         * up would be a plain map written from all of them at once - measured, that takes the whole job
+         * down mid-run rather than merely losing a reading.
+         */
+        default NestStores bind(HazelcastInstance member, Supplier<NestStateGauge> gauges) {
+            return bind(member);
+        }
     }
 
     /** Stores that keep everything on the heap of the member running the vertex, and outlive nothing. */
@@ -103,9 +119,15 @@ public record NestBinding(
         private static final long serialVersionUID = 1L;
 
         private final transient HazelcastInstance member;
+        private final transient Supplier<NestStateGauge> gauges;
 
         private MapNestStores(HazelcastInstance member) {
+            this(member, () -> NestStateGauge.NONE);
+        }
+
+        private MapNestStores(HazelcastInstance member, Supplier<NestStateGauge> gauges) {
             this.member = member;
+            this.gauges = gauges;
         }
 
         @Override
@@ -114,13 +136,32 @@ public record NestBinding(
         }
 
         @Override
+        public NestStores bind(HazelcastInstance member, Supplier<NestStateGauge> gauges) {
+            return new MapNestStores(Objects.requireNonNull(member, "member"),
+                    Objects.requireNonNull(gauges, "gauges"));
+        }
+
+        @Override
         public NestStore<ResolverState> forResolver(NestVertex vertex) {
-            return new MapNestStore<>(mapOf(vertex));
+            return metered(mapOf(vertex));
         }
 
         @Override
         public NestStore<RootAssembly> forAssembler(NestVertex vertex) {
-            return new MapNestStore<>(mapOf(vertex));
+            return metered(mapOf(vertex));
+        }
+
+        /**
+         * A store that leaves its namespace's readings where the run's own statistics are collected. The
+         * gauge is chosen here rather than inside the store because here is where it is known that a job is
+         * what this is being built for: a store built anywhere else has no job statistics to leave any in,
+         * and asking for them there fails rather than quietly recording nothing.
+         */
+        private <S> NestStore<S> metered(IMap<Object, S> map) {
+            NestStateGauge gauge = gauges.get();
+            return gauge == NestStateGauge.NONE
+                    ? new MapNestStore<>(map)
+                    : new MapNestStore<>(map, NestStateStats.of(member), gauge);
         }
 
         private <S> IMap<Object, S> mapOf(NestVertex vertex) {

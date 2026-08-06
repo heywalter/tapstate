@@ -1,6 +1,8 @@
 package io.tapstate.runtime.engine.nest;
 
+import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.map.MapLoader;
+import com.hazelcast.map.MapLoaderLifecycleSupport;
 import com.hazelcast.map.MapStore;
 import com.hazelcast.map.MapStoreFactory;
 import io.tapstate.spi.store.KeyedStateStore;
@@ -32,10 +34,19 @@ import java.util.Properties;
  * this layer exists to remove. The port beneath offers no way to enumerate either, so this is the only
  * answer available rather than one that has to be remembered.
  */
-final class NestStateMapStore implements MapStore<Object, Object> {
+final class NestStateMapStore implements MapStore<Object, Object>, MapLoaderLifecycleSupport {
 
     private final KeyedStateStore store;
     private final String namespace;
+
+    /**
+     * Where a trip made here is counted. The substrate builds this rather than the code that wires the map,
+     * so the member cannot be handed in - it arrives at {@link #init}, which is the one thing the substrate
+     * offers a store built this way. Measured: a store reached through a factory is <em>not</em> given the
+     * member by the awareness interface, only by this one, and the difference is silent - counters that are
+     * simply never written.
+     */
+    private NestStateStats stats;
 
     NestStateMapStore(KeyedStateStore store, String namespace) {
         this.store = Objects.requireNonNull(store, "store");
@@ -43,8 +54,28 @@ final class NestStateMapStore implements MapStore<Object, Object> {
     }
 
     @Override
+    public void init(HazelcastInstance member, Properties properties, String mapName) {
+        this.stats = NestStateStats.of(member);
+    }
+
+    @Override
+    public void destroy() {
+    }
+
+    /**
+     * The state under {@code key}, from the layer behind the map. Every call is by definition a key that
+     * was not in memory, which is what makes this the one place a miss can be counted at all: the map
+     * serves a hit and a filled miss identically, so nothing above here can tell them apart.
+     */
+    @Override
     public Object load(Object key) {
-        return store.load(namespace, NestStateKeys.nameOf(key)).map(NestStateMapStore::fromBytes).orElse(null);
+        long began = System.nanoTime();
+        Object state = store.load(namespace, NestStateKeys.nameOf(key))
+                .map(NestStateMapStore::fromBytes).orElse(null);
+        if (stats != null) {
+            stats.backfill(namespace, System.nanoTime() - began);
+        }
+        return state;
     }
 
     /**

@@ -239,7 +239,9 @@ public final class NestDag {
         @Override
         public void init(Context context) {
             floor = replayFloor.resolve(context.hazelcastInstance());
-            bound = stores.bind(context.hazelcastInstance());
+            // Metered from here and nowhere else: this is the one place a job is what the stores are
+            // being bound for, and a reading can only be left from a thread running its processors.
+            bound = stores.bind(context.hazelcastInstance(), JetNestStateGauge::new);
         }
 
         @Override

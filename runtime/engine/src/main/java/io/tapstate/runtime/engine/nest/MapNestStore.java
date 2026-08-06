@@ -39,24 +39,73 @@ final class MapNestStore<S> implements NestStore<S> {
     private static final long serialVersionUID = 1L;
 
     private final IMap<Object, S> map;
+    private final NestStateStats stats;
+    private final NestStateGauge gauge;
 
     MapNestStore(IMap<Object, S> map) {
+        this(map, null, NestStateGauge.NONE);
+    }
+
+    MapNestStore(IMap<Object, S> map, NestStateStats stats, NestStateGauge gauge) {
         this.map = Objects.requireNonNull(map, "map");
+        this.stats = stats;
+        this.gauge = Objects.requireNonNull(gauge, "gauge");
     }
 
     @Override
     public S load(Object key) {
-        return map.get(key);
+        countAccess();
+        S state = map.get(key);
+        publishReading();
+        return state;
+    }
+
+    /**
+     * Leaves the namespace's current readings, after whatever changed them. Every state operation does it,
+     * rather than a sample taken on a clock: how full the state is only ever changes when one of these
+     * runs, so a reading left by the last of them is current for as long as no further one happens - where
+     * a clock would leave a burst that filled the state and then went quiet reported at whatever it held
+     * before the burst, which is the one moment an alarm on it needed to fire.
+     *
+     * <p>Affordable per operation because none of the four costs a round trip. The count of keys is the
+     * map's own local reckoning rather than its cluster-wide size, which is a field read instead of an
+     * operation - and on a member holding all of a pipeline's partitions the two are the same number.
+     */
+    private void publishReading() {
+        if (stats == null) {
+            return;
+        }
+        String namespace = map.getName();
+        NestStateStats.Counted counted = stats.counted(namespace);
+        gauge.reading(namespace, map.getLocalMapStats().getOwnedEntryCount(),
+                counted.accesses(), counted.backfills(), counted.backfillNanos() / 1_000_000L);
     }
 
     @Override
     public void save(Object key, S state) {
+        countAccess();
         map.executeOnKey(key, new Carried<>(state));
+        publishReading();
     }
 
     @Override
     public void remove(Object key) {
+        countAccess();
         map.delete(key);
+        publishReading();
+    }
+
+    /**
+     * Counts one reach for the state, whichever kind it is. A write counts as much as a read because a
+     * write can miss as thoroughly: a state carried to a key that is not in memory sends the substrate to
+     * the layer behind first, exactly as a read does. Measured, a key touched for the first time costs two
+     * trips in the one event - one for the read and one for the write that follows it - so a ratio taken
+     * over reads alone would report more of the reading served from memory than ever was.
+     */
+    private void countAccess() {
+        if (stats != null) {
+            stats.access(map.getName());
+        }
     }
 
     /**

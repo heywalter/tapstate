@@ -11,6 +11,8 @@ import com.hazelcast.jet.core.metrics.Measurement;
 import com.hazelcast.jet.core.metrics.MetricNames;
 import com.hazelcast.jet.core.metrics.MetricTags;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.lifecycle.NestStateReading;
+import io.tapstate.runtime.engine.nest.NestStateMetricNames;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
@@ -211,6 +213,45 @@ public final class Engine {
             }
         }
         return widest;
+    }
+
+    /**
+     * What each namespace of the pipeline's nest state looks like right now, keyed by namespace; empty
+     * when it has no live job and for a job whose nests report nothing.
+     *
+     * <p>Every processor instance of one vertex reads the same shared counters and the same map, so they
+     * all report the same numbers and a namespace is kept at its highest reading rather than summed - a sum
+     * would multiply every count by however many instances the vertex happened to run as.
+     *
+     * <p>Like the record count this reads the job's last collected statistics, so a freshly submitted job
+     * reports nothing until the first collection. A namespace that reports nothing is absent rather than
+     * present at zero: "not measured" and "measured empty" call for opposite responses, and a state layer
+     * that stopped reporting would otherwise read as one that had emptied.
+     */
+    public Map<String, NestStateReading> nestStateReadings(String pipelineId) {
+        Job job = liveJob(pipelineId);
+        if (job == null) {
+            return Map.of();
+        }
+        JobMetrics collected = job.getMetrics();
+        Map<String, Map<String, Long>> byNamespace = new HashMap<>();
+        for (String metric : collected.metrics()) {
+            NestStateMetricNames.Reading reading = NestStateMetricNames.readingOf(metric);
+            if (reading == null) {
+                continue;
+            }
+            for (Measurement measurement : collected.get(metric)) {
+                byNamespace.computeIfAbsent(reading.namespace(), ignored -> new HashMap<>())
+                        .merge(reading.kind(), measurement.value(), Math::max);
+            }
+        }
+        Map<String, NestStateReading> readings = new HashMap<>();
+        byNamespace.forEach((namespace, kinds) -> readings.put(namespace, new NestStateReading(
+                kinds.getOrDefault(NestStateMetricNames.ENTRIES, 0L),
+                kinds.getOrDefault(NestStateMetricNames.ACCESSES, 0L),
+                kinds.getOrDefault(NestStateMetricNames.BACKFILLS, 0L),
+                kinds.getOrDefault(NestStateMetricNames.BACKFILL_MILLIS, 0L))));
+        return readings;
     }
 
     /** Whether a measurement belongs to a serve-sink vertex, which the builder names by that prefix. */

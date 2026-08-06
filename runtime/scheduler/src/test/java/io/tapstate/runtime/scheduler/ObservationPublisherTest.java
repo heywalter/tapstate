@@ -4,6 +4,7 @@ import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
+import io.tapstate.core.lifecycle.NestStateReading;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.core.lifecycle.StateJson;
@@ -105,6 +106,39 @@ class ObservationPublisherTest {
 
         // Absent means unmeasured, and a zero would read as a frontier keeping up with its bound - the
         // opposite reading, and the one an alarm over this number would stay quiet on.
+        assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
+    }
+
+    @Test
+    void publishWiresWhatEachNestNamespaceHoldsAndWhatItCostsIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root", new NestStateReading(4_000L, 900L, 30L, 210L)));
+
+        wired.publish("orders");
+
+        // Four numbers per namespace rather than the one ratio they imply: a ratio published here would be
+        // an average over the whole run, and a state layer that fell off its cliff a minute ago still reads
+        // as healthy in it. Two scrapes of counts give any window a reader wants.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L),
+                        entry("nestStateEntries.nest.orders.doc.$root", 4_000L),
+                        entry("nestStateAccesses.nest.orders.doc.$root", 900L),
+                        entry("nestStateBackfills.nest.orders.doc.$root", 30L),
+                        entry("nestStateBackfillMillis.nest.orders.doc.$root", 210L));
+    }
+
+    @Test
+    void theNestStateReadingsAreAbsentFromTheMetricsWhenNoNamespaceReportsAny() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(), id -> Map.of());
+
+        wired.publish("orders");
+
+        // Absent means unmeasured. Zeroes would read as a state layer holding nothing and serving every
+        // read from memory - the healthy end of both scales, and the reading an alarm stays quiet on.
         assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
     }
 

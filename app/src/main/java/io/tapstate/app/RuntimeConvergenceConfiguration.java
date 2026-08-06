@@ -42,7 +42,7 @@ class RuntimeConvergenceConfiguration {
         // table, an unloaded one or a chain with no reading reports absence, not zero.
         return new ObservationPublisher(storePort.state(), storePort.observations(),
                 engine::recordCount, new StoreBackedSinkPositions(storePort),
-                captureCoordinator::snapshotProgress, engine::frontierGaps);
+                captureCoordinator::snapshotProgress, engine::frontierGaps, engine::nestStateReadings);
     }
 
     @Bean

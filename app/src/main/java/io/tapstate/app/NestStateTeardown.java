@@ -1,6 +1,7 @@
 package io.tapstate.app;
 
 import com.hazelcast.core.HazelcastInstance;
+import io.tapstate.runtime.engine.nest.NestStateStats;
 import io.tapstate.spi.store.KeyedStateStore;
 
 import java.nio.charset.StandardCharsets;
@@ -75,9 +76,14 @@ final class NestStateTeardown {
         if (pending.isEmpty()) {
             return;
         }
+        NestStateStats stats = NestStateStats.of(member);
         for (String namespace : pending) {
             member.getMap(namespace).destroy();
             store.dropNamespace(namespace);
+            // What was counted about a namespace goes with the namespace. Left behind, the counts would
+            // keep describing a run that is over, and a reader cannot tell a count standing still from one
+            // that is merely quiet.
+            stats.forget(namespace);
         }
         // Last, and only once the namespaces above are gone: the note outliving what it describes costs a
         // repeated drop, where what it describes outliving the note is state nothing will name again.
