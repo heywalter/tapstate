@@ -105,7 +105,15 @@ class McpOnlineControlIT {
                 Map<?, ?> result = (Map<?, ?>) drafted.get("result");
                 assertThat(result.get("isError")).isEqualTo(false);
                 String yaml = String.valueOf(((Map<?, ?>) result.get("structuredContent")).get("yaml"));
-                assertThat(yaml).contains("id: orders", "password: " + SENTINEL_SECRET);
+                assertThat(yaml).isEqualTo("""
+                        version: tapstate/v1
+                        kind: source
+                        id: orders
+                        connector: mysql
+                        config:
+                          host: db.internal
+                          password: %s
+                        """.formatted(SENTINEL_SECRET));
             } finally {
                 process.getOutputStream().close();
                 if (!process.waitFor(5, TimeUnit.SECONDS)) {
