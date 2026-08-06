@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,6 +56,13 @@ import org.junit.jupiter.api.Test;
  * one drain when data was drained alongside it, and that drain never comes for an edge that has finished -
  * so data in the mix would decide these tests by timing rather than by the property.
  *
+ * <p><b>The instance promising the high bound finishes first, and that order is forced rather than left to
+ * the scheduler.</b> Finishing one queue of an edge raises the bound to the lowest of the queues still open,
+ * so the low instance finishing while the high one is still open raises the bound to the high promise too -
+ * the same value, off a different edge state, and nothing in a bound says which of the two produced it. With
+ * the high instance gone first every such intermediate bound is the low promise, and the high promise can
+ * only reach a receiver as the parting bound of the edge, which is the one thing being asked about here.
+ *
  * <p>This is engine behaviour rather than ours, and an upgrade could change it without a compile error.
  */
 class JetFinishedQueuesRaiseTheBoundTest {
@@ -76,12 +84,17 @@ class JetFinishedQueuesRaiseTheBoundTest {
     /** What each receiver instance was handed, in arrival order, keyed by its global processor index. */
     private static final Map<Integer, List<String>> SEEN = new ConcurrentHashMap<>();
 
+    /** Set by each vertex's high instance as it finishes; its low instance waits on it before finishing. */
+    private static final Map<String, AtomicBoolean> HIGH_FINISHED = new ConcurrentHashMap<>();
+
     private HazelcastInstance member;
     private Job job;
 
     @BeforeEach
     void startMember() {
         SEEN.clear();
+        // A flag left set by an earlier case would let this one's low instance finish first after all.
+        HIGH_FINISHED.clear();
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(4);
         config.setProperty("hazelcast.phone.home.enabled", "false");
@@ -199,6 +212,7 @@ class JetFinishedQueuesRaiseTheBoundTest {
         private final boolean lowFinishes;
         private boolean high;
         private boolean promised;
+        private AtomicBoolean highFinished;
 
         Sender(boolean lowFinishes) {
             this.lowFinishes = lowFinishes;
@@ -207,6 +221,7 @@ class JetFinishedQueuesRaiseTheBoundTest {
         @Override
         protected void init(Context context) {
             high = context.localProcessorIndex() == HIGH_INSTANCE;
+            highFinished = HIGH_FINISHED.computeIfAbsent(context.vertexName(), name -> new AtomicBoolean());
         }
 
         @Override
@@ -217,7 +232,13 @@ class JetFinishedQueuesRaiseTheBoundTest {
                 }
                 promised = true;
             }
-            return high || lowFinishes;
+            if (high) {
+                highFinished.set(true);
+                return true;
+            }
+            // Yields until the high instance has finished, so this edge is never left with the high promise
+            // as the lowest of what is still open - a bound at the high value that no edge finishing produced.
+            return lowFinishes && highFinished.get();
         }
     }
 
