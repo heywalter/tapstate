@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -88,6 +89,9 @@ class JetFinishedQueuesRaiseTheBoundTest {
     /** Per sender vertex, whether its high instance has put its DONE on the queue. */
     private static final Map<String, AtomicBoolean> HIGH_IS_DONE = new ConcurrentHashMap<>();
 
+    /** The thread the flag above was set on, which is what decides whether waiting for it is bounded. */
+    private static final AtomicReference<String> DONE_WAS_FLAGGED_ON = new AtomicReference<>();
+
     private HazelcastInstance member;
     private Job job;
 
@@ -96,6 +100,7 @@ class JetFinishedQueuesRaiseTheBoundTest {
         SEEN.clear();
         // A flag left set by an earlier case would let a low instance finish first after all.
         HIGH_IS_DONE.clear();
+        DONE_WAS_FLAGGED_ON.set(null);
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(4);
         config.setProperty("hazelcast.phone.home.enabled", "false");
@@ -140,10 +145,19 @@ class JetFinishedQueuesRaiseTheBoundTest {
 
         await(() -> boundsAfterEdgeCompleted(LEFT).contains(edge(LEFT, HIGH)));
 
+        assertThat(DONE_WAS_FLAGGED_ON.get())
+                .describedAs("the low instance spins on this flag from a cooperative thread, so how long it "
+                        + "spins is bounded only while the flag is set on one too. A processor that does not "
+                        + "declare its close cooperative has that close handed to a shared pool instead, and "
+                        + "the wait then lasts as long as that pool is busy - a question about the machine "
+                        + "rather than about this property")
+                .contains("cooperative");
         assertThat(boundsSeen())
                 .describedAs("the low promise is what the bound stood at while both queues were open, so "
-                        + "the raise below is a rise rather than the only value ever sent")
-                .contains(edge(LEFT, LOW));
+                        + "the raise below is a rise rather than the only value ever sent; and the edge did "
+                        + "complete, without which the raise below would be missing for want of an after to "
+                        + "land in rather than for never having been made")
+                .contains(edge(LEFT, LOW), edgeCompleted(LEFT));
         assertThat(boundsAfterEdgeCompleted(LEFT))
                 .describedAs("with every queue of the edge finished the bound became the highest any of "
                         + "them ever promised - a maximum across instances, which is what would carry a "
@@ -248,9 +262,21 @@ class JetFinishedQueuesRaiseTheBoundTest {
             return lowFinishes && highIsDone.get();
         }
 
+        /**
+         * Setting a flag blocks on nothing, and saying so is what keeps {@link #close()} on the cooperative
+         * thread that just queued this instance's DONE. Left undeclared, a cooperative processor's close is
+         * handed to a shared pool, and the low instance's wait for the flag lasts however long that pool is
+         * busy - no part of which is the property these cases are about.
+         */
+        @Override
+        public boolean closeIsCooperative() {
+            return true;
+        }
+
         @Override
         public void close() {
             if (high) {
+                DONE_WAS_FLAGGED_ON.set(Thread.currentThread().getName());
                 highIsDone.set(true);
             }
         }
