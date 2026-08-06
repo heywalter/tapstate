@@ -28,11 +28,16 @@ import io.tapstate.spi.store.KeyedStateStore;
  *       map to load an evicted entry back from. Until then, evicting is losing.</li>
  * </ul>
  *
- * <p>Values are kept in their serialized form. Keeping them as objects sounds cheaper and is not under
- * the way these maps are read: a get returns a copy, so an object-format map serializes on the way out
- * where a binary one does not, and the copy is only avoided by an access path that never leaves the
- * partition thread. That access path is not the one in use, so the format follows the access rather
- * than the intuition.
+ * <p>Values are kept as the objects they are, because that is what the way they are written needs. A
+ * write carries the state to the key it belongs to instead of putting it across the map, and what a
+ * carried write is handed on an object-format map is the state rather than a copy of it - so the write
+ * serializes none of the document. The format follows the access rather than the intuition: read out
+ * with a plain get this format would be the more expensive of the two, and the reason it is not is that
+ * the expensive half of the pair has been removed rather than moved.
+ *
+ * <p><b>No index may be defined on these maps.</b> An index turns what a carried write is handed back
+ * into a clone of the state, which puts the copy back with nothing to show for it and nothing reporting
+ * it. Nothing defines one today; the ban is what keeps that true.
  */
 public final class NestMaps {
 
@@ -79,7 +84,7 @@ public final class NestMaps {
         return new MapConfig(NAMESPACE_PREFIX + "*")
                 .setBackupCount(0)
                 .setAsyncBackupCount(0)
-                .setInMemoryFormat(InMemoryFormat.BINARY)
+                .setInMemoryFormat(InMemoryFormat.OBJECT)
                 .setTimeToLiveSeconds(0)
                 .setMaxIdleSeconds(0)
                 .setStatisticsEnabled(true)

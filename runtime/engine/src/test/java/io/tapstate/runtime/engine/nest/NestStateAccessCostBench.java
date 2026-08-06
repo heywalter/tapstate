@@ -112,6 +112,8 @@ class NestStateAccessCostBench {
         for (int size : SIZES) {
             report(size, "read-out-write-back", readOutWriteBack(size));
             report(size, "changed-in-place", changedInPlace(size));
+            report(size, "carried-in-place", carriedInPlace(size));
+            report(size, "read-out-of-object", readOutOfObject(size));
         }
     }
 
@@ -153,6 +155,57 @@ class NestStateAccessCostBench {
         long start = System.nanoTime();
         for (int i = 0; i < RUNS; i++) {
             map.executeOnKey(key, new ChangeInPlace());
+        }
+        return new Sample(System.nanoTime() - start, CountedState.WRITES.get(), CountedState.READS.get());
+    }
+
+    /**
+     * The whole state carried to the key by the processor that changed it, rather than the change being
+     * described and replayed there. Whether this costs a serialization decides how much of the operator
+     * has to move: if carrying is free the change can stay where it is written, and if it is not, the
+     * change itself has to become something that can travel.
+     */
+    private Sample carriedInPlace(int size) {
+        IMap<String, CountedState> map = member.getMap(IN_PLACE_MAP);
+        map.clear();
+        String key = "root";
+        map.set(key, new CountedState(size));
+
+        CountedState carried = new CountedState(size);
+        for (int i = 0; i < WARMUP; i++) {
+            map.executeOnKey(key, new CarryInPlace(carried));
+        }
+
+        CountedState.WRITES.set(0);
+        CountedState.READS.set(0);
+        long start = System.nanoTime();
+        for (int i = 0; i < RUNS; i++) {
+            map.executeOnKey(key, new CarryInPlace(carried));
+        }
+        return new Sample(System.nanoTime() - start, CountedState.WRITES.get(), CountedState.READS.get());
+    }
+
+    /**
+     * Reading the state out of a map that holds it as an object. The read is the half a carrying write
+     * cannot remove, so what it costs on this format decides whether changing the format is worth
+     * anything at all: a format that halves the write and doubles the read has moved the cost, not
+     * removed it.
+     */
+    private Sample readOutOfObject(int size) {
+        IMap<String, CountedState> map = member.getMap(IN_PLACE_MAP);
+        map.clear();
+        String key = "root";
+        map.set(key, new CountedState(size));
+
+        for (int i = 0; i < WARMUP; i++) {
+            map.get(key);
+        }
+
+        CountedState.WRITES.set(0);
+        CountedState.READS.set(0);
+        long start = System.nanoTime();
+        for (int i = 0; i < RUNS; i++) {
+            map.get(key);
         }
         return new Sample(System.nanoTime() - start, CountedState.WRITES.get(), CountedState.READS.get());
     }
@@ -260,6 +313,27 @@ class NestStateAccessCostBench {
         @Override
         public MapLoader<String, CountedState> newMapStore(String mapName, Properties properties) {
             return new CountingStore();
+        }
+    }
+
+    /** Carries a whole state to the key and puts it there. Answers null, as whatever it answers travels. */
+    static final class CarryInPlace implements EntryProcessor<String, CountedState, Void>, Serializable {
+
+        private final CountedState carried;
+
+        CarryInPlace(CountedState carried) {
+            this.carried = carried;
+        }
+
+        @Override
+        public Void process(Map.Entry<String, CountedState> entry) {
+            entry.setValue(carried);
+            return null;
+        }
+
+        @Override
+        public EntryProcessor<String, CountedState, Void> getBackupProcessor() {
+            return null;
         }
     }
 

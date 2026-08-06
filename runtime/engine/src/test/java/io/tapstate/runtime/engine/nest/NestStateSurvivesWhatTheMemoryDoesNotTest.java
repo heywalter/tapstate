@@ -100,6 +100,31 @@ class NestStateSurvivesWhatTheMemoryDoesNotTest {
         assertThat(reread.parentKey()).isEqualTo("parent-1");
     }
 
+    /**
+     * A write hands the state itself over rather than a copy of it, which is what makes the write cost
+     * no serialization of the document - and would make a state changed after it was written change what
+     * is held, without the store behind the map hearing about it. What stops that is the read: it answers
+     * with something of its own, so what a later event is given is never the thing the map is holding.
+     *
+     * <p>Under a format that keeps values as bytes this was true by accident, since writing them made a
+     * copy anyway. It is now load-bearing, so it is asked here rather than left to be read off two
+     * classes at once.
+     */
+    @Test
+    void whatAReadHandsBackIsNotTheStateTheMapIsHolding() {
+        NestStore<ResolverState> state = stores(NAMESPACE).forResolver(vertex(NAMESPACE));
+        ResolverState written = declaring("parent-1");
+        state.save(List.of("C1"), written);
+
+        ResolverState read = state.load(List.of("C1"));
+
+        assertThat(read)
+                .describedAs("a read that handed back what is held would let the next event change the "
+                        + "held state directly, and the store behind the map would never be told")
+                .isNotSameAs(written);
+        assertThat(read.parentKey()).isEqualTo("parent-1");
+    }
+
     @Test
     void aMapBuiltAgainOverTheSameNameReadsBackWhatTheLastOneWrote() {
         stores(NAMESPACE).forResolver(vertex(NAMESPACE)).save(List.of("C1"), declaring("parent-1"));

@@ -105,9 +105,18 @@ class NestStateMapsAreConfiguredNotDefaultedTest {
                 .isEqualTo(EvictionPolicy.LRU);
     }
 
+    /**
+     * The format follows the access rather than the intuition, and the access carries the state to its
+     * key instead of putting it across the map. Measured on both: carried onto a map holding objects, a
+     * write costs no serialization of the document at all, where putting it costs one every time.
+     *
+     * <p>It only holds while no index is defined on these maps - an index turns what a carried write is
+     * handed into a clone of the state rather than the state - which is why that is banned rather than
+     * left to be noticed.
+     */
     @Test
-    void aStateMapKeepsItsValuesInTheirSerializedForm() {
-        assertThat(NestMaps.stateMaps().getInMemoryFormat()).isEqualTo(InMemoryFormat.BINARY);
+    void aStateMapKeepsItsValuesAsTheObjectsTheyAre() {
+        assertThat(NestMaps.stateMaps().getInMemoryFormat()).isEqualTo(InMemoryFormat.OBJECT);
     }
 
     @Test

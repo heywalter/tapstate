@@ -1,5 +1,7 @@
 package io.tapstate.archtests;
 
+import com.hazelcast.config.IndexConfig;
+import com.hazelcast.config.IndexType;
 import com.hazelcast.config.MapConfig;
 import com.hazelcast.map.IMap;
 import com.tngtech.archunit.core.domain.JavaAccess;
@@ -26,6 +28,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * answered from. A mapping that expires stops answering for the children that point at it, and they wait
  * for a parent that never comes back; an assembly that expires is rebuilt from whatever arrives next and
  * emitted as though it were whole. Both read as an idle pipeline, not as a failure.
+ *
+ * <p><b>Put the state across the map, or let an index be defined on it.</b> A write that carries the
+ * state to its own key costs no serialization of the document; putting it costs one on every write, and
+ * the document is the whole assembled thing. The carrying only stays free while no index exists on the
+ * map - with one, what the carried write is handed is a clone of the state rather than the state - so an
+ * index added years later would put the copy back with nothing to show for it and nothing reporting it.
  *
  * <p><b>Reach past one key.</b> Every edge into a nest vertex is partitioned by the key that vertex files
  * its state under, so the entry an event needs is on the member and the partition the event is already on.
@@ -54,6 +62,10 @@ class NestStateMapGatesTest {
 
     private static final Map<String, Predicate<JavaAccess<?>>> WHOLE_MAP_MECHANISMS = wholeMapMechanisms();
 
+    private static final Map<String, Predicate<JavaAccess<?>>> PUT_ACROSS_MECHANISMS = putAcrossMechanisms();
+
+    private static final Map<String, Predicate<JavaAccess<?>>> INDEX_MECHANISMS = indexMechanisms();
+
     private static JavaClasses productionClasses;
     private static JavaClasses fixtureClasses;
 
@@ -73,6 +85,14 @@ class NestStateMapGatesTest {
                         + "gate would pass over production code that uses it", mechanism)
                 .isNotEmpty());
         WHOLE_MAP_MECHANISMS.forEach((mechanism, detects) -> assertThat(accesses(fixtureClasses, detects, ""))
+                .as("%s is no longer detected - the API it names has moved or been renamed, and this "
+                        + "gate would pass over production code that uses it", mechanism)
+                .isNotEmpty());
+        PUT_ACROSS_MECHANISMS.forEach((mechanism, detects) -> assertThat(accesses(fixtureClasses, detects, ""))
+                .as("%s is no longer detected - the API it names has moved or been renamed, and this "
+                        + "gate would pass over production code that uses it", mechanism)
+                .isNotEmpty());
+        INDEX_MECHANISMS.forEach((mechanism, detects) -> assertThat(accesses(fixtureClasses, detects, ""))
                 .as("%s is no longer detected - the API it names has moved or been renamed, and this "
                         + "gate would pass over production code that uses it", mechanism)
                 .isNotEmpty());
@@ -96,6 +116,45 @@ class NestStateMapGatesTest {
                         + "costs the whole keyspace instead - which a single member hides entirely",
                         mechanism)
                 .isEmpty());
+    }
+
+    @Test
+    @DisplayName("state is carried to its key rather than put across the map")
+    void noNestCodePutsStateAcrossTheMap() {
+        PUT_ACROSS_MECHANISMS.forEach((mechanism, detects) ->
+                assertThat(accesses(productionClasses, detects, NEST))
+                        .as("%s: a put serializes the whole assembled document on every write, where "
+                                + "carrying it to its own key serializes none of it", mechanism)
+                        .isEmpty());
+    }
+
+    @Test
+    @DisplayName("no index is ever defined on a map holding nest state")
+    void noNestCodeDefinesAnIndexOnAStateMap() {
+        INDEX_MECHANISMS.forEach((mechanism, detects) ->
+                assertThat(accesses(productionClasses, detects, NEST))
+                        .as("%s: with an index defined, a carried write is handed a clone of the state "
+                                + "instead of the state, and the copy this avoids comes back unreported",
+                                mechanism)
+                        .isEmpty());
+    }
+
+    private static Map<String, Predicate<JavaAccess<?>>> putAcrossMechanisms() {
+        Map<String, Predicate<JavaAccess<?>>> mechanisms = new LinkedHashMap<>();
+        named(mechanisms, "putting the state across the map", "put", "set", "putAsync", "setAsync",
+                "putIfAbsent", "putTransient", "replace");
+        return Map.copyOf(mechanisms);
+    }
+
+    private static Map<String, Predicate<JavaAccess<?>>> indexMechanisms() {
+        Map<String, Predicate<JavaAccess<?>>> mechanisms = new LinkedHashMap<>();
+        mechanisms.put("indexing a map after it exists",
+                access -> onMap(access) && access.getName().equals("addIndex"));
+        mechanisms.put("declaring a map that carries an index",
+                access -> targets(access, MapConfig.class)
+                        && (access.getName().equals("addIndexConfig")
+                                || access.getName().equals("setIndexConfigs")));
+        return Map.copyOf(mechanisms);
     }
 
     private static Map<String, Predicate<JavaAccess<?>>> expiryMechanisms() {
@@ -173,6 +232,26 @@ class NestStateMapGatesTest {
 
         private static MapConfig aMapThatExpires() {
             return new MapConfig("expiring").setTimeToLiveSeconds(60).setMaxIdleSeconds(60);
+        }
+
+        private static void putsStateAcrossTheMap(IMap<Object, Object> map) {
+            map.put("k", "v");
+            map.set("k", "v");
+            map.putAsync("k", "v");
+            map.setAsync("k", "v");
+            map.putIfAbsent("k", "v");
+            map.putTransient("k", "v", 1, TimeUnit.MINUTES);
+            map.replace("k", "v");
+        }
+
+        private static void indexesTheMap(IMap<Object, Object> map) {
+            map.addIndex(new IndexConfig(IndexType.HASH, "field"));
+        }
+
+        private static MapConfig aMapThatCarriesAnIndex() {
+            return new MapConfig("indexed")
+                    .addIndexConfig(new IndexConfig(IndexType.HASH, "field"))
+                    .setIndexConfigs(List.of(new IndexConfig(IndexType.HASH, "field")));
         }
 
         private static void spansTheMap(IMap<Object, Object> map) {
