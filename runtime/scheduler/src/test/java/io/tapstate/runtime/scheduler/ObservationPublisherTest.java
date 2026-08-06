@@ -3,7 +3,9 @@ package io.tapstate.runtime.scheduler;
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
+import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.core.lifecycle.StateJson;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.StateStore;
@@ -80,7 +82,8 @@ class ObservationPublisherTest {
     void publishWiresHowFarEachChainsFrontierTrailsIntoTheMetrics() {
         state.seed("orders", PipelineState.RUNNING);
         ObservationPublisher wired = new ObservationPublisher(state, observations,
-                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of("orders", 0L, "order_items", 480L));
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("orders", 0L, "order_items", 480L));
 
         wired.publish("orders");
 
@@ -145,6 +148,88 @@ class ObservationPublisherTest {
     }
 
     @Test
+    void publishWiresThePerTableSnapshotProgressFromItsSource() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(),
+                id -> Map.of("orders", new TableSnapshot(500L, null, null)));
+
+        wired.publish("orders");
+
+        // The snapshot dataset was published empty from the start -- the read face, its verb and its endpoint
+        // were all reachable and always answered nothing. It now carries what its source reports.
+        assertThat(observations.read("orders").orElseThrow().snapshot())
+                .containsOnly(entry("orders", new TableSnapshot(500L, null, null)));
+    }
+
+    @Test
+    void snapshotIsEmptyWhenItsSourceReportsNoTable() {
+        state.seed("orders", PipelineState.RUNNING);
+
+        publisher.publish("orders");
+
+        // A publisher with no snapshot source publishes empty (unavailable), never a faked zero-row table.
+        assertThat(observations.read("orders").orElseThrow().snapshot()).isEmpty();
+    }
+
+    @Test
+    void publishCarriesTheCodedFailureOfAJobThatDied() {
+        state.seed("orders", PipelineState.FAILED);
+
+        publisher.publish("orders", new ObservationFailure(
+                "engine.job-failed", Map.of("pipeline", "orders", "cause", "the sink rejected the batch")));
+
+        Observation published = observations.read("orders").orElseThrow();
+        // A dead job is observable as a state and a count, but neither says why. The failure carries the
+        // canonical code and its named arguments, so the read face can answer that from the store alone.
+        assertThat(published.failure()).isNotNull();
+        assertThat(published.failure().code()).isEqualTo("engine.job-failed");
+        assertThat(published.failure().params())
+                .containsOnly(entry("pipeline", "orders"), entry("cause", "the sink rejected the batch"));
+    }
+
+    @Test
+    void publishWithoutAFailureLeavesTheFailureUnset() {
+        state.seed("orders", PipelineState.RUNNING);
+
+        publisher.publish("orders");
+
+        // A healthy pipeline has no failure to carry: absence, not an empty-string code.
+        assertThat(observations.read("orders").orElseThrow().failure()).isNull();
+    }
+
+    @Test
+    void republishWithoutACauseKeepsTheStoredFailureWhileThePipelineStaysFailed() {
+        // The converge side reports the cause only on the pass that drives the transition; every later
+        // pass publishes without one. The store is the only carrier that survives a process restart, so a
+        // still-FAILED pipeline keeps the reason it already published rather than going reasonless the
+        // moment its publisher loses whatever in-memory copy it held.
+        state.seed("orders", PipelineState.FAILED);
+        publisher.publish("orders", new ObservationFailure("engine.job-failed", Map.of("cause", "boom")));
+
+        publisher.publish("orders", null);
+
+        ObservationFailure kept = observations.read("orders").orElseThrow().failure();
+        assertThat(kept).isNotNull();
+        assertThat(kept.code()).isEqualTo("engine.job-failed");
+        assertThat(kept.params()).containsOnly(entry("cause", "boom"));
+    }
+
+    @Test
+    void republishClearsTheFailureWhenThePipelineRecovers() {
+        state.seed("orders", PipelineState.FAILED);
+        publisher.publish("orders", new ObservationFailure("engine.job-failed", Map.of("pipeline", "orders")));
+        assertThat(observations.read("orders").orElseThrow().failure()).isNotNull();
+
+        state.seed("orders", PipelineState.RUNNING);
+        publisher.publish("orders");
+
+        // The observation is current-state, not a history: a recovered pipeline must not keep answering with
+        // the failure that killed its previous run.
+        assertThat(observations.read("orders").orElseThrow().failure()).isNull();
+    }
+
+    @Test
     void publishOfAPipelineWithNoCheckpointWritesNothing() {
         publisher.publish("never-run");
 
@@ -185,6 +270,25 @@ class ObservationPublisherTest {
         // The last observed state is kept, not overwritten with FAILED — only the error count moves.
         assertThat(published.state()).isEqualTo(PipelineState.RUNNING);
         assertThat(published.metrics()).containsOnly(entry("errorCount", 2L));
+    }
+
+    @Test
+    void publishReconcileFailurePreservesThePreviouslyPublishedFailureAndPositions() {
+        // A pass that could not run witnessed no transition in the failure reason or the source positions,
+        // any more than it witnessed one in the state: a dead pipeline whose reconcile then starts throwing
+        // must keep saying why it died and where each table's read had gotten to, not go blank on both.
+        ObservationFailure priorFailure = new ObservationFailure("engine.job-failed", Map.of("cause", "boom"));
+        Map<String, String> priorPositions = Map.of("orders", "binlog.000123:456");
+        observations.save(new Observation(
+                "orders", PipelineState.FAILED, Map.of("errorCount", 1L), Map.of(), priorPositions, priorFailure));
+
+        publisher.publishReconcileFailure("orders", 5L);
+
+        Observation published = observations.read("orders").orElseThrow();
+        assertThat(published.state()).isEqualTo(PipelineState.FAILED);
+        assertThat(published.metrics()).containsOnly(entry("errorCount", 5L));
+        assertThat(published.failure()).isEqualTo(priorFailure);
+        assertThat(published.positions()).isEqualTo(priorPositions);
     }
 
     /** In-memory state store double: seedable checkpoints, read-only for what the publisher needs. */

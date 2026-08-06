@@ -3,6 +3,7 @@ package io.tapstate.cli;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.GeneratedSecret;
 import io.tapstate.control.core.PipelineLogQueryService;
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.Scope;
 import io.tapstate.control.core.TokenSecrets;
@@ -11,9 +12,14 @@ import io.tapstate.control.core.TokenSigner;
 import io.tapstate.control.core.VerifiedToken;
 import io.tapstate.control.restapi.PipelineStreamConfiguration;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.logging.LogLine;
 import io.tapstate.core.logging.LogSink;
+import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.Resource;
+import io.tapstate.messages.MessageCatalog;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.TokenRecord;
 import io.tapstate.spi.store.TokenStore;
@@ -41,6 +47,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -98,7 +105,7 @@ class PipelineStreamRoundTripTest {
         BlockingQueue<String> states = new LinkedBlockingQueue<>();
         AtomicBoolean stop = new AtomicBoolean(false);
         Thread watcher = new Thread(() -> client.watchStatus(
-                baseUrl(), readToken(), "pl1", (id, state) -> states.add(state), stop::get));
+                baseUrl(), readToken(), "pl1", (id, state, failureCode, failureMessage) -> states.add(state), stop::get));
         watcher.setDaemon(true);
         watcher.start();
         try {
@@ -111,6 +118,58 @@ class PipelineStreamRoundTripTest {
             stop.set(true);
             watcher.join(TimeUnit.SECONDS.toMillis(3));
         }
+    }
+
+    @Test
+    @DisplayName("watchStatus delivers the coded failure reason alongside a FAILED state")
+    void watchStatusDeliversTheFailureReasonAlongsideAFailedState() throws Exception {
+        // The full stack, real server: app assembly -> control-core -> rest-api -> a real websocket -> the
+        // production HttpControlPlaneClient. Proves the reason a pipeline died actually reaches a CLI-side
+        // caller end to end, not just that some intermediate layer encodes it correctly in isolation.
+        FakeObservationStore observations = context.getBean(FakeObservationStore.class);
+        observations.save(new Observation("pl1", PipelineState.FAILED, Map.of("errorCount", 1L),
+                Map.of(), Map.of(), new ObservationFailure(
+                        "engine.job-failed", Map.of("pipeline", "pl1", "cause", "sink refused the batch"))));
+
+        BlockingQueue<String[]> found = new LinkedBlockingQueue<>();
+        AtomicBoolean stop = new AtomicBoolean(false);
+        Thread watcher = new Thread(() -> client.watchStatus(baseUrl(), readToken(), "pl1",
+                (id, state, failureCode, failureMessage) -> found.add(new String[] {state, failureCode, failureMessage}),
+                stop::get));
+        watcher.setDaemon(true);
+        watcher.start();
+        try {
+            String[] frame = found.poll(5, TimeUnit.SECONDS);
+            assertThat(frame).isNotNull();
+            assertThat(frame[0]).isEqualTo("FAILED");
+            assertThat(frame[1]).isEqualTo("engine.job-failed");
+            assertThat(frame[2]).contains("sink refused the batch");
+        } finally {
+            stop.set(true);
+            watcher.join(TimeUnit.SECONDS.toMillis(3));
+        }
+    }
+
+    @Test
+    @DisplayName("watchStatus of a never-applied id terminates with the coded refusal, not an endless reconnect")
+    void watchStatusOfAnUnknownPipelineTerminatesWithTheCodedRefusal() throws Exception {
+        // Full stack again, for the negative path: the server closes the websocket deliberately with the
+        // permanent code, and the production client must treat that close as terminal. A client that read
+        // it as a dropped connection would re-attach every backoff forever -- the watch would never return
+        // and the join below would time out with the thread still alive.
+        AtomicBoolean stop = new AtomicBoolean(false);
+        AtomicReference<String> refusal = new AtomicReference<>();
+        Thread watcher = new Thread(() -> refusal.set(client.watchStatus(
+                baseUrl(), readToken(), "ghost", (id, state, failureCode, failureMessage) -> { }, stop::get)));
+        watcher.setDaemon(true);
+        watcher.start();
+
+        watcher.join(TimeUnit.SECONDS.toMillis(5));
+
+        assertThat(watcher.isAlive())
+                .as("the watch must end on its own; a live thread here means it is reconnecting forever")
+                .isFalse();
+        assertThat(refusal.get()).isEqualTo("lifecycle.unknown-pipeline");
     }
 
     @Test
@@ -149,6 +208,11 @@ class PipelineStreamRoundTripTest {
     static class TestApp {
 
         @Bean
+        MessageCatalog messageCatalog() {
+            return MessageCatalog.bundled();
+        }
+
+        @Bean
         FakeObservationStore observationStore() {
             return new FakeObservationStore();
         }
@@ -160,7 +224,27 @@ class PipelineStreamRoundTripTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore store) {
-            return new PipelineObservationQueryService(store);
+            // Every id reads as applied except the "ghost" prefix, which resolves to nothing -- the one
+            // case in this round trip that is about telling an applied pipeline from one never applied.
+            return new PipelineObservationQueryService(new ArtifactQueryService(new ArtifactStore() {
+                @Override
+                public void saveAll(java.util.List<Resource> artifacts) {
+                }
+
+                @Override
+                public java.util.Optional<Resource> get(String id) {
+                    if (id.startsWith("ghost")) {
+                        return java.util.Optional.empty();
+                    }
+                    return java.util.Optional.of(
+                            new PipelineResource(id, null, java.util.List.of("src_x"), null, null, null, null, null));
+                }
+
+                @Override
+                public java.util.List<Resource> list() {
+                    return java.util.List.of();
+                }
+            }), store);
         }
 
         @Bean

@@ -153,6 +153,7 @@ final class SpecGenerator {
                     switch (word) {
                         case COUNT -> keyed(word.word(), countBody());
                         case ERROR_COUNT -> keyed(word.word(), errorCountBody());
+                        case FAILURE_CODE -> keyed(word.word(), failureCodeBody());
                         case STATE -> keyed(word.word(), stateBody());
                     });
         }
@@ -198,6 +199,14 @@ final class SpecGenerator {
         Map<String, Object> count = scalar("integer", "The published error count the pipeline is expected to show.");
         count.put("minimum", 0);
         return count;
+    }
+
+    private static Map<String, Object> failureCodeBody() {
+        Map<String, Object> code = scalar("string",
+                "The canonical code of the failure the pipeline this specification names is expected to "
+                        + "publish, written '<domain>.<symbol>'.");
+        code.put("pattern", "^[a-z0-9]+\\.[a-z0-9-]+$");
+        return code;
     }
 
     private static Map<String, Object> stateBody() {
@@ -272,6 +281,8 @@ final class SpecGenerator {
                     + "the product's record of what it wrote.";
             case ERROR_COUNT -> "The pipeline's published error count, read from the metrics face: one "
                     + "while it is FAILED, zero otherwise.";
+            case FAILURE_CODE -> "The canonical code of the failure the pipeline published, read from the "
+                    + "status face: what killed the run, not just that it died.";
             case STATE -> "The pipeline's published lifecycle state, read from the observation face.";
         };
     }

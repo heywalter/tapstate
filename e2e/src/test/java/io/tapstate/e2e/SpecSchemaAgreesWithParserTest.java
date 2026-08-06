@@ -135,6 +135,14 @@ class SpecSchemaAgreesWithParserTest {
                 steps:
                   - await: { state: FAILED }
                   - assert: { error_count: 1 }
+                """,
+                // The failure-code matcher, a canonical code written as the product publishes it.
+                """
+                name: failure-code
+                pipeline: p.tap.yml
+                steps:
+                  - await: { state: FAILED }
+                  - assert: { failure_code: engine.job-failed }
                 """);
     }
 
@@ -216,6 +224,15 @@ class SpecSchemaAgreesWithParserTest {
                 pipeline: p.tap.yml
                 steps:
                   - assert: { count: { orders: 1 } }
+                """,
+                // A code padded with spaces is not the code. The shape is checked against the value as
+                // written, so a quoted scalar that would need trimming first is refused rather than
+                // silently repaired into something the author did not write.
+                """
+                name: n
+                pipeline: p.tap.yml
+                steps:
+                  - assert: { failure_code: " engine.job-failed " }
                 """);
     }
 }

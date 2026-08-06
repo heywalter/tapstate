@@ -42,7 +42,7 @@ final class McpOperationExecutor {
                 case "connector.get" -> get("/api/connectors/" + segment(required(args, "id")));
                 case "source.list" -> get("/api/sources");
                 case "source.get" -> get("/api/sources/" + segment(required(args, "id")));
-                case "source.create" -> createSource(args);
+                case "source.draft" -> post("/api/sources:draft", args, RequestBudget.HEAVY);
                 case "connection.test" -> connectionWrite(args, "/api/connections:test");
                 case "connection.test-result" -> get(
                         "/api/connections/" + segment(required(args, "id")) + "/test-result");
@@ -66,36 +66,6 @@ final class McpOperationExecutor {
         } catch (TapstateException error) {
             return McpResult.coded(error.code(), error.args());
         }
-    }
-
-    private McpResult createSource(Map<String, Object> arguments) {
-        String connector = required(arguments, "connector");
-        ControlResponse response = client.get(server, token, "/api/connectors/" + segment(connector));
-        if (!(response instanceof ControlResponse.Success success)) {
-            return McpResult.from(response);
-        }
-        if (!hasLiveSpec(success.body())) {
-            return McpResult.coded(
-                    McpError.CONNECTOR_SPEC_UNAVAILABLE, Map.of("connector", connector));
-        }
-        Map<String, Object> expanded = new LinkedHashMap<>(arguments);
-        expanded.put("config", EnvironmentExpander.expand(arguments.get("config"), environment));
-        return post("/api/sources", expanded, RequestBudget.HEAVY);
-    }
-
-    private static boolean hasLiveSpec(Object body) {
-        if (!(body instanceof Map<?, ?> connector)) {
-            return false;
-        }
-        if (!(connector.get("spec") instanceof Map<?, ?> spec)) {
-            return false;
-        }
-        Object hash = spec.get("contentHash");
-        Object text = spec.get("text");
-        return "registered".equals(connector.get("origin"))
-                && Boolean.TRUE.equals(connector.get("runtimeAvailable"))
-                && hash instanceof String contentHash && !contentHash.isBlank()
-                && text instanceof String specText && !specText.isBlank();
     }
 
     private McpResult pipelineAction(Map<String, Object> arguments, String action) {

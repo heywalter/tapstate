@@ -11,10 +11,14 @@ import io.tapstate.runtime.srs.MiningChainId;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsCoordinator;
 import io.tapstate.runtime.srs.StartFrom;
+import io.tapstate.spi.capture.CapturePlan;
 import io.tapstate.spi.capture.SourcePosition;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.StorePort;
+import io.tapstate.core.lifecycle.TableSnapshot;
+
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * The store-backed capture coordinator: it resolves a pipeline and the sources it reads from the store,
@@ -52,6 +57,9 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
     private final SnapshotBuffer snapshotBuffer;
     private final Map<String, List<CaptureRun>> runsByPipeline = new ConcurrentHashMap<>();
 
+    /** What each running pipeline's tables loaded, keyed by pipeline then table; dropped when it stops. */
+    private final Map<String, Map<String, TableSnapshot>> snapshotsByPipeline = new ConcurrentHashMap<>();
+
     StoreBackedPipelineCaptureCoordinator(
             StorePort storePort, CaptureStarter captureStarter, SrsCoordinator srsCoordinator,
             SnapshotBuffer snapshotBuffer) {
@@ -70,17 +78,73 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         }
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
         List<CaptureRun> runs = new ArrayList<>();
+        List<AttributedSnapshot> attributed = new ArrayList<>();
         for (String sourceId : pipeline.sources()) {
             SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
             SourceCaptureResolution resolution = SourceCaptureResolution.of(source);
             CaptureRunSpec spec = deriveSpec(pipelineId, pipeline.settings(), source, resolution);
-            runs.add(captureStarter.start(spec, snapshotPassthrough(resolution.ringName())));
+            CaptureRun run = captureStarter.start(spec, snapshotPassthrough(resolution.ringName()));
+            runs.add(run);
+            recordSnapshot(attributed, sourceId, spec, run);
         }
         runsByPipeline.put(pipelineId, runs);
+        snapshotsByPipeline.put(pipelineId, keyByTableOrQualifyOnCollision(attributed));
+    }
+
+    /** One source's attributed snapshot load: which source, which table, and what it loaded. */
+    private record AttributedSnapshot(String sourceId, String table, TableSnapshot snapshot) {
+    }
+
+    /**
+     * Records what one run's snapshot loaded against the table it read, so {@link #startCapture} can key
+     * the pipeline's published snapshot map once every source has run. Left unattributed (recorded as
+     * nothing) when the run had no snapshot phase to attribute at all: a config naming no single stream
+     * (empty means "every stream the connector exposes", several would have one row count with no table to
+     * hang it on) or a read mode whose {@link CapturePlan} never ran the bounded snapshot phase (e.g.
+     * {@code cdc_only}) — reporting either as "0 rows" would publish a present-but-fabricated entry for a
+     * table this run never actually snapshotted, which is a stronger and false claim than the honest
+     * unavailable the read face is documented to publish instead.
+     */
+    private static void recordSnapshot(
+            List<AttributedSnapshot> attributed, String sourceId, CaptureRunSpec spec, CaptureRun run) {
+        List<String> streams = spec.config().streams();
+        if (streams.size() != 1 || !CapturePlan.forReadMode(spec.readMode()).snapshot()) {
+            return;
+        }
+        // The total is reported by no source today, so it stays null and the percentage with it -- progress
+        // with no total is honest partial data, never a faked complete load.
+        attributed.add(new AttributedSnapshot(sourceId, streams.get(0), new TableSnapshot(run.snapshotCount(), null, null)));
+    }
+
+    /**
+     * Keys each attributed load by its bare table name, unless more than one source in this pipeline read a
+     * table of that same name (a normal shape: the same table name in two different databases) — in that
+     * case every entry for that name is instead qualified {@code source_id.table}, the same addressing form
+     * `serve.from` and friends already use to disambiguate a table reference. A plain table-name key would
+     * otherwise have the last source silently overwrite an earlier one's count and attribute it to the wrong
+     * source; qualifying only the names that actually collide keeps the common single-source case unchanged.
+     */
+    private static Map<String, TableSnapshot> keyByTableOrQualifyOnCollision(List<AttributedSnapshot> attributed) {
+        Map<String, Long> occurrences = attributed.stream()
+                .collect(Collectors.groupingBy(AttributedSnapshot::table, Collectors.counting()));
+        Map<String, TableSnapshot> loaded = new LinkedHashMap<>();
+        for (AttributedSnapshot entry : attributed) {
+            String key = occurrences.get(entry.table()) > 1 ? entry.sourceId() + "." + entry.table() : entry.table();
+            loaded.put(key, entry.snapshot());
+        }
+        return loaded;
+    }
+
+    @Override
+    public Map<String, TableSnapshot> snapshotProgress(String pipelineId) {
+        return snapshotsByPipeline.getOrDefault(pipelineId, Map.of());
     }
 
     @Override
     public void stopCapture(String pipelineId) {
+        // The load belongs to the run being torn down: a stopped pipeline reports no snapshot rather than the
+        // rows its previous run happened to load.
+        snapshotsByPipeline.remove(pipelineId);
         List<CaptureRun> runs = runsByPipeline.remove(pipelineId);
         if (runs == null) {
             return;

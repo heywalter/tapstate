@@ -39,10 +39,13 @@ public final class ControlOperations {
     // connection.discover-schema / connection.schema answer "what is inside" (the discovered source model).
 
     // source domain
-    public static final Operation SOURCE_CREATE = mcp(
-            "source.create", Scope.WRITE, true,
-            "Create a Source. Call connector_get first and build config from that live connector spec; "
-                    + "do not infer connector-specific fields.");
+    public static final Operation SOURCE_CREATE = new Operation(
+            "source.create", Scope.WRITE, true, ControlApiSchema.ref("source.create"),
+            "Create and persist one Source through the Server control API.", CLI_POC);
+    public static final Operation SOURCE_DRAFT = mcp(
+            "source.draft", Scope.READ, false,
+            "Render canonical YAML for a Source with a known connector through the Server's live connector "
+                    + "contract. This does not create an artifact or audit record.");
     public static final Operation SOURCE_LIST = mcp(
             "source.list", Scope.READ, false,
             "List Sources with secret-redacted config and configured-secret field names.");
@@ -130,6 +133,7 @@ public final class ControlOperations {
             ARTIFACT_GET,
             ARTIFACT_LIST,
             SOURCE_CREATE,
+            SOURCE_DRAFT,
             SOURCE_LIST,
             SOURCE_GET,
             SOURCE_UPDATE,

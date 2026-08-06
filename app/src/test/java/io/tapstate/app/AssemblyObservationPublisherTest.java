@@ -57,7 +57,8 @@ class AssemblyObservationPublisherTest {
         when(member.getJet()).thenReturn(jet);
         when(jet.getJob(anyString())).thenReturn(null);
         ObservationPublisher publisher =
-                new RuntimeConvergenceConfiguration().observationPublisher(store, new Engine(member));
+                new RuntimeConvergenceConfiguration()
+                        .observationPublisher(store, new Engine(member), new NoOpCaptureCoordinator());
 
         publisher.publish(PIPELINE);
 
@@ -82,8 +83,8 @@ class AssemblyObservationPublisherTest {
         // frontier's two causes apart is simply never there to be missed.
         Engine engine = mock(Engine.class);
         when(engine.frontierGaps(PIPELINE)).thenReturn(Map.of(TABLE, 480L));
-        ObservationPublisher publisher =
-                new RuntimeConvergenceConfiguration().observationPublisher(store, engine);
+        ObservationPublisher publisher = new RuntimeConvergenceConfiguration()
+                .observationPublisher(store, engine, new NoOpCaptureCoordinator());
 
         publisher.publish(PIPELINE);
 

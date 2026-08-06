@@ -32,6 +32,27 @@ class McpOptionsTest {
     }
 
     @Test
+    void httpServerIsRestrictedToTrustedLoopbackHosts() {
+        assertThat(McpOptions.parse(
+                new String[] {"--server", "http://localhost:8080"}, Map.of("TAPSTATE_TOKEN", "token"))
+                .server()).isEqualTo(URI.create("http://localhost:8080"));
+        assertThat(McpOptions.parse(
+                new String[] {"--server", "http://127.0.0.2:8080"}, Map.of("TAPSTATE_TOKEN", "token"))
+                .server()).isEqualTo(URI.create("http://127.0.0.2:8080"));
+        assertThat(McpOptions.parse(
+                new String[] {"--server", "http://[::1]:8080"}, Map.of("TAPSTATE_TOKEN", "token"))
+                .server()).isEqualTo(URI.create("http://[::1]:8080"));
+        assertThat(McpOptions.parse(
+                new String[] {"--server", "https://server.example"}, Map.of("TAPSTATE_TOKEN", "token"))
+                .server()).isEqualTo(URI.create("https://server.example"));
+
+        assertThatThrownBy(() -> McpOptions.parse(
+                new String[] {"--server", "http://server.example"}, Map.of("TAPSTATE_TOKEN", "token")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("HTTPS");
+    }
+
+    @Test
     void equalsFormOfServerOptionIsSupported() {
         assertThat(McpOptions.parse(
                 new String[] {"--server=https://server.example", "--allow-write"},

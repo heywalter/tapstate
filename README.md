@@ -222,7 +222,7 @@ for offline authoring. `tapstate mcp` additionally needs the sibling sidecar,
 so install the complete bundle when exposing the command globally:
 
 ```sh
-# Build the native CLI and MCP sidecar, then assemble bin/ + libexec/.
+# Build the native CLI and MCP Boot JAR, then assemble bin/ + libexec/.
 mvn -Pnative -pl cli,control/mcp-server,distribution/cli-bundle -am -DskipTests package
 tar -xzf distribution/cli-bundle/target/cli-bundle-0.1.0-native.tar.gz
 mkdir -p "$HOME/.tapstate/versions/0.1.0" "$HOME/.tapstate/bin"

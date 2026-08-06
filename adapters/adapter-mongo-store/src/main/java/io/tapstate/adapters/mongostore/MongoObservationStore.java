@@ -4,6 +4,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.ReplaceOptions;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.spi.store.IoError;
@@ -72,11 +73,20 @@ public final class MongoObservationStore implements ObservationStore {
         });
         Document positions = new Document();
         observation.positions().forEach(positions::append);
-        return new Document("_id", observation.pipelineId())
+        Document document = new Document("_id", observation.pipelineId())
                 .append("state", observation.state().name())
                 .append("metrics", metrics)
                 .append("snapshot", snapshot)
                 .append("positions", positions);
+        if (observation.failure() != null) {
+            // Only a pipeline that actually died carries a failure: the field is absent while healthy rather
+            // than present and empty, so absence keeps meaning "nothing went wrong".
+            Document params = new Document();
+            observation.failure().params().forEach(params::append);
+            document.append("failure",
+                    new Document("code", observation.failure().code()).append("params", params));
+        }
+        return document;
     }
 
     /** Reconstructs an observation from its stored document. */
@@ -87,8 +97,40 @@ public final class MongoObservationStore implements ObservationStore {
             // A stored observation missing the state field this version requires is store corruption.
             throw corrupt(id);
         }
-        return new Observation(id, parseState(state, id),
-                readMetrics(document, id), readSnapshot(document, id), readPositions(document, id));
+        return new Observation(id, parseState(state, id), readMetrics(document, id), readSnapshot(document, id),
+                readPositions(document, id), readFailure(document, id));
+    }
+
+    /**
+     * Reads the failure sub-document as its code plus named arguments; a missing field reads null (the
+     * pipeline is healthy, or the document was written before failures existed), a non-document field, a
+     * missing code or a non-string cell is corruption.
+     */
+    private static ObservationFailure readFailure(Document document, String id) {
+        Object raw = document.get("failure");
+        if (raw == null) {
+            return null;
+        }
+        if (!(raw instanceof Document failure)) {
+            throw corrupt(id);
+        }
+        // requireString covers both a missing code and a wrong-typed one: Document.getString is an
+        // unchecked cast (get(key, String.class)), so a non-string code (store corruption written by a
+        // future or foreign writer) would otherwise escape as a bare ClassCastException instead of this
+        // same coded diagnostic every other corrupt cell in this class already gets.
+        String code = requireString(failure.get("code"), id);
+        Object rawParams = failure.get("params");
+        if (rawParams == null) {
+            return new ObservationFailure(code, Map.of());
+        }
+        if (!(rawParams instanceof Document params)) {
+            throw corrupt(id);
+        }
+        Map<String, String> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : params.entrySet()) {
+            out.put(entry.getKey(), requireString(entry.getValue(), id));
+        }
+        return new ObservationFailure(code, out);
     }
 
     /** A stored state this version does not recognize is corruption, not a bare enum-valueOf crash. */

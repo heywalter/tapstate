@@ -1,6 +1,7 @@
 package io.tapstate.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.ReadMode;
@@ -13,6 +14,7 @@ import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TableRef;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.runtime.srs.CaptureHealth;
+import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.runtime.srs.CaptureRun;
 import io.tapstate.runtime.srs.CaptureRunSpec;
 import io.tapstate.runtime.srs.MiningChainId;
@@ -160,6 +162,88 @@ class StoreBackedPipelineCaptureCoordinatorTest {
     }
 
     @Test
+    void snapshotProgressReportsTheRowsEachTableLoaded() {
+        InMemoryArtifactStore artifacts = new InMemoryArtifactStore();
+        artifacts.save(cdcSource("orders_src", "orders", null));
+        // A read mode that actually runs the snapshot phase -- cdc_only (the pipeline() fixture's default)
+        // never does, so a table it names must not report a snapshot at all (see the cdc_only test below).
+        artifacts.save(pipelineWithReadMode("p", "orders_src", ReadMode.SNAPSHOT_AND_CDC));
+        CaptureStarter starter = (spec, passthrough) -> new CaptureRun(
+                Optional.empty(), false, 500L, Optional.empty(), Optional.empty(), new CaptureHealth());
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(artifacts), starter, new SrsCoordinator(new InMemorySrsMetaStore()),
+                new SnapshotBuffer());
+
+        coordinator.startCapture("p");
+
+        // The rows a table loaded are known only once its bounded read has drained, so this is the finished
+        // load rather than a live position in it. The total is not reported by any source, so it stays null
+        // and the percentage with it -- progress with no total is honest partial data, never a faked 100%.
+        assertThat(coordinator.snapshotProgress("p"))
+                .containsOnly(entry("orders", new TableSnapshot(500L, null, null)));
+    }
+
+    @Test
+    void snapshotProgressOfACdcOnlyPipelineReportsNothingRatherThanAFabricatedZero() {
+        // cdc_only never runs the bounded snapshot phase (CapturePlan.forReadMode), so its table has no
+        // snapshot to report at all -- not a real "0 rows" entry, which would tell a reader the table was
+        // read and found empty when in fact its snapshot phase never ran.
+        InMemoryArtifactStore artifacts = new InMemoryArtifactStore();
+        artifacts.save(cdcSource("orders_src", "orders", null));
+        artifacts.save(pipeline("p", "orders_src")); // pipeline() defaults to ReadMode.CDC_ONLY
+        CaptureStarter starter = (spec, passthrough) -> new CaptureRun(
+                Optional.empty(), false, 0L, Optional.empty(), Optional.empty(), new CaptureHealth());
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(artifacts), starter, new SrsCoordinator(new InMemorySrsMetaStore()),
+                new SnapshotBuffer());
+
+        coordinator.startCapture("p");
+
+        assertThat(coordinator.snapshotProgress("p")).isEmpty();
+    }
+
+    @Test
+    void snapshotProgressOfTwoSourcesReadingASameNamedTableQualifiesBothByTheirSourceId() {
+        // Two different databases can both name a table "orders": a normal multi-source shape, not an
+        // error. A bare table-name key would have the second source's count silently overwrite the
+        // first's and attribute it to the wrong source; each entry must stay individually addressable.
+        InMemoryArtifactStore artifacts = new InMemoryArtifactStore();
+        artifacts.save(cdcSource("src_a", "orders", null));
+        artifacts.save(cdcSource("src_b", "orders", null));
+        artifacts.save(new PipelineResource("p", null, List.of("src_a", "src_b"), null, null,
+                new ServeBlock.Inline(null, FromRef.literal("src_a"),
+                        List.of(new SyncElement("sync_1", "src_a", null, null, null, null)), null, null),
+                new Settings(null, null, null, null, ReadMode.SNAPSHOT_AND_CDC, "earliest"), null));
+        java.util.Map<String, Long> countsBySource = Map.of("src_a", 100L, "src_b", 200L);
+        CaptureStarter starter = (spec, passthrough) -> new CaptureRun(Optional.empty(), false,
+                countsBySource.get(spec.sourceId()), Optional.empty(), Optional.empty(), new CaptureHealth());
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(artifacts), starter, new SrsCoordinator(new InMemorySrsMetaStore()),
+                new SnapshotBuffer());
+
+        coordinator.startCapture("p");
+
+        assertThat(coordinator.snapshotProgress("p")).containsOnly(
+                entry("src_a.orders", new TableSnapshot(100L, null, null)),
+                entry("src_b.orders", new TableSnapshot(200L, null, null)));
+    }
+
+    @Test
+    void snapshotProgressIsEmptyForAPipelineWhoseCaptureIsNotRunning() {
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(new InMemoryArtifactStore()),
+                (spec, passthrough) -> {
+                    throw new AssertionError("no capture should be started");
+                },
+                new SrsCoordinator(new InMemorySrsMetaStore()),
+                new SnapshotBuffer());
+
+        // Empty is a reading: nothing has been loaded because nothing is running, which the read face
+        // publishes as an unavailable snapshot rather than a table that loaded zero rows.
+        assertThat(coordinator.snapshotProgress("never-started")).isEmpty();
+    }
+
+    @Test
     void stopIsANoOpForAPipelineThatWasNeverStarted() {
         StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
                 artifactsOnly(new InMemoryArtifactStore()),
@@ -260,10 +344,14 @@ class StoreBackedPipelineCaptureCoordinatorTest {
     }
 
     private static PipelineResource pipeline(String id, String sourceId) {
+        return pipelineWithReadMode(id, sourceId, ReadMode.CDC_ONLY);
+    }
+
+    private static PipelineResource pipelineWithReadMode(String id, String sourceId, ReadMode readMode) {
         return new PipelineResource(id, null, List.of(sourceId), null, null,
                 new ServeBlock.Inline(null, FromRef.literal(sourceId),
                         List.of(new SyncElement("sync_1", sourceId, null, null, null, null)), null, null),
-                new Settings(null, null, null, null, ReadMode.CDC_ONLY, "earliest"), null);
+                new Settings(null, null, null, null, readMode, "earliest"), null);
     }
 
     private static PipelineResource twoSourcePipeline(String id, String sourceA, String sourceB) {

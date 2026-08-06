@@ -30,7 +30,15 @@ public enum EngineError implements TapstateErrorCode {
      * fit. A capacity line of the transport rather than a defect — the widths are a build-time choice.
      */
     FRONTIER_ORDER_NOT_ENCODABLE("engine.frontier-order-not-encodable",
-            Set.of("chain", "epoch", "seq"));
+            Set.of("chain", "epoch", "seq")),
+
+    /**
+     * A pipeline's data-plane job died on its own, for a reason the product had not already coded at its
+     * throw site: {@code pipeline} is the pipeline whose run died and {@code cause} is what it died of.
+     * A fault that does carry its own code keeps that code instead — this is the last resort, so that a
+     * dead job always names a reason rather than reporting a bare state change.
+     */
+    JOB_FAILED("engine.job-failed", Set.of("pipeline", "cause"));
 
     private final String code;
     private final Set<String> placeholders;

@@ -1,5 +1,6 @@
 package io.tapstate.control.restapi;
 
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.ControlOperations;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.Frontend;
@@ -17,9 +18,13 @@ import io.tapstate.control.core.TokenService;
 import io.tapstate.control.core.TokenSigner;
 import io.tapstate.control.core.VerifiedToken;
 import io.tapstate.core.lifecycle.Observation;
+import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.spi.store.ObservationStore;
+import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.Resource;
+import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.TokenRecord;
 import io.tapstate.spi.store.TokenStore;
 import org.junit.jupiter.api.AfterAll;
@@ -77,6 +82,12 @@ class PipelineObservationApiTest {
             Map.of(),
             Map.of("orders", "w7"));
 
+    /** One pipeline whose job died, to exercise the coded reason the status face carries. */
+    private static final Observation PL_DEAD = new Observation("pl3", PipelineState.FAILED,
+            Map.of("errorCount", 1L), Map.of(), Map.of(),
+            new ObservationFailure("engine.job-failed",
+                    Map.of("pipeline", "pl3", "cause", "the sink rejected the batch")));
+
     private static ConfigurableApplicationContext context;
     private static int port;
 
@@ -99,6 +110,7 @@ class PipelineObservationApiTest {
         observations.clear();
         observations.save(PL1);
         observations.save(PL_POS);
+        observations.save(PL_DEAD);
     }
 
     private RestClient client() {
@@ -122,6 +134,33 @@ class PipelineObservationApiTest {
     }
 
     @Test
+    void statusOfAFailedPipelineCarriesTheCodedReasonAndItsRenderedMessage() {
+        // The code is the stable machine identity and the params are the variable data; the message is
+        // rendered here, where the catalog lives, so every face prints one wording rather than each
+        // inventing its own.
+        Map<String, Object> body = client().get().uri("/api/pipelines/pl3/status")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
+
+        assertThat(body.get("state")).isEqualTo("FAILED");
+        Map<?, ?> failure = (Map<?, ?>) body.get("failure");
+        assertThat(failure.get("code")).isEqualTo("engine.job-failed");
+        assertThat((String) failure.get("message")).contains("the sink rejected the batch");
+        assertThat((Map<String, Object>) failure.get("params"))
+                .containsEntry("cause", "the sink rejected the batch");
+    }
+
+    @Test
+    void statusOfAHealthyPipelineOmitsTheFailure() {
+        Map<String, Object> body = client().get().uri("/api/pipelines/pl1/status")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
+
+        // Absent, not present-and-null: a client reading this must not have to tell those apart.
+        assertThat(body).doesNotContainKey("failure");
+    }
+
+    @Test
     void metricsReturnsTheOpenStatMap() {
         PipelineMetrics body = client().get().uri("/api/pipelines/pl1/metrics")
                 .header("Authorization", "Bearer " + machineToken(Scope.READ))
@@ -138,8 +177,12 @@ class PipelineObservationApiTest {
                 .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
 
         assertThat(body.get("pipelineId")).isEqualTo("pl2");
-        Map<?, ?> metrics = (Map<?, ?>) body.get("metrics");
-        assertThat(metrics.get("perTableOffset")).isEqualTo(Map.of("orders", "w7"));
+        // A source position is a string, and the metrics map is numeric run statistics. Carrying the
+        // positions as a sibling rather than nested inside that map keeps every metrics cell a number,
+        // so a reader never has to type-test a cell before using it.
+        assertThat(body.get("perTableOffset")).isEqualTo(Map.of("orders", "w7"));
+        Map<String, Object> metrics = (Map<String, Object>) body.get("metrics");
+        assertThat(metrics).doesNotContainKey("perTableOffset");
         assertThat(metrics.get("recordCount")).isNotNull();
     }
 
@@ -149,8 +192,9 @@ class PipelineObservationApiTest {
                 .header("Authorization", "Bearer " + machineToken(Scope.READ))
                 .retrieve().body(new ParameterizedTypeReference<Map<String, Object>>() {});
 
-        Map<?, ?> metrics = (Map<?, ?>) body.get("metrics");
-        assertThat(metrics.get("perTableOffset")).isNull();
+        // Absent, not an empty object: no position has been acked, which is the same never-faked rule the
+        // numeric metrics follow.
+        assertThat(body).doesNotContainKey("perTableOffset");
     }
 
     @Test
@@ -166,7 +210,7 @@ class PipelineObservationApiTest {
     // ---- a read of a pipeline with no published observation is a 404 coded body, never a bare 500 ----
 
     @Test
-    void aReadWithNoObservationIsNotFoundWithACodedBody() {
+    void aReadOfAPipelineThatWasNeverAppliedIsNotFoundAndSaysSo() {
         ApiError body = client().get().uri("/api/pipelines/ghost/status")
                 .header("Authorization", "Bearer " + machineToken(Scope.READ))
                 .exchange((request, response) -> {
@@ -174,8 +218,25 @@ class PipelineObservationApiTest {
                     return response.bodyTo(ApiError.class);
                 });
 
-        assertThat(body.code()).isEqualTo("monitor.no-observation");
+        // Never applied is permanent: a caller that read this as the transient unconverged window would
+        // wait out its whole bound on what is almost always a mistyped id.
+        assertThat(body.code()).isEqualTo("lifecycle.unknown-pipeline");
         assertThat(body.params()).containsEntry("pipeline", "ghost");
+    }
+
+    @Test
+    void aReadOfAnAppliedPipelineThatHasNotConvergedYetIsNotFoundAsTheTransientWindow() {
+        context.getBean(FakeObservationStore.class).clear();
+
+        ApiError body = client().get().uri("/api/pipelines/pl1/status")
+                .header("Authorization", "Bearer " + machineToken(Scope.READ))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("monitor.no-observation");
+        assertThat(body.params()).containsEntry("pipeline", "pl1");
     }
 
     // ---- the interceptor guards a read like any other verb ----
@@ -241,7 +302,7 @@ class PipelineObservationApiTest {
 
         @Bean
         PipelineObservationQueryService pipelineObservationQueryService(ObservationStore observations) {
-            return new PipelineObservationQueryService(observations);
+            return new PipelineObservationQueryService(new ArtifactQueryService(appliedPipelines()), observations);
         }
 
         @Bean
@@ -362,4 +423,38 @@ class PipelineObservationApiTest {
             return Optional.of(new VerifiedToken(token.substring(0, bar), Scope.valueOf(token.substring(bar + 1))));
         }
     }
+
+    /**
+     * The applied pipelines this context knows about. A read of one of these that has published no
+     * observation is the transient unconverged window; a read of any other id is a pipeline that was never
+     * applied, and the two answer different codes.
+     */
+    private static ArtifactStore appliedPipelines() {
+        return storeHolding("pl1", "pl2", "pl3");
+    }
+
+    /** An artifact store answering with a minimal pipeline resource for each of the given ids. */
+    private static ArtifactStore storeHolding(String... ids) {
+        Map<String, Resource> byId = new LinkedHashMap<>();
+        for (String id : ids) {
+            byId.put(id, new PipelineResource(id, null, List.of("src_x"), null, null, null, null, null));
+        }
+        return new ArtifactStore() {
+            @Override
+            public void saveAll(List<Resource> artifacts) {
+                artifacts.forEach(r -> byId.put(r.id(), r));
+            }
+
+            @Override
+            public Optional<Resource> get(String id) {
+                return Optional.ofNullable(byId.get(id));
+            }
+
+            @Override
+            public List<Resource> list() {
+                return List.copyOf(byId.values());
+            }
+        };
+    }
+
 }

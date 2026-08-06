@@ -156,18 +156,21 @@ interface ControlPlaneClient extends AutoCloseable {
      * Watches a pipeline's status over a websocket ({@code /api/pipelines/{pipelineId}/status/watch}),
      * delivering each state — the current one, then each change — to {@code sink} until the stream ends or
      * {@code stop} signals (a {@code true} return between frames). On a dropped connection after a
-     * successful handshake it re-attaches until stopped; a refused or unreachable handshake ends the watch.
-     * Blocks the caller until it returns. Never throws.
+     * successful handshake it re-attaches until stopped — unless the server closed the stream deliberately
+     * with a coded refusal (an id that will never resolve, for one), which is terminal: re-attaching would
+     * only be refused the same way forever. That refusal's code is the return value; {@code null} means
+     * the watch ended by {@code stop} or an unreachable/refused handshake. Blocks the caller until it
+     * returns. Never throws.
      */
-    void watchStatus(URI baseUrl, String credential, String pipelineId, StatusStream sink, BooleanSupplier stop);
+    String watchStatus(URI baseUrl, String credential, String pipelineId, StatusStream sink, BooleanSupplier stop);
 
     /**
      * Follows a pipeline's node-local logs over a websocket ({@code /api/pipelines/{pipelineId}/logs/follow}),
      * delivering each batch of newly appended lines to {@code sink} until the stream ends or {@code stop}
-     * signals. On a dropped connection after a successful handshake it re-attaches until stopped; a refused
-     * or unreachable handshake ends the follow. Blocks the caller until it returns. Never throws.
+     * signals. Re-attaches and terminates exactly as {@link #watchStatus} does, returning a coded refusal
+     * the server closed with, or {@code null}. Blocks the caller until it returns. Never throws.
      */
-    void followLogs(URI baseUrl, String credential, String pipelineId, LogStream sink, BooleanSupplier stop);
+    String followLogs(URI baseUrl, String credential, String pipelineId, LogStream sink, BooleanSupplier stop);
 
     @Override
     default void close() {

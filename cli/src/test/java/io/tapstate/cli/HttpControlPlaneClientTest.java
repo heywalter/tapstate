@@ -939,6 +939,56 @@ class HttpControlPlaneClientTest {
     }
 
     @Test
+    void statusCarriesTheCodedFailureOfAPipelineWhoseJobDied() throws Exception {
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":{\"code\":\"engine.job-failed\","
+                        + "\"params\":{\"cause\":\"sink refused\"},"
+                        + "\"message\":\"Pipeline pl1 stopped because its job failed: sink refused.\"}}",
+                seen);
+        try {
+            StatusOutcome outcome = new HttpControlPlaneClient().status(baseOf(server), "tok-abc", "pl1");
+
+            assertThat(outcome).isEqualTo(new StatusOutcome.Found("pl1", "FAILED", "engine.job-failed",
+                    "Pipeline pl1 stopped because its job failed: sink refused."));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void statusOfAHealthyPipelineCarriesNoFailure() throws Exception {
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"RUNNING\"}", seen);
+        try {
+            StatusOutcome outcome = new HttpControlPlaneClient().status(baseOf(server), "tok-abc", "pl1");
+
+            assertThat(((StatusOutcome.Found) outcome).failureCode()).isNull();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void statusOfAFailedPipelineSurvivesAFailureBlockWithNoMessage() throws Exception {
+        // A reply that names the code but carries no rendered sentence must still report the code rather
+        // than dropping the whole status to unreachable: the code alone is the diagnosis worth keeping.
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":{\"code\":\"engine.job-failed\"}}", seen);
+        try {
+            StatusOutcome outcome = new HttpControlPlaneClient().status(baseOf(server), "tok-abc", "pl1");
+
+            StatusOutcome.Found found = (StatusOutcome.Found) outcome;
+            assertThat(found.failureCode()).isEqualTo("engine.job-failed");
+            assertThat(found.failureMessage()).isNotNull();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void statusReturnsRejectedWithTheServerCodeAndMessageOnACodedError() throws Exception {
         HttpServer server = apiServer("/api/pipelines/ghost/status", 404,
                 "{\"code\":\"monitor.no-observation\",\"params\":{\"pipeline\":\"ghost\"},"
@@ -982,10 +1032,10 @@ class HttpControlPlaneClientTest {
 
     @Test
     void metricsCapturesPerTableOffsetFromTheOpenMap() throws Exception {
-        // perTableOffset rides inside the open map as a nested table -> srcpos object; it is captured
-        // separately from the numeric stats, and the nested object never leaks into the numeric map.
+        // perTableOffset is a sibling of the metrics map, not a cell inside it: a source position is a
+        // string and every metrics cell is a number, so the two never share a container.
         HttpServer server = apiServer("/api/pipelines/pl1/metrics", 200,
-                "{\"pipelineId\":\"pl1\",\"metrics\":{\"recordCount\":6,\"perTableOffset\":{\"orders\":\"w7\"}}}",
+                "{\"pipelineId\":\"pl1\",\"metrics\":{\"recordCount\":6},\"perTableOffset\":{\"orders\":\"w7\"}}",
                 new AtomicReference<>());
         try {
             MetricsOutcome outcome = new HttpControlPlaneClient().metrics(baseOf(server), "tok", "pl1");
@@ -1164,6 +1214,35 @@ class HttpControlPlaneClientTest {
         // A 200 whose body is valid JSON but not a usable status reply (a reverse proxy / non-Tapstate answer)
         // must never fabricate a state — it resolves to unreachable, upholding the never-throw seam.
         HttpServer server = apiServer("/api/pipelines/pl1/status", 200, "{\"foo\":\"bar\"}", new AtomicReference<>());
+        try {
+            assertThat(new HttpControlPlaneClient().status(baseOf(server), "tok", "pl1"))
+                    .isInstanceOf(StatusOutcome.Unreachable.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void statusTreatsAFailureBlockMissingItsCodeAsUnreachableNotAHealthyState() throws Exception {
+        // A failure block present but missing its code is a regression of the status contract (the e2e
+        // reader over this identical shape throws for exactly this reason) -- it must not silently decode
+        // the same way an absent failure block does, which is precisely the encoding of a healthy pipeline.
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":{\"params\":{\"cause\":\"sink refused\"}}}",
+                new AtomicReference<>());
+        try {
+            assertThat(new HttpControlPlaneClient().status(baseOf(server), "tok", "pl1"))
+                    .isInstanceOf(StatusOutcome.Unreachable.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void statusTreatsANonObjectFailureBlockAsUnreachableNotAHealthyState() throws Exception {
+        HttpServer server = apiServer("/api/pipelines/pl1/status", 200,
+                "{\"pipelineId\":\"pl1\",\"state\":\"FAILED\",\"failure\":\"engine.job-failed\"}",
+                new AtomicReference<>());
         try {
             assertThat(new HttpControlPlaneClient().status(baseOf(server), "tok", "pl1"))
                     .isInstanceOf(StatusOutcome.Unreachable.class);

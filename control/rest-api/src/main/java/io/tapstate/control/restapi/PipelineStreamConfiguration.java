@@ -4,6 +4,7 @@ import io.tapstate.control.core.ControlOperations;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.PipelineLogQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
+import io.tapstate.messages.MessageCatalog;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
@@ -59,10 +60,12 @@ public class PipelineStreamConfiguration {
             PipelineObservationQueryService observations,
             PipelineLogQueryService logs,
             CredentialAuthenticator credentials,
+            MessageCatalog catalog,
             @Value("${tapstate.control.stream.poll-interval:" + DEFAULT_POLL_INTERVAL + "}") Duration pollInterval) {
         return registry -> {
             registry.addHandler(
-                            new PipelineStatusWatchHandler(observations, pipelineStreamScheduler, pollInterval),
+                            new PipelineStatusWatchHandler(
+                                    observations, catalog, pipelineStreamScheduler, pollInterval),
                             "/api/pipelines/*/status/watch")
                     .addInterceptors(new PipelineStreamHandshakeInterceptor(
                             credentials, ControlOperations.PIPELINE_STATUS));

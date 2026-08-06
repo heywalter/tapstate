@@ -64,6 +64,7 @@ dsl.undefined-variable
 dsl.unknown-field
 dsl.unsupported-mode
 engine.frontier-order-not-encodable
+engine.job-failed
 engine.no-such-job
 io.document-unreadable
 io.store-unauthorized

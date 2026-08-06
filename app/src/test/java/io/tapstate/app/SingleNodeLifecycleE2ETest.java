@@ -6,6 +6,7 @@ import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.jet.Job;
 import com.hazelcast.jet.core.JobStatus;
+import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.PipelineStatus;
 import io.tapstate.core.lifecycle.CheckpointDoc;
@@ -75,7 +76,8 @@ class SingleNodeLifecycleE2ETest {
         PipelineConverger converger = new PipelineConverger(storePort.desired(), storePort.state(), actuator, clock);
         ObservationPublisher publisher = new ObservationPublisher(storePort.state(), storePort.observations());
         driver = new ConvergenceDriver(converger, storePort.desired(), publisher);
-        readFaces = new PipelineObservationQueryService(storePort.observations());
+        readFaces = new PipelineObservationQueryService(
+                new ArtifactQueryService(storePort.artifacts()), storePort.observations());
     }
 
     @AfterEach

@@ -41,6 +41,13 @@ public sealed interface Matcher {
      */
     record ErrorCount(long expected) implements Matcher {}
 
+    /**
+     * The canonical code of the failure the pipeline this specification names has published, read from its
+     * status face. The state says a run died and the error count says it was counted; only the code says
+     * what killed it, so a regression that swaps one reason for another is visible here and nowhere else.
+     */
+    record FailureCode(String expected) implements Matcher {}
+
     static Matcher count(TableAlias table, long rows) {
         return new Count(Map.of(table, rows));
     }
@@ -51,5 +58,9 @@ public sealed interface Matcher {
 
     static Matcher errorCount(long expected) {
         return new ErrorCount(expected);
+    }
+
+    static Matcher failureCode(String expected) {
+        return new FailureCode(expected);
     }
 }

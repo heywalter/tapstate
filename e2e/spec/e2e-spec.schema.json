@@ -191,6 +191,20 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "failure_code"
+          ],
+          "properties": {
+            "failure_code": {
+              "type": "string",
+              "description": "The canonical code of the failure the pipeline this specification names is expected to publish, written '<domain>.<symbol>'.",
+              "pattern": "^[a-z0-9]+\\.[a-z0-9-]+$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
             "state"
           ],
           "properties": {

@@ -27,6 +27,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -646,22 +647,38 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         }
     }
 
-    /** The status decoded from a 200 body, or {@code null} unless it carries a string id and a string state. */
+    /**
+     * The status decoded from a 200 body, or {@code null} unless it carries a string id and a string
+     * state -- and, when it carries a {@code failure} block at all, one shaped like a real one. A present
+     * but malformed failure block (not an object, or missing/wrong-typed code) is a regression of the
+     * status contract, not a healthy pipeline: it must not silently decode the same way an absent failure
+     * block does, so the whole body is treated as shape-wrong here rather than a fabricated healthy read.
+     */
     private static StatusOutcome.Found statusFound(String body) {
         if (JsonReader.parse(body) instanceof Map<?, ?> m
                 && m.get("pipelineId") instanceof String id
                 && m.get("state") instanceof String state) {
-            return new StatusOutcome.Found(id, state);
+            Object rawFailure = m.get("failure");
+            if (rawFailure == null) {
+                return new StatusOutcome.Found(id, state);
+            }
+            if (!(rawFailure instanceof Map<?, ?> failure) || !(failure.get("code") instanceof String code)) {
+                return null;
+            }
+            // The message is the server's rendering of that code; when it is absent the code still names
+            // the diagnosis, so it stands in rather than the whole read degrading to unreachable.
+            String message = failure.get("message") instanceof String rendered ? rendered : code;
+            return new StatusOutcome.Found(id, state, code, message);
         }
         return null;
     }
 
     /**
      * The metrics decoded from a 200 body's {@code metrics} object, or {@code null} unless the body carries a
-     * string id and a metrics object. Each numeric cell is read as a long; the nested {@code perTableOffset}
-     * object is read separately into the per-table positions ({@code table -> srcpos}). Any other non-numeric
-     * cell is dropped, so a malformed entry never crashes the read. An empty object is a legitimate empty (no
-     * source wired yet).
+     * string id and a metrics object. Each numeric cell is read as a long; the sibling {@code perTableOffset}
+     * object carries the per-table positions ({@code table -> srcpos}) and is absent until one is acked. Any
+     * non-numeric metrics cell is dropped, so a malformed entry never crashes the read. An empty object is a
+     * legitimate empty (no source wired yet).
      */
     private static MetricsOutcome.Found metricsFound(String body) {
         if (JsonReader.parse(body) instanceof Map<?, ?> m
@@ -674,7 +691,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                 }
             }
             Map<String, String> perTableOffset = new LinkedHashMap<>();
-            if (metrics.get("perTableOffset") instanceof Map<?, ?> offsets) {
+            if (m.get("perTableOffset") instanceof Map<?, ?> offsets) {
                 for (Map.Entry<?, ?> e : offsets.entrySet()) {
                     if (e.getKey() instanceof String table && e.getValue() instanceof String position) {
                         perTableOffset.put(table, position);
@@ -758,20 +775,20 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     private static final Duration STOP_POLL = Duration.ofMillis(200);
 
     @Override
-    public void watchStatus(URI baseUrl, String credential, String pipelineId,
+    public String watchStatus(URI baseUrl, String credential, String pipelineId,
             StatusStream sink, BooleanSupplier stop) {
-        stream(wsUri(baseUrl, "/api/pipelines/" + pipelineId + "/status/watch"), credential, stop, frame -> {
+        return stream(wsUri(baseUrl, "/api/pipelines/" + pipelineId + "/status/watch"), credential, stop, frame -> {
             StatusOutcome.Found found = statusFound(frame);
             if (found != null) {
-                sink.state(found.pipelineId(), found.state());
+                sink.state(found.pipelineId(), found.state(), found.failureCode(), found.failureMessage());
             }
         });
     }
 
     @Override
-    public void followLogs(URI baseUrl, String credential, String pipelineId,
+    public String followLogs(URI baseUrl, String credential, String pipelineId,
             LogStream sink, BooleanSupplier stop) {
-        stream(wsUri(baseUrl, "/api/pipelines/" + pipelineId + "/logs/follow"), credential, stop, frame -> {
+        return stream(wsUri(baseUrl, "/api/pipelines/" + pipelineId + "/logs/follow"), credential, stop, frame -> {
             LogsOutcome.Found found = logsFound(frame);
             if (found != null && !found.lines().isEmpty()) {
                 sink.lines(found.pipelineId(), found.lines());
@@ -779,35 +796,47 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         });
     }
 
+    /** The websocket policy-violation close code, which the server sends carrying a coded refusal. */
+    private static final int WS_POLICY_VIOLATION = 1008;
+
     /**
      * Opens a websocket to {@code wsUri}, delivering each decoded text frame to {@code onFrame}, and blocks
      * until {@code stop} signals. A refused or unreachable handshake ends the stream; a live connection that
-     * later drops is re-attached after a short backoff until stopped. Never throws.
+     * later drops is re-attached after a short backoff until stopped. One close is terminal rather than a
+     * drop: the server closing with {@code 1008} whose reason names a coded refusal — the stream can never
+     * be served (e.g. a pipeline id that will never resolve), so re-attaching would be refused identically
+     * forever, churning the connection while the caller waits on something that cannot come. That refusal's
+     * code is returned; every other ending returns {@code null}. Never throws.
      */
-    private void stream(URI wsUri, String credential, BooleanSupplier stop, Consumer<String> onFrame) {
+    private String stream(URI wsUri, String credential, BooleanSupplier stop, Consumer<String> onFrame) {
         while (!stop.getAsBoolean()) {
             CountDownLatch closed = new CountDownLatch(1);
+            AtomicReference<String> refusal = new AtomicReference<>();
             WebSocket ws;
             try {
                 ws = client().newWebSocketBuilder()
                         .header("Authorization", "Bearer " + credential)
-                        .buildAsync(wsUri, new StreamListener(onFrame, closed))
+                        .buildAsync(wsUri, new StreamListener(onFrame, closed, refusal))
                         .join();
             } catch (RuntimeException handshakeFailed) {
                 // join() wraps a refused (401/403) or unreachable handshake in a CompletionException (a
                 // RuntimeException); either way it cannot be streamed, so end the stream.
-                return;
+                return null;
             }
             awaitClosedOrStop(closed, stop);
             ws.abort();
+            if (refusal.get() != null) {
+                return refusal.get();
+            }
             if (stop.getAsBoolean()) {
-                return;
+                return null;
             }
             // A live connection dropped (not a stop): re-attach after a short backoff.
             if (!sleepUnlessStopped(RECONNECT_BACKOFF, stop)) {
-                return;
+                return null;
             }
         }
+        return null;
     }
 
     /** The {@code ws(s)} endpoint for {@code path} against an {@code http(s)} base, tolerating a trailing slash. */
@@ -863,11 +892,13 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     private static final class StreamListener implements WebSocket.Listener {
         private final Consumer<String> onFrame;
         private final CountDownLatch closed;
+        private final AtomicReference<String> refusal;
         private final StringBuilder partial = new StringBuilder();
 
-        StreamListener(Consumer<String> onFrame, CountDownLatch closed) {
+        StreamListener(Consumer<String> onFrame, CountDownLatch closed, AtomicReference<String> refusal) {
             this.onFrame = onFrame;
             this.closed = closed;
+            this.refusal = refusal;
         }
 
         @Override
@@ -893,6 +924,11 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            // A policy-violation close carries the server's coded refusal as its reason: the stream is
+            // being ended deliberately, not dropped, so the reconnect loop must stop and surface it.
+            if (statusCode == WS_POLICY_VIOLATION && reason != null && !reason.isBlank()) {
+                refusal.set(reason);
+            }
             closed.countDown();
             return null;
         }

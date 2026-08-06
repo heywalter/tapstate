@@ -118,7 +118,7 @@ lifecycle.incompatible-revision:
   solution: "Re-apply the pipeline so its revision matches the latest applied one, then retry."
 lifecycle.unknown-pipeline:
   message: "No pipeline named {pipeline} is applied."
-  solution: "Apply the pipeline before running a lifecycle verb on it, and check the id for typos."
+  solution: "Apply the pipeline before acting on it or reading its status, and check the id for typos."
 role.unsupported:
   message: "Unsupported --role value '{role}'."
   solution: "L1 runs the whole platform in one process; use --role=all (the default)."
@@ -230,6 +230,9 @@ mcp.environment-missing:
 mcp.server-rejected:
   message: "The Tapstate Server rejected the request with HTTP status {status} without a structured error code."
   solution: "Inspect the Server logs and verify that the MCP sidecar and Server use compatible control contracts."
+engine.job-failed:
+  message: "Pipeline {pipeline} stopped because its job failed: {cause}."
+  solution: "Check the pipeline's logs for the failure, fix what it reports, then start the pipeline again."
 engine.no-such-job:
   message: "Pipeline {pipeline} has no running job to act on."
   solution: "Start the pipeline before pausing or resuming it, and check the id for typos."

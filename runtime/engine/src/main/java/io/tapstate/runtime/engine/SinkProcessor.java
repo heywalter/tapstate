@@ -1,5 +1,6 @@
 package io.tapstate.runtime.engine;
 
+import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
@@ -56,6 +57,11 @@ public final class SinkProcessor extends AbstractProcessor {
     private final int maxBatchSize;
     private final List<InFlightBatch> inFlight = new ArrayList<>();
     private boolean closed;
+
+    // Resolved at init from the running job, so a failed write can be recorded against this pipeline's id
+    // before it leaves this processor — see reapSettled and JobFailureRegistry.
+    private String pipelineId;
+    private JobFailureRegistry failureRegistry;
 
     /** No sink-ack watermark: the order-independent or append-only path (any in-flight bound is allowed). */
     public SinkProcessor(SinkWriter writer, int maxInFlight, int maxBatchSize) {
@@ -122,6 +128,19 @@ public final class SinkProcessor extends AbstractProcessor {
         Objects.requireNonNull(frontierFactory, "frontierFactory");
         return ProcessorMetaSupplier.forceTotalParallelismOne(
                 new AckSinkSupplier(writerFactory, sinkAckFactory, frontierFactory));
+    }
+
+    /**
+     * Resolves this pipeline's id and the shared failure registry, both keyed off the running job. A
+     * context with no Hazelcast instance (a bare unit test driving the processor directly, never through
+     * a real job) leaves the registry unset; {@link #reapSettled} tolerates that and simply does not
+     * record — a failure still fails the job exactly as before, only unrecorded.
+     */
+    @Override
+    protected void init(Processor.Context context) {
+        this.pipelineId = context.jobConfig().getName();
+        HazelcastInstance instance = context.hazelcastInstance();
+        this.failureRegistry = instance != null ? JobFailureRegistry.of(instance) : null;
     }
 
     @Override
@@ -205,7 +224,18 @@ public final class SinkProcessor extends AbstractProcessor {
             if (!batch.future().isDone()) {
                 return false;
             }
-            settle(batch.future()); // throws on a failed write, before any position advances
+            try {
+                settle(batch.future()); // throws on a failed write, before any position advances
+            } catch (RuntimeException | Error failure) {
+                // Recorded here, synchronously, before this rethrow ever reaches Jet's own tasklet
+                // machinery: once the job's terminal result is durable Jet can no longer hand back this
+                // exact cause (see JobFailureRegistry), so the last point this processor still holds the
+                // real, unwrapped cause is the only reliable place to keep it.
+                if (failureRegistry != null) {
+                    failureRegistry.record(pipelineId, failure);
+                }
+                throw failure;
+            }
             if (frontier != null) {
                 frontier.settled(batch.positions(), sinkAck);
             }

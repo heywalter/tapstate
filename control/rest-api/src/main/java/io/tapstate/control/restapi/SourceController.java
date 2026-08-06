@@ -3,6 +3,7 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.SourceDraft;
 import io.tapstate.control.core.SourceError;
+import io.tapstate.control.core.SourceDraftResult;
 import io.tapstate.control.core.SourceView;
 import io.tapstate.core.common.TapstateException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -41,6 +42,12 @@ class SourceController {
         return ResponseEntity.created(URI.create("/api/sources/" + created.id()))
                 .eTag(created.contentHash())
                 .body(created);
+    }
+
+    @Verb("source.draft")
+    @PostMapping("/sources:draft")
+    SourceDraftResult draft(@RequestBody SourceDraft draft) {
+        return sources.draft(draft);
     }
 
     @Verb("source.list")

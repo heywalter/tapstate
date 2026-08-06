@@ -39,6 +39,16 @@ public final class SourceService {
         this.representation = Objects.requireNonNull(representation, "representation");
     }
 
+    /** Validates one Source against the live connector contract and renders canonical YAML without writing. */
+    public SourceDraftResult draft(SourceDraft draft) {
+        Objects.requireNonNull(draft, "draft");
+        SourceResource source = representation.toModel(draft, null);
+        TapstateCatalog liveCatalog = catalog.get();
+        Workspace.of(List.of(source), liveCatalog);
+        CapabilityRules.validateOnline(source, liveCatalog);
+        return new SourceDraftResult(writer.write(source));
+    }
+
     /** Lists stored Sources ordered by id. */
     public List<SourceView> list() {
         return store.list().stream()
