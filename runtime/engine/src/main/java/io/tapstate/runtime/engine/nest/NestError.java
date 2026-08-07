@@ -78,6 +78,15 @@ public enum NestError implements TapstateErrorCode {
     /** Running: one document has grown past the elements a single document may hold. */
     ROOT_FANOUT_LIMIT_EXCEEDED("nest.root-fanout-limit-exceeded", Set.of("rootKey", "elements", "limit")),
 
+    /**
+     * Running: a nest holds more documents than it may. Distinct from the two limits either side of it -
+     * that one is about a single document having too much in it, and the resolver one about a level having
+     * too many keys - and reached for a different reason: how many documents there are is a question about
+     * what the deployment stores them on rather than about what fits in memory, because a document that is
+     * not in memory still occupies the layer behind it.
+     */
+    ROOT_COUNT_LIMIT_EXCEEDED("nest.root-count-limit-exceeded", Set.of("stepId", "roots", "limit")),
+
     /** Running: one embed holds more resolver keys than its limit allows. */
     RESOLVER_KEY_LIMIT_EXCEEDED("nest.resolver-key-limit-exceeded", Set.of("embedPath", "keys", "limit")),
 

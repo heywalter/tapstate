@@ -3,6 +3,7 @@ package io.tapstate.runtime.engine.nest;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
 import com.hazelcast.jet.core.Watermark;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.SourceOrder;
@@ -45,6 +46,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final LevelBounds bounds;
     private final ReplayFloor floor;
 
+    /** How many documents this nest may hold. Read once: it is chosen where the job is built, not here. */
+    private final long rootLimit;
+
     /**
      * Roots whose deletion has gone downstream and whose record is still kept, against what that deletion
      * covered. They are remembered as they happen rather than looked for later, because a store is not
@@ -74,16 +78,30 @@ public final class AssemblerProcessor extends AbstractProcessor {
         this(vertex, slots, store, outputStream, axes, chainsByOrdinal, ReplayFloor.NONE);
     }
 
+    /** An assembler held to what {@code settings} allows this nest to hold, and to nothing else. */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, NestSettings settings) {
+        this(vertex, slots, store, outputStream, null, null, ReplayFloor.NONE, settings);
+    }
+
     /** The whole of it: a frontier passed on, and deleted roots forgotten once it is safe to. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
             ReplayFloor floor) {
+        this(vertex, slots, store, outputStream, axes, chainsByOrdinal, floor, NestSettings.defaults());
+    }
+
+    /** The whole of it, held to what this nest is allowed to hold. */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
+            ReplayFloor floor, NestSettings settings) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         this.floor = Objects.requireNonNull(floor, "floor");
+        this.rootLimit = Objects.requireNonNull(settings, "settings").rootsAllowedIn(vertex.mapName());
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -276,6 +294,25 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 held.holding(key, document.assembly.lowestHeldByChain());
             }
         });
+        refuseToHoldMoreDocumentsThanAllowed();
+    }
+
+    /**
+     * Stops the job once this nest holds more documents than it is allowed to. How many there are is how
+     * many roots the source has, which nothing about the tree bounds, and the cost of one is paid on
+     * whatever stores it whether or not it is in memory - so this is a limit on the deployment's storage
+     * rather than on its heap, and having room in memory does not answer it.
+     *
+     * <p>The count is what is being held rather than a tally of what this run wrote, for the same reason
+     * every level counts that way: documents outlive the run that assembled them, and a nest restarted
+     * onto more of them than it may hold has to say so on the first thing it is asked to do.
+     */
+    private void refuseToHoldMoreDocumentsThanAllowed() {
+        long roots = store.count();
+        if (roots > rootLimit) {
+            throw new TapstateException(NestError.ROOT_COUNT_LIMIT_EXCEEDED,
+                    Map.of("stepId", outputStream, "roots", roots, "limit", rootLimit), null);
+        }
     }
 
     /** The key of a document that is gone, as the row a sink needs to find and remove it. */

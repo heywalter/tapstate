@@ -47,32 +47,62 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_KEY_LIMIT = 1_000_000L;
 
-    private final Map<String, Long> keyLimits;
+    /**
+     * How many documents one nest may hold when nothing says otherwise.
+     *
+     * <p>A separate number from the one above, and not comparable to it: the keys of a level are held to
+     * bound what is holding them, where the documents of a nest are held to bound what the deployment was
+     * built to store them on. One document can draw on hundreds of thousands of keys of a single level, and
+     * a level can serve one document, so neither number tells you anything about the other.
+     *
+     * <p>Provisional, and more so than the other: the figure a deployment should run with follows from the
+     * storage it has rather than from anything measurable here.
+     */
+    public static final long DEFAULT_ROOT_LIMIT = 10_000_000L;
 
-    private NestSettings(Map<String, Long> keyLimits) {
+    private final Map<String, Long> keyLimits;
+    private final Map<String, Long> rootLimits;
+
+    private NestSettings(Map<String, Long> keyLimits, Map<String, Long> rootLimits) {
         this.keyLimits = Map.copyOf(keyLimits);
+        this.rootLimits = Map.copyOf(rootLimits);
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of());
+        return new NestSettings(Map.of(), Map.of());
     }
 
     /** These settings, with {@code namespace} allowed {@code limit} keys instead of the default. */
     public NestSettings withKeyLimit(String namespace, long limit) {
-        Objects.requireNonNull(namespace, "namespace");
-        if (limit <= 0) {
-            throw new IllegalArgumentException(
-                    "a level allowed " + limit + " keys could hold nothing at all: " + namespace);
-        }
-        Map<String, Long> widened = new LinkedHashMap<>(keyLimits);
-        widened.put(namespace, limit);
-        return new NestSettings(widened);
+        return new NestSettings(with(keyLimits, namespace, limit, "keys"), rootLimits);
+    }
+
+    /** These settings, with the nest at {@code namespace} allowed {@code limit} documents. */
+    public NestSettings withRootLimit(String namespace, long limit) {
+        return new NestSettings(keyLimits, with(rootLimits, namespace, limit, "documents"));
     }
 
     /** How many keys {@code namespace} may hold before the job is failed for holding too many. */
     public long keysAllowedIn(String namespace) {
         return keyLimits.getOrDefault(namespace, DEFAULT_KEY_LIMIT);
+    }
+
+    /** How many documents {@code namespace} may hold before the job is failed for holding too many. */
+    public long rootsAllowedIn(String namespace) {
+        return rootLimits.getOrDefault(namespace, DEFAULT_ROOT_LIMIT);
+    }
+
+    private static Map<String, Long> with(Map<String, Long> limits, String namespace, long limit,
+            String held) {
+        Objects.requireNonNull(namespace, "namespace");
+        if (limit <= 0) {
+            throw new IllegalArgumentException(
+                    "allowed " + limit + " " + held + ", it could hold nothing at all: " + namespace);
+        }
+        Map<String, Long> widened = new LinkedHashMap<>(limits);
+        widened.put(namespace, limit);
+        return widened;
     }
 
     /**

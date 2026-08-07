@@ -253,7 +253,7 @@ public final class NestDag {
             for (int i = 0; i < count; i++) {
                 processors.add(spec.isAssembler()
                         ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
-                                axes, chainsByOrdinal, floor)
+                                axes, chainsByOrdinal, floor, settings)
                         : new ResolverProcessor(spec, bound.forResolver(spec), deadLetter, axes,
                                 chainsByOrdinal, floor, settings));
             }

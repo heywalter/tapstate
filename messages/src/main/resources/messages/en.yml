@@ -308,6 +308,9 @@ nest.state-paths-changed:
 nest.root-fanout-limit-exceeded:
   message: "Document {rootKey} holds {elements} elements, past the per-document limit of {limit}."
   solution: "Raise the limit if the data really is this wide, or narrow what the nest embeds."
+nest.root-count-limit-exceeded:
+  message: "Nest {stepId} holds {roots} documents, past its limit of {limit}."
+  solution: "Raise the limit if the storage behind this nest can carry that many documents, or narrow what the pipeline covers. This is a limit on how much is stored rather than on how much is in memory, so more memory does not answer it."
 nest.resolver-key-limit-exceeded:
   message: "Embed {embedPath} holds {keys} keys, past its limit of {limit}."
   solution: "Raise that embed's key limit, or turn on eviction for its namespace and trade speed for capacity."
