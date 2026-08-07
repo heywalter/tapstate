@@ -62,6 +62,13 @@ public enum NestError implements TapstateErrorCode {
     SNAPSHOT_PASSTHROUGH_FORBIDDEN("nest.snapshot-passthrough-forbidden", Set.of("rootCollection")),
 
     /**
+     * Starting up: the memory budget a namespace was given is smaller than the partitions it is spent
+     * across, so what is held is the partition count rather than the number that was asked for.
+     */
+    MEMORY_BUDGET_BELOW_PARTITION_COUNT(
+            "nest.memory-budget-below-partition-count", Set.of("entries", "partitions")),
+
+    /**
      * Starting up: the tree keeps its state under names it no longer compiles to, because an embed path
      * was renamed or a level inserted. What was stored is left where nothing reads it and the new names
      * answer nothing, so the run would rebuild from empty while reporting that it resumed.

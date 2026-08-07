@@ -72,7 +72,8 @@ class TheColdLayerCountsTheTripsItMakesTest {
         config.getNetworkConfig().getInterfaces().setEnabled(true).addInterface("127.0.0.1");
         config.getNetworkConfig().getJoin().getAutoDetectionConfig().setEnabled(false);
         config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
-        config.addMapConfig(store == null ? NestMaps.stateMaps() : NestMaps.stateMaps(store));
+        NestSettings settings = NestSettings.defaults();
+        config.addMapConfig(store == null ? settings.stateMaps() : settings.stateMaps(store));
         return Hazelcast.newHazelcastInstance(config);
     }
 

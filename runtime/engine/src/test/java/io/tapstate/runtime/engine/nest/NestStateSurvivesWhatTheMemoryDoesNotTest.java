@@ -64,7 +64,7 @@ class NestStateSurvivesWhatTheMemoryDoesNotTest {
         join.getTcpIpConfig().setEnabled(false);
         join.getAutoDetectionConfig().setEnabled(false);
         config.getNetworkConfig().getInterfaces().setEnabled(true).addInterface("127.0.0.1");
-        config.addMapConfig(NestMaps.stateMaps(store));
+        config.addMapConfig(NestSettings.defaults().stateMaps(store));
         member = Hazelcast.newHazelcastInstance(config);
     }
 
@@ -147,7 +147,7 @@ class NestStateSurvivesWhatTheMemoryDoesNotTest {
      */
     @Test
     void theStoreBehindAMapWillNotListItsKeysAndSaysSoWithAnEmptyAnswer() {
-        MapStoreFactory<Object, Object> factory = factoryFrom(NestMaps.stateMaps(store));
+        MapStoreFactory<Object, Object> factory = factoryFrom(NestSettings.defaults().stateMaps(store));
 
         MapLoader<Object, Object> loader = factory.newMapStore(NAMESPACE, new Properties());
 

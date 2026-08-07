@@ -299,6 +299,9 @@ nest.append-mode-conflicts-with-key-tracking:
 nest.snapshot-passthrough-forbidden:
   message: "A nest writing {rootCollection} cannot pass its snapshot reads straight to the sink."
   solution: "Let the nest assemble snapshot reads like any other change; passing them through writes unassembled rows."
+nest.memory-budget-below-partition-count:
+  message: "A nest was asked to hold {entries} entries in memory, spread across {partitions} partitions."
+  solution: "Ask for at least as many entries as there are partitions: the budget is spent per partition, so anything smaller is rounded up to one entry each and holds the partition count whatever it was set to."
 nest.state-paths-changed:
   message: "Nest {stepId} stored its state under {recorded}, and now compiles to {compiled}."
   solution: "Stop the pipeline and start it again rather than resuming: renaming an embed path or inserting a level leaves the stored state where nothing reads it, and the new paths start empty beside documents that are not."

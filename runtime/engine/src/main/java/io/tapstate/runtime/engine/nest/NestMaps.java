@@ -23,9 +23,10 @@ import io.tapstate.spi.store.KeyedStateStore;
  *   <li><b>Expiry.</b> A resolver mapping that expires stops answering for the children that point at
  *       it, and they wait forever for a parent that is still there. An assembly that expires is rebuilt
  *       from whatever arrives next and emitted as though it were whole.</li>
- *   <li><b>Eviction.</b> The same silent loss, reached by size rather than by time. Eviction is what
- *       turns a bounded heap into a bounded heap plus a disk - but only once something stands behind the
- *       map to load an evicted entry back from. Until then, evicting is losing.</li>
+ *   <li><b>Eviction with nothing behind the map.</b> The same silent loss, reached by size rather than by
+ *       time. Eviction is what turns a bounded heap into a bounded heap plus a disk - but only once
+ *       something stands behind the map to load an evicted entry back from. Until then, evicting is
+ *       losing, which is why it is configured on the shape that has a store and on no other.</li>
  * </ul>
  *
  * <p>Values are kept as the objects they are, because that is what the way they are written needs. A
@@ -53,6 +54,14 @@ final class NestMaps {
      */
     static final String NAMESPACE_PREFIX = "nest.";
 
+    /**
+     * The smallest memory budget that still means what it says, which is the substrate's partition count.
+     * The budget is spent per partition rather than per map: below this it has been rounded up to one entry
+     * per partition before it is enforced, so what is held is the partition count regardless of what was
+     * asked for - a configured 10 measured 82 resident.
+     */
+    static final int SMALLEST_MEANINGFUL_MEMORY_BUDGET = 271;
+
     private NestMaps() {
     }
 
@@ -71,12 +80,22 @@ final class NestMaps {
      * "which keys do you have" question with none, so there is no keyspace to preload and a restart pays
      * only for the keys it is actually asked about.
      */
-    static MapConfig stateMaps(KeyedStateStore store) {
-        return stateMaps().setMapStoreConfig(new MapStoreConfig()
+    static MapConfig stateMaps(KeyedStateStore store, long entriesHeldInMemory) {
+        MapConfig config = stateMaps().setMapStoreConfig(new MapStoreConfig()
                 .setEnabled(true)
                 .setWriteDelaySeconds(0)
                 .setInitialLoadMode(MapStoreConfig.InitialLoadMode.LAZY)
                 .setFactoryImplementation(new NestStateMapStore.Factory(store)));
+        // Only ever here, where the store above is what an evicted entry comes back from. On the
+        // configuration without one, evicting is losing: the entry is in no other place, and what the map
+        // answers afterwards is the absence rather than the state - a resolver that stops answering for
+        // children still pointing at it, an assembly rebuilt from whatever arrives next and emitted as
+        // though it were whole. Neither says anything while it happens.
+        config.getEvictionConfig()
+                .setEvictionPolicy(EvictionPolicy.LRU)
+                .setMaxSizePolicy(MaxSizePolicy.PER_NODE)
+                .setSize(Math.toIntExact(entriesHeldInMemory));
+        return config;
     }
 
     /**

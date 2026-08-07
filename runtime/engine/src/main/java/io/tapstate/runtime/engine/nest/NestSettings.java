@@ -1,6 +1,7 @@
 package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.config.MapConfig;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.spi.store.KeyedStateStore;
 
 import java.io.Serializable;
@@ -52,20 +53,62 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_ELEMENT_LIMIT = 100_000L;
 
-    private final Map<String, Long> elementLimits;
+    /**
+     * How many entries each namespace keeps in memory when nothing says otherwise.
+     *
+     * <p>High enough that a deployment whose state fits never evicts at all - eviction buys capacity with a
+     * read of the layer behind the map, and a level that was always going to fit should not pay it - and
+     * low enough that a level which does not fit is bounded by this rather than by the heap running out.
+     *
+     * <p>Provisional. What a deployment should run with follows from measuring what one entry of its levels
+     * costs in memory, which is the multiplication this number cannot do for itself: it is a count of
+     * entries, and what has to fit is bytes.
+     */
+    public static final long DEFAULT_ENTRIES_HELD_IN_MEMORY = 100_000L;
 
-    private NestSettings(Map<String, Long> elementLimits) {
+    private final Map<String, Long> elementLimits;
+    private final long entriesHeldInMemory;
+
+    private NestSettings(Map<String, Long> elementLimits, long entriesHeldInMemory) {
         this.elementLimits = Map.copyOf(elementLimits);
+        this.entriesHeldInMemory = entriesHeldInMemory;
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of());
+        return new NestSettings(Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
     }
 
     /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
     public NestSettings withElementLimit(String namespace, long limit) {
-        return new NestSettings(with(elementLimits, namespace, limit, "elements"));
+        return new NestSettings(with(elementLimits, namespace, limit, "elements"), entriesHeldInMemory);
+    }
+
+    /**
+     * These settings, with each namespace keeping {@code entries} of its state in memory and the rest on
+     * the layer behind it.
+     *
+     * <p>One number for every namespace rather than one each. What it bounds is the memory of the process
+     * they all share, and a deployment that had to name each level to bound the whole would be bounding it
+     * by however many it remembered to name.
+     *
+     * <p>Refused below the partition count, where it stops meaning what it says: the substrate spends this
+     * budget per partition rather than per map, so a number smaller than the partitions has already been
+     * rounded up to one entry each by the time it is enforced - measured at 82 resident against a
+     * configured 10 - and a deployment reading its own configuration back would not learn that.
+     */
+    public NestSettings withEntriesHeldInMemory(long entries) {
+        if (entries < NestMaps.SMALLEST_MEANINGFUL_MEMORY_BUDGET) {
+            throw new TapstateException(NestError.MEMORY_BUDGET_BELOW_PARTITION_COUNT,
+                    Map.of("entries", entries,
+                            "partitions", (long) NestMaps.SMALLEST_MEANINGFUL_MEMORY_BUDGET), null);
+        }
+        return new NestSettings(elementLimits, entries);
+    }
+
+    /** How many entries each namespace keeps in memory before the rest is left to the layer behind it. */
+    public long entriesHeldInMemory() {
+        return entriesHeldInMemory;
     }
 
     /** How many elements one document of {@code namespace} may hold before the job is failed. */
@@ -93,8 +136,11 @@ public final class NestSettings implements Serializable {
         return NestMaps.stateMaps();
     }
 
-    /** As above, reading through {@code store} for a key that is not in memory and writing through it. */
+    /**
+     * As above, reading through {@code store} for a key that is not in memory and writing through it, and
+     * holding only {@link #entriesHeldInMemory()} of each namespace in memory at a time.
+     */
     public MapConfig stateMaps(KeyedStateStore store) {
-        return NestMaps.stateMaps(store);
+        return NestMaps.stateMaps(store, entriesHeldInMemory);
     }
 }
