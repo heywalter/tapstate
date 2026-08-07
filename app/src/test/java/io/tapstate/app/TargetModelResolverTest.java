@@ -3,6 +3,8 @@ package io.tapstate.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.RenameCase;
+import io.tapstate.core.model.RenameSpec;
 import io.tapstate.core.model.SourceMode;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.TableRef;
@@ -66,6 +68,50 @@ class TargetModelResolverTest {
         TargetTable target = TargetModelResolver.toTargetTable(logs);
 
         assertThat(target.fields()).containsExactly(new TargetField("msg", "TEXT", false));
+    }
+
+    @Test
+    void explicit_table_map_takes_precedence_over_bulk_rename_rules() {
+        SourceTable address = new SourceTable(
+                "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+
+        TargetTable target = TargetModelResolver.toTargetTable(address,
+                new RenameSpec(Map.of("PlayerAddress", "player_address"), RenameCase.UPPER, "ods_", "_v1"));
+
+        assertThat(target.name()).isEqualTo("player_address");
+    }
+
+    @Test
+    void bulk_table_rename_applies_case_before_prefix_and_suffix() {
+        SourceTable address = new SourceTable(
+                "PLAYER_ADDRESS", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+
+        TargetTable target = TargetModelResolver.toTargetTable(address,
+                new RenameSpec(null, RenameCase.CAMEL, "ods_", "_v1"));
+
+        assertThat(target.name()).isEqualTo("ods_playerAddress_v1");
+    }
+
+    @Test
+    void bulk_table_rename_supports_pascal_case() {
+        SourceTable address = new SourceTable(
+                "player_address", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+
+        TargetTable target = TargetModelResolver.toTargetTable(address,
+                new RenameSpec(null, RenameCase.PASCAL, null, null));
+
+        assertThat(target.name()).isEqualTo("PlayerAddress");
+    }
+
+    @Test
+    void bulk_table_rename_supports_upper_case() {
+        SourceTable address = new SourceTable(
+                "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+
+        TargetTable target = TargetModelResolver.toTargetTable(address,
+                new RenameSpec(null, RenameCase.UPPER, null, null));
+
+        assertThat(target.name()).isEqualTo("PLAYERADDRESS");
     }
 
     @Test

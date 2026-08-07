@@ -1,6 +1,8 @@
 package io.tapstate.app;
 
 import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.RenameCase;
+import io.tapstate.core.model.RenameSpec;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.spi.sink.TargetField;
 import io.tapstate.spi.sink.TargetTable;
@@ -10,6 +12,8 @@ import io.tapstate.spi.store.SourceTable;
 import io.tapstate.spi.store.StorePort;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -75,6 +79,55 @@ final class TargetModelResolver {
             }
         }
         return new TargetTable(source.name(), fields);
+    }
+
+    static TargetTable toTargetTable(SourceTable source, RenameSpec rename) {
+        return rename(toTargetTable(source), source.name(), rename);
+    }
+
+    static TargetTable rename(TargetTable target, String sourceName, RenameSpec rename) {
+        if (rename == null) {
+            return target;
+        }
+        List<TargetField> fields = target == null ? List.of() : target.fields();
+        return new TargetTable(renamedName(sourceName, rename), fields);
+    }
+
+    private static String renamedName(String sourceName, RenameSpec rename) {
+        Map<String, String> explicit = rename.map();
+        if (explicit != null && explicit.containsKey(sourceName)) {
+            return explicit.get(sourceName);
+        }
+        RenameCase caseMode = rename.caseMode();
+        String transformed = caseMode == null ? sourceName : switch (caseMode) {
+            case UPPER -> sourceName.toUpperCase(Locale.ROOT);
+            case LOWER -> sourceName.toLowerCase(Locale.ROOT);
+            case CAMEL -> compoundCase(sourceName, false);
+            case PASCAL -> compoundCase(sourceName, true);
+        };
+        return (rename.prefix() == null ? "" : rename.prefix())
+                + transformed
+                + (rename.suffix() == null ? "" : rename.suffix());
+    }
+
+    private static String compoundCase(String name, boolean capitalizeFirst) {
+        String separated = name
+                .replaceAll("([a-z0-9])([A-Z])", "$1 $2")
+                .replaceAll("([A-Z]+)([A-Z][a-z])", "$1 $2");
+        StringBuilder result = new StringBuilder();
+        for (String word : separated.split("[^A-Za-z0-9]+")) {
+            if (word.isEmpty()) {
+                continue;
+            }
+            String lower = word.toLowerCase(Locale.ROOT);
+            if (result.length() > 0 || capitalizeFirst) {
+                result.append(Character.toUpperCase(lower.charAt(0)));
+                result.append(lower.substring(1));
+            } else {
+                result.append(lower);
+            }
+        }
+        return result.toString();
     }
 
     /** The discovered field a key column names; a key naming no discovered field is a broken source model. */
