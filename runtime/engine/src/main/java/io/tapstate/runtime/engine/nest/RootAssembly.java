@@ -320,6 +320,36 @@ public final class RootAssembly implements Serializable {
         return true;
     }
 
+    /**
+     * How many elements this document holds, at every depth. It is the quantity a per-document limit is
+     * about: a document is assembled whole, so what it holds is what has to be in memory at once, and an
+     * element four levels down occupies that as much as one hanging off the root.
+     *
+     * <p>Deleted elements are not held and are not counted. What is left where one was is a record that it
+     * was deleted, kept only until a replay can no longer bring it back; counting those would tie the width
+     * of a document to how far behind the replay window is, which is neither a property of the data nor
+     * something whoever set a limit can see.
+     *
+     * <p>Nor is what is waiting on a parent that has not arrived: it is not in the document, it is not
+     * rendered, and it is already accounted for where things wait.
+     */
+    public long elements() {
+        return countIn(children);
+    }
+
+    private static long countIn(Map<String, Map<List<Object>, ElementNode>> nodes) {
+        long held = 0;
+        for (Map<List<Object>, ElementNode> slot : nodes.values()) {
+            for (ElementNode element : slot.values()) {
+                if (!element.deleted()) {
+                    held++;
+                }
+                held += countIn(element.children());
+            }
+        }
+        return held;
+    }
+
     /** Applies whatever was waiting for the element just added, which may in turn release its own children. */
     private void release(List<String> pathId, Object identity) {
         List<Pending> held = waiting.remove(new WaitingOn(pathId, identity));

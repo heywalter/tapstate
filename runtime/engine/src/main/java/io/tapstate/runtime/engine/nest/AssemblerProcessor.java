@@ -49,6 +49,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
     /** How many documents this nest may hold. Read once: it is chosen where the job is built, not here. */
     private final long rootLimit;
 
+    /** How many elements any one of those documents may hold. Read once, for the same reason. */
+    private final long elementLimit;
+
     /**
      * Roots whose deletion has gone downstream and whose record is still kept, against what that deletion
      * covered. They are remembered as they happen rather than looked for later, because a store is not
@@ -102,6 +105,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         this.floor = Objects.requireNonNull(floor, "floor");
         this.rootLimit = Objects.requireNonNull(settings, "settings").rootsAllowedIn(vertex.mapName());
+        this.elementLimit = settings.elementsAllowedIn(vertex.mapName());
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -290,11 +294,29 @@ public final class AssemblerProcessor extends AbstractProcessor {
                         }
                     });
             store.save(key, document.assembly);
+            refuseToLetOneDocumentGrowPastItsWidth(key, document.assembly);
             if (bounds != null) {
                 held.holding(key, document.assembly.lowestHeldByChain());
             }
         });
         refuseToHoldMoreDocumentsThanAllowed();
+    }
+
+    /**
+     * Stops the job once one document has absorbed more elements than it is allowed to. Checked per
+     * document rather than across the nest: how wide one has grown says nothing about the others, and a
+     * limit spent by whichever document happened to be assembled first would fail the rest for its width.
+     *
+     * <p>This is the one of the three limits that bounds memory. A document is rendered whole, so however
+     * much it holds is what has to be there at once, and no eviction reaches inside one.
+     */
+    private void refuseToLetOneDocumentGrowPastItsWidth(Object key, RootAssembly assembly) {
+        long elements = assembly.elements();
+        if (elements > elementLimit) {
+            throw new TapstateException(NestError.ROOT_FANOUT_LIMIT_EXCEEDED,
+                    Map.of("rootKey", String.valueOf(keyRow(key)), "elements", elements,
+                            "limit", elementLimit), null);
+        }
     }
 
     /**

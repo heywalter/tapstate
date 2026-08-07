@@ -60,27 +60,45 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_ROOT_LIMIT = 10_000_000L;
 
+    /**
+     * How many elements one document may hold when nothing says otherwise.
+     *
+     * <p>The third number, and per document rather than per namespace - it is the one of the three that is
+     * a bound on memory, because a document is assembled whole and however wide it has grown is what has to
+     * fit at once. Provisional like the others: what a deployment should run with follows from measuring
+     * what one element of its documents costs.
+     */
+    public static final long DEFAULT_ELEMENT_LIMIT = 100_000L;
+
     private final Map<String, Long> keyLimits;
     private final Map<String, Long> rootLimits;
+    private final Map<String, Long> elementLimits;
 
-    private NestSettings(Map<String, Long> keyLimits, Map<String, Long> rootLimits) {
+    private NestSettings(Map<String, Long> keyLimits, Map<String, Long> rootLimits,
+            Map<String, Long> elementLimits) {
         this.keyLimits = Map.copyOf(keyLimits);
         this.rootLimits = Map.copyOf(rootLimits);
+        this.elementLimits = Map.copyOf(elementLimits);
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of(), Map.of());
+        return new NestSettings(Map.of(), Map.of(), Map.of());
     }
 
     /** These settings, with {@code namespace} allowed {@code limit} keys instead of the default. */
     public NestSettings withKeyLimit(String namespace, long limit) {
-        return new NestSettings(with(keyLimits, namespace, limit, "keys"), rootLimits);
+        return new NestSettings(with(keyLimits, namespace, limit, "keys"), rootLimits, elementLimits);
     }
 
     /** These settings, with the nest at {@code namespace} allowed {@code limit} documents. */
     public NestSettings withRootLimit(String namespace, long limit) {
-        return new NestSettings(keyLimits, with(rootLimits, namespace, limit, "documents"));
+        return new NestSettings(keyLimits, with(rootLimits, namespace, limit, "documents"), elementLimits);
+    }
+
+    /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
+    public NestSettings withElementLimit(String namespace, long limit) {
+        return new NestSettings(keyLimits, rootLimits, with(elementLimits, namespace, limit, "elements"));
     }
 
     /** How many keys {@code namespace} may hold before the job is failed for holding too many. */
@@ -91,6 +109,11 @@ public final class NestSettings implements Serializable {
     /** How many documents {@code namespace} may hold before the job is failed for holding too many. */
     public long rootsAllowedIn(String namespace) {
         return rootLimits.getOrDefault(namespace, DEFAULT_ROOT_LIMIT);
+    }
+
+    /** How many elements one document of {@code namespace} may hold before the job is failed. */
+    public long elementsAllowedIn(String namespace) {
+        return elementLimits.getOrDefault(namespace, DEFAULT_ELEMENT_LIMIT);
     }
 
     private static Map<String, Long> with(Map<String, Long> limits, String namespace, long limit,
