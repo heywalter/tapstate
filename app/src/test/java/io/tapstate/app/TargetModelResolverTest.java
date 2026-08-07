@@ -125,11 +125,12 @@ class TargetModelResolverTest {
                 List.of("id"),
                 List.of())));
 
-        Optional<TargetTable> target = new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
+        Optional<TargetModelResolver.ResolvedTarget> target =
+                new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
 
-        assertThat(target).contains(new TargetTable("orders", List.of(
+        assertThat(target).contains(new TargetModelResolver.ResolvedTarget("orders", new TargetTable("orders", List.of(
                 new TargetField("id", "INT", true),
-                new TargetField("amount", "DECIMAL", false))));
+                new TargetField("amount", "DECIMAL", false)))));
     }
 
     @Test
@@ -138,7 +139,8 @@ class TargetModelResolverTest {
         store.artifacts().save(cdcSource("src_mysql", "orders"));
         store.artifacts().save(pipeline("p", "src_mysql"));
 
-        Optional<TargetTable> target = new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
+        Optional<TargetModelResolver.ResolvedTarget> target =
+                new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
 
         assertThat(target).isEmpty();
     }

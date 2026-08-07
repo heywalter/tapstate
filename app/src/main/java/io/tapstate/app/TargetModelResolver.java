@@ -37,20 +37,23 @@ final class TargetModelResolver {
 
     /**
      * Resolves the write-side target table for a pipeline's sink from the discovered model of the source it
-     * reads: the source's single L1 table looked up in its persisted model and mapped to a target table.
-     * Empty when the source's schema was never discovered, or when the discovered model does not carry that
-     * table.
+     * reads: the selected source table looked up in its persisted model and mapped to a target table. The
+     * source table travels with the target model so sink-side rename rules use the same source that supplied
+     * the fields. Empty when no pipeline source has a matching discovered table.
      */
-    Optional<TargetTable> resolve(PipelineResource pipeline) {
+    Optional<ResolvedTarget> resolve(PipelineResource pipeline) {
         for (String sourceId : pipeline.sources()) {
             SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
             String table = SourceCaptureResolution.of(source).table();
             Optional<SourceTable> discovered = discoveredTable(sourceId, table);
             if (discovered.isPresent()) {
-                return Optional.of(toTargetTable(discovered.get()));
+                return Optional.of(new ResolvedTarget(table, toTargetTable(discovered.get())));
             }
         }
         return Optional.empty();
+    }
+
+    record ResolvedTarget(String sourceTable, TargetTable target) {
     }
 
     /** The named table in the source's persisted discovery model, or empty when neither is present. */

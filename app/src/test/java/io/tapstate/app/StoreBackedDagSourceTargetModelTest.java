@@ -89,6 +89,19 @@ class StoreBackedDagSourceTargetModelTest {
                 new TargetTable("ods_orders", List.of(new TargetField("id", "INT", true))));
     }
 
+    @Test
+    void renames_with_the_table_whose_discovered_model_binds_the_sink() {
+        InMemoryStorePort store = seededMultiSourcePipeline();
+        store.schemas().save(discovered("address_src", "mysql", new SourceTable(
+                "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of())));
+        List<TargetTable> bound = new ArrayList<>();
+
+        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+
+        assertThat(bound).containsExactly(new TargetTable(
+                "player_address", List.of(new TargetField("id", "INT", true))));
+    }
+
     // ---- fixtures ----------------------------------------------------------------------
 
     private static InMemoryStorePort seededPipeline() {
@@ -104,6 +117,23 @@ class StoreBackedDagSourceTargetModelTest {
         store.artifacts().save(new PipelineResource("p", null, List.of("orders_src"), null, null,
                 new ServeBlock.Inline(null, FromRef.literal("orders_src"),
                         List.of(syncElements), null, null),
+                null, null));
+        return store;
+    }
+
+    private static InMemoryStorePort seededMultiSourcePipeline() {
+        InMemoryStorePort store = new InMemoryStorePort();
+        store.artifacts().save(new SourceResource("orders_src", null, "mysql", Map.of("host", "h"),
+                SourceMode.CDC, List.of(TableRef.literal("orders")), null, null, null));
+        store.artifacts().save(new SourceResource("address_src", null, "mysql", Map.of("host", "h"),
+                SourceMode.CDC, List.of(TableRef.literal("PlayerAddress")), null, null, null));
+        store.artifacts().save(new SourceResource("orders_dest", null, "mongodb", Map.of("uri", "u"),
+                null, null, null, null, null));
+        store.artifacts().save(new PipelineResource("p", null, List.of("orders_src", "address_src"), null, null,
+                new ServeBlock.Inline(null, FromRef.literal("orders_src"), List.of(new SyncElement(
+                        "sync_1", "orders_dest", null,
+                        new RenameSpec(Map.of("PlayerAddress", "player_address"), null, null, null), null, null)),
+                        null, null),
                 null, null));
         return store;
     }

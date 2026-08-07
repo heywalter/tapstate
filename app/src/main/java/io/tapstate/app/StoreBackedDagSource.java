@@ -67,10 +67,12 @@ final class StoreBackedDagSource implements DagSource {
     @Override
     public DAG dagFor(String pipelineId) {
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
-        TargetTable target = targetModelResolver.resolve(pipeline).orElse(null);
-        String sourceTable = sourceTable(pipeline);
+        TargetModelResolver.ResolvedTarget resolved = targetModelResolver.resolve(pipeline)
+                .orElseGet(() -> new TargetModelResolver.ResolvedTarget(sourceTable(pipeline), null));
         return PipelineDagBuilder.build(
-                pipeline, bindings(sourceIdByTable(pipeline), target, sourceTable), sinkAckBinding(pipeline, pipelineId));
+                pipeline,
+                bindings(sourceIdByTable(pipeline), resolved.target(), resolved.sourceTable()),
+                sinkAckBinding(pipeline, pipelineId));
     }
 
     private String sourceTable(PipelineResource pipeline) {
