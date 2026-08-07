@@ -382,7 +382,11 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
                 + (pathId.isEmpty() ? ROOT_NAMESPACE : render(pathId));
     }
 
-    private static String render(List<String> pathId) {
+    /**
+     * How a path is written wherever one is shown or named. Shared rather than rewritten per caller: a
+     * vertex named one way and reported another reads as two different levels to whoever is looking.
+     */
+    static String render(List<String> pathId) {
         return pathId.isEmpty() ? ROOT_NAMESPACE : String.join(PATH_SEPARATOR, pathId);
     }
 

@@ -26,7 +26,8 @@ public record NestBinding(
         NestStores stores,
         NestDeadLetter deadLetter,
         ReplayFloorFactory replayFloor,
-        NestStateLedger ledger) implements Serializable {
+        NestStateLedger ledger,
+        NestSettings settings) implements Serializable {
 
     /**
      * A binding with nothing to read a durable resume position through, for a job assembled without one.
@@ -45,6 +46,22 @@ public record NestBinding(
     public NestBinding(Function<String, NestTable> tables, NestStores stores, NestDeadLetter deadLetter,
             ReplayFloorFactory replayFloor) {
         this(tables, stores, deadLetter, replayFloor, NestStateLedger.NONE);
+    }
+
+    /** A binding whose levels are held to {@code settings} and which reads back no resume position. */
+    public NestBinding(Function<String, NestTable> tables, NestStores stores, NestDeadLetter deadLetter,
+            NestSettings settings) {
+        this(tables, stores, deadLetter, ReplayFloorFactory.NONE, NestStateLedger.NONE, settings);
+    }
+
+    /**
+     * A binding on the default limits, which is every level held to the same number. Right where the
+     * capacity of one level against another has not been thought about yet, and wrong as soon as it has:
+     * levels of one tree differ in what they hold by orders of magnitude.
+     */
+    public NestBinding(Function<String, NestTable> tables, NestStores stores, NestDeadLetter deadLetter,
+            ReplayFloorFactory replayFloor, NestStateLedger ledger) {
+        this(tables, stores, deadLetter, replayFloor, ledger, NestSettings.defaults());
     }
 
     /** Where each kind of nest vertex keeps its state. */

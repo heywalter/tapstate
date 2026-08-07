@@ -116,6 +116,11 @@ class DrainFoldingCapTest {
             entries.remove(key);
         }
 
+        @Override
+        public long count() {
+            return entries.size();
+        }
+
         /** The most keys read in a row without one being written back. */
         private int longestRunOfLoads() {
             int longest = 0;

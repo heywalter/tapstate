@@ -96,6 +96,23 @@ final class MapNestStore<S> implements NestStore<S> {
     }
 
     /**
+     * Asked of the map rather than remembered, and asked of its own local reckoning rather than of the
+     * cluster: the local number is a field read where the cluster-wide one is an operation, and on a member
+     * holding all of a pipeline's partitions the two are the same number anyway.
+     *
+     * <p><b>It counts what is resident, which is every key there is only while nothing is evicted.</b> That
+     * is how these maps are configured and so it is exact as they stand. A namespace switched over to
+     * evicting - trading speed for capacity - stops being counted completely by this: entries that have
+     * gone to the layer behind the map are not resident and are not in the number, so what comes back is
+     * how much is being held rather than how much exists. Anything reading this as a total has to know that
+     * about the namespace it is reading it for.
+     */
+    @Override
+    public long count() {
+        return map.getLocalMapStats().getOwnedEntryCount();
+    }
+
+    /**
      * Counts one reach for the state, whichever kind it is. A write counts as much as a read because a
      * write can miss as thoroughly: a state carried to a key that is not in memory sends the substrate to
      * the layer behind first, exactly as a read does. Measured, a key touched for the first time costs two

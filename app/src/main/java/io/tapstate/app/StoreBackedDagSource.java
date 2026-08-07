@@ -20,6 +20,7 @@ import io.tapstate.runtime.engine.FrontierOrders;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
 import io.tapstate.runtime.engine.SinkAckFactory;
 import io.tapstate.runtime.engine.nest.NestBinding;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.runtime.srs.SrsReadCursorPublisherFactory;
 import io.tapstate.runtime.srs.SrsSourceProcessor;
@@ -65,15 +66,26 @@ final class StoreBackedDagSource implements DagSource {
     private final StorePort storePort;
     private final SinkWriterBinder sinkWriterBinder;
     private final TargetModelResolver targetModelResolver;
+    private final NestSettings nestSettings;
 
     StoreBackedDagSource(StorePort storePort) {
         this(storePort, PdkSinkWriterFactory::new);
     }
 
+    /** A source whose nests are held to what {@code nestSettings} allows, and the member configured from. */
+    StoreBackedDagSource(StorePort storePort, NestSettings nestSettings) {
+        this(storePort, PdkSinkWriterFactory::new, nestSettings);
+    }
+
     StoreBackedDagSource(StorePort storePort, SinkWriterBinder sinkWriterBinder) {
+        this(storePort, sinkWriterBinder, NestSettings.defaults());
+    }
+
+    StoreBackedDagSource(StorePort storePort, SinkWriterBinder sinkWriterBinder, NestSettings nestSettings) {
         this.storePort = Objects.requireNonNull(storePort, "storePort");
         this.sinkWriterBinder = Objects.requireNonNull(sinkWriterBinder, "sinkWriterBinder");
         this.targetModelResolver = new TargetModelResolver(this.storePort);
+        this.nestSettings = Objects.requireNonNull(nestSettings, "nestSettings");
     }
 
     @Override
@@ -214,7 +226,7 @@ final class StoreBackedDagSource implements DagSource {
         Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
         return new NestBinding(byAlias::get, NestBinding.onMap(), new CountingNestDeadLetter(),
                 new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()),
-                new StoreBackedNestStateLedger(storePort.keyedState()));
+                new StoreBackedNestStateLedger(storePort.keyedState()), nestSettings);
     }
 
     /**

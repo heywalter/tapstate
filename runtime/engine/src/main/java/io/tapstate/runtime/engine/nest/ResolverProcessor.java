@@ -3,6 +3,7 @@ package io.tapstate.runtime.engine.nest;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
 import com.hazelcast.jet.core.Watermark;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.SourceOrder;
@@ -50,6 +51,9 @@ public final class ResolverProcessor extends AbstractProcessor {
     private final LevelBounds bounds;
     private final ReplayFloor floor;
 
+    /** How many keys this level may hold. Read once: it is chosen where the job is built, not here. */
+    private final long keyLimit;
+
     /**
      * Keys whose mapping is a tombstone and whose record is still kept, against what that deletion
      * covered. A tombstone occupies a key just as a live mapping does, so it is counted by whatever caps
@@ -78,14 +82,28 @@ public final class ResolverProcessor extends AbstractProcessor {
         this(vertex, store, deadLetter, axes, chainsByOrdinal, ReplayFloor.NONE);
     }
 
+    /** A resolver held to what {@code settings} allows its level to hold, and to nothing else. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            NestSettings settings) {
+        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE, settings);
+    }
+
     /** The whole of it: a frontier passed on, and tombstones forgotten once it is safe to. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor) {
+        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, NestSettings.defaults());
+    }
+
+    /** The whole of it, held to what its level is allowed to hold. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
+            NestSettings settings) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.store = Objects.requireNonNull(store, "store");
         this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         this.floor = Objects.requireNonNull(floor, "floor");
+        this.keyLimit = Objects.requireNonNull(settings, "settings").keysAllowedIn(vertex.mapName());
         if (vertex.isAssembler()) {
             throw new IllegalArgumentException("the assembler is not a resolver: " + vertex.name());
         }
@@ -177,6 +195,26 @@ public final class ResolverProcessor extends AbstractProcessor {
                 held.holding(key, state.lowestHeldByChain());
             }
         });
+        refuseToHoldMoreKeysThanAllowed();
+    }
+
+    /**
+     * Stops the job once this level holds more keys than it is allowed to. Nothing about the shape of a
+     * tree bounds how many keys a level has - it is one per row of the source - so without this the level
+     * grows until the memory holding it is gone, and running out of memory can say neither which level did
+     * it nor how much it was holding, which are the two things needed to do anything about it.
+     *
+     * <p>Checked once the batch has been written back rather than as each event goes by: what is held is a
+     * property of the state, and the state is only what it will be once the writes are in. Reached here
+     * rather than at some later sweep because this is the moment the number can have gone up.
+     */
+    private void refuseToHoldMoreKeysThanAllowed() {
+        long keys = store.count();
+        if (keys > keyLimit) {
+            throw new TapstateException(NestError.RESOLVER_KEY_LIMIT_EXCEEDED,
+                    Map.of("embedPath", NestTopology.render(vertex.pathId()),
+                            "keys", keys, "limit", keyLimit), null);
+        }
     }
 
     /**

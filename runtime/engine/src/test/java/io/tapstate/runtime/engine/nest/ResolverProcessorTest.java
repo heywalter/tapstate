@@ -125,7 +125,7 @@ class ResolverProcessorTest {
         assertThat(out).hasSize(1);
         assertThat(out.get(0).key()).isEqualTo(List.of("C1"));
         assertThat(out.get(0).element().ref().elementKey()).containsExactly("CL1");
-        assertThat(store.size()).isEqualTo(1);
+        assertThat(store.count()).isEqualTo(1);
     }
 
     @Test
@@ -195,6 +195,11 @@ class ResolverProcessorTest {
         @Override
         public void remove(Object key) {
             entries.remove(key);
+        }
+
+        @Override
+        public long count() {
+            return entries.size();
         }
     }
 

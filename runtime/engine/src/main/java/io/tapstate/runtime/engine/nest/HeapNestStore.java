@@ -30,8 +30,8 @@ public final class HeapNestStore<S> implements NestStore<S> {
         entries.remove(key);
     }
 
-    /** How many keys are held, for a caller sizing the heap this is costing. */
-    public int size() {
+    @Override
+    public long count() {
         return entries.size();
     }
 }

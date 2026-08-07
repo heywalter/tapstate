@@ -38,8 +38,13 @@ import io.tapstate.spi.store.KeyedStateStore;
  * <p><b>No index may be defined on these maps.</b> An index turns what a carried write is handed back
  * into a clone of the state, which puts the copy back with nothing to show for it and nothing reporting
  * it. Nothing defines one today; the ban is what keeps that true.
+ *
+ * <p>Reached only through the settings, never directly. What a map is configured to hold and what a level
+ * is allowed to hold are two halves of one capacity decision, and they only mean anything against each
+ * other; a second way in here is how they come to be set from two places that cannot see each other's
+ * number. Anything a deployment configures about a nest is added to the settings, not to this.
  */
-public final class NestMaps {
+final class NestMaps {
 
     /**
      * The prefix every nest state map name begins with. It is shared with the naming so that the pattern
@@ -66,7 +71,7 @@ public final class NestMaps {
      * "which keys do you have" question with none, so there is no keyspace to preload and a restart pays
      * only for the keys it is actually asked about.
      */
-    public static MapConfig stateMaps(KeyedStateStore store) {
+    static MapConfig stateMaps(KeyedStateStore store) {
         return stateMaps().setMapStoreConfig(new MapStoreConfig()
                 .setEnabled(true)
                 .setWriteDelaySeconds(0)
@@ -80,7 +85,7 @@ public final class NestMaps {
      * diverge is configured under its own exact name, which wins over this pattern for that namespace
      * alone.
      */
-    public static MapConfig stateMaps() {
+    static MapConfig stateMaps() {
         return new MapConfig(NAMESPACE_PREFIX + "*")
                 .setBackupCount(0)
                 .setAsyncBackupCount(0)

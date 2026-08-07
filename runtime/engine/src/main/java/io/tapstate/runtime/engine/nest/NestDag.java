@@ -185,7 +185,7 @@ public final class NestDag {
         List<EmbedSlot> slots = topology.slots();
         ChainAxes axes = frontier == null ? null : frontier.axes();
         return ProcessorMetaSupplier.of(new NestVertexSupplier(spec, slots, stores, deadLetter, outputStream,
-                axes, chainsByOrdinal, binding.replayFloor()));
+                axes, chainsByOrdinal, binding.replayFloor(), binding.settings()));
     }
 
     /** Reads the key off the fields a row carries it in. */
@@ -220,12 +220,14 @@ public final class NestDag {
         private final ChainAxes axes;
         private final Map<Integer, List<String>> chainsByOrdinal;
         private final ReplayFloorFactory replayFloor;
+        private final NestSettings settings;
         private transient ReplayFloor floor;
         private transient NestBinding.NestStores bound;
 
         private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
                 NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
-                Map<Integer, List<String>> chainsByOrdinal, ReplayFloorFactory replayFloor) {
+                Map<Integer, List<String>> chainsByOrdinal, ReplayFloorFactory replayFloor,
+                NestSettings settings) {
             this.spec = spec;
             this.slots = slots;
             this.stores = stores;
@@ -234,6 +236,7 @@ public final class NestDag {
             this.axes = axes;
             this.chainsByOrdinal = chainsByOrdinal;
             this.replayFloor = replayFloor;
+            this.settings = settings;
         }
 
         @Override
@@ -252,7 +255,7 @@ public final class NestDag {
                         ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
                                 axes, chainsByOrdinal, floor)
                         : new ResolverProcessor(spec, bound.forResolver(spec), deadLetter, axes,
-                                chainsByOrdinal, floor));
+                                chainsByOrdinal, floor, settings));
             }
             return processors;
         }

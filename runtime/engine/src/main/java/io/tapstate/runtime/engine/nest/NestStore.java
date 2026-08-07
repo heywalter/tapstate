@@ -20,4 +20,16 @@ public interface NestStore<S> extends Serializable {
 
     /** Removes the entry under {@code key} entirely, if there is one. */
     void remove(Object key);
+
+    /**
+     * How many keys this vertex holds. It is asked of the state itself every time rather than counted up as
+     * entries are written, because state outlives the run that wrote it: a tally started with the process
+     * would report an almost empty vertex on the way back from a restart, and report it least accurately in
+     * exactly the case a count is wanted for, which is a vertex that has grown too wide to carry.
+     *
+     * <p>Not a listing, and must not become one. A number is a number wherever it is kept; enumerating the
+     * keys to arrive at it would read the whole keyspace, which is the one thing this layer exists to
+     * avoid. An implementation that cannot answer without listing must not implement this by listing.
+     */
+    long count();
 }

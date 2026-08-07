@@ -26,7 +26,7 @@ import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.nest.NestBinding;
-import io.tapstate.runtime.engine.nest.NestMaps;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.WriteResult;
@@ -88,7 +88,7 @@ class ARunningNestReportsWhatItsStateCostsTest {
         join.getTcpIpConfig().setEnabled(false);
         join.getAutoDetectionConfig().setEnabled(false);
         config.getNetworkConfig().getInterfaces().setEnabled(true).addInterface("127.0.0.1");
-        config.addMapConfig(NestMaps.stateMaps(new MapBackedStore()));
+        config.addMapConfig(NestSettings.defaults().stateMaps(new MapBackedStore()));
         member = Hazelcast.newHazelcastInstance(config);
     }
 

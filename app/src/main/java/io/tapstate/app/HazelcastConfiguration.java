@@ -10,7 +10,7 @@ import com.hazelcast.core.HazelcastException;
 import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
 import io.tapstate.core.common.TapstateException;
-import io.tapstate.runtime.engine.nest.NestMaps;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsItem;
@@ -52,8 +52,8 @@ class HazelcastConfiguration {
     @Bean(destroyMethod = "shutdown")
     HazelcastInstance hazelcastMember(HazelcastProperties properties, @Nullable SrsMetaStore srsMetaStore,
             @Nullable ConnectorProvisioner connectorProvisioner, @Nullable SnapshotBuffer snapshotBuffer,
-            @Nullable KeyedStateStore nestStateStore) {
-        Config config = memberConfig(properties, nestStateStore);
+            @Nullable KeyedStateStore nestStateStore, NestSettings nestSettings) {
+        Config config = memberConfig(properties, nestStateStore, nestSettings);
         HazelcastInstance member = startMember(() -> Hazelcast.newHazelcastInstance(config));
         // Bind the SRS meta store onto the member so the read-cursor publisher factory -- carried onto the
         // Jet source and resolved member-side -- can reach it through the user context and publish durable
@@ -94,9 +94,25 @@ class HazelcastConfiguration {
         }
     }
 
+    /**
+     * What every nest in this process is allowed to be, as one value rather than as one per place that
+     * asks. The shape of the state maps and the limits the running vertices are held to are two halves of
+     * the same capacity decision - taken from two instances they can be set into a combination that cannot
+     * work, with neither able to see the other's number - so both are taken from this bean.
+     */
+    @Bean
+    NestSettings nestSettings() {
+        return NestSettings.defaults();
+    }
+
     /** Builds the single-member config with nothing behind the nest state maps. */
     static Config memberConfig(HazelcastProperties properties) {
         return memberConfig(properties, null);
+    }
+
+    /** Builds the single-member config with the default limits, for a caller configuring none. */
+    static Config memberConfig(HazelcastProperties properties, @Nullable KeyedStateStore nestStateStore) {
+        return memberConfig(properties, nestStateStore, NestSettings.defaults());
     }
 
     /**
@@ -104,7 +120,8 @@ class HazelcastConfiguration {
      * ({@code nestStateStore} null) still gets the nest state maps, holding only what the member holds:
      * declaring a store that is not there would fail the map the first time a vertex asked it for a key.
      */
-    static Config memberConfig(HazelcastProperties properties, @Nullable KeyedStateStore nestStateStore) {
+    static Config memberConfig(HazelcastProperties properties, @Nullable KeyedStateStore nestStateStore,
+            NestSettings nestSettings) {
         Config config = new Config();
         config.setClusterName(properties.getClusterName());
         // Member logs flow through the same operational logging setup as the rest of the process.
@@ -145,8 +162,8 @@ class HazelcastConfiguration {
         // exists. The engine owns their shape -- the assembly root only installs it here, next to the ring
         // it does the same for.
         config.addMapConfig(nestStateStore == null
-                ? NestMaps.stateMaps()
-                : NestMaps.stateMaps(nestStateStore));
+                ? nestSettings.stateMaps()
+                : nestSettings.stateMaps(nestStateStore));
         return config;
     }
 }

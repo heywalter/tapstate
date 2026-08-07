@@ -242,5 +242,10 @@ class NestStateSitsOnThePartitionItsEventsArriveOnTest {
             touched.add(key);
             delegate.remove(key);
         }
+
+        @Override
+        public long count() {
+            return delegate.count();
+        }
     }
 }

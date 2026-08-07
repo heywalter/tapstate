@@ -10,7 +10,7 @@ import com.hazelcast.config.MapStoreConfig;
 import com.hazelcast.config.RingbufferConfig;
 import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
-import io.tapstate.runtime.engine.nest.NestMaps;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsItem;
@@ -134,7 +134,7 @@ class HazelcastMemberTest {
         // half-built document instead of failing. The wildcard applies to every map the nest naming lands
         // under, so the engine owns its shape and the assembly root only installs it.
         Config config = HazelcastConfiguration.memberConfig(new HazelcastProperties());
-        MapConfig state = config.getMapConfigs().get(NestMaps.stateMaps().getName());
+        MapConfig state = config.getMapConfigs().get(NestSettings.defaults().stateMaps().getName());
         assertThat(state).isNotNull();
         assertThat(state.getBackupCount()).isZero();
         assertThat(state.getTimeToLiveSeconds()).isZero();
@@ -149,7 +149,7 @@ class HazelcastMemberTest {
         // replica of it, so a crash would lose the tail with nothing reporting it.
         Config config = HazelcastConfiguration.memberConfig(
                 new HazelcastProperties(), new InMemoryKeyedStateStore());
-        MapStoreConfig store = config.getMapConfigs().get(NestMaps.stateMaps().getName()).getMapStoreConfig();
+        MapStoreConfig store = config.getMapConfigs().get(NestSettings.defaults().stateMaps().getName()).getMapStoreConfig();
         assertThat(store).isNotNull();
         assertThat(store.isEnabled()).isTrue();
         assertThat(store.getWriteDelaySeconds()).isZero();
@@ -160,7 +160,7 @@ class HazelcastMemberTest {
         // A run with no store -- a substrate check, say -- still gets nest state maps, and they still hold
         // only what the member holds. Configuring a store that is not there would fail the map on first use.
         Config config = HazelcastConfiguration.memberConfig(new HazelcastProperties(), null);
-        MapStoreConfig store = config.getMapConfigs().get(NestMaps.stateMaps().getName()).getMapStoreConfig();
+        MapStoreConfig store = config.getMapConfigs().get(NestSettings.defaults().stateMaps().getName()).getMapStoreConfig();
         assertThat(store == null || !store.isEnabled())
                 .describedAs("no store was supplied, so none is declared")
                 .isTrue();
@@ -170,7 +170,7 @@ class HazelcastMemberTest {
     void hazelcastMemberBindsTheMetaStoreIntoTheUserContext() {
         SrsMetaStore meta = new SentinelMetaStore();
         HazelcastInstance member = new HazelcastConfiguration()
-                .hazelcastMember(new HazelcastProperties(), meta, null, null, null);
+                .hazelcastMember(new HazelcastProperties(), meta, null, null, null, NestSettings.defaults());
         try {
             // The read-cursor publisher factory resolves the store member-side from the user context, so the
             // assembly root binds it under the well-known key -- otherwise cursor publishing silently no-ops.
@@ -183,7 +183,7 @@ class HazelcastMemberTest {
     @Test
     void hazelcastMemberLeavesTheUserContextUnboundWhenNoStoreIsConfigured() {
         HazelcastInstance member = new HazelcastConfiguration()
-                .hazelcastMember(new HazelcastProperties(), null, null, null, null);
+                .hazelcastMember(new HazelcastProperties(), null, null, null, null, NestSettings.defaults());
         try {
             // A run with no store (mongo disabled) binds nothing; the publisher then resolves no store and
             // cursor publishing is a documented no-op rather than a failure.
@@ -199,7 +199,7 @@ class HazelcastMemberTest {
             throw new UnsupportedOperationException("resolution is not exercised by this binding test");
         };
         HazelcastInstance member = new HazelcastConfiguration()
-                .hazelcastMember(new HazelcastProperties(), null, provisioner, null, null);
+                .hazelcastMember(new HazelcastProperties(), null, provisioner, null, null, NestSettings.defaults());
         try {
             // A sink-writer factory carried onto the Jet sink vertex resolves the provisioner member-side from
             // the user context, so the assembly root binds it under the well-known key -- otherwise the member
@@ -214,7 +214,7 @@ class HazelcastMemberTest {
     @Test
     void hazelcastMemberLeavesTheProvisionerUnboundWhenNoneIsConfigured() {
         HazelcastInstance member = new HazelcastConfiguration()
-                .hazelcastMember(new HazelcastProperties(), null, null, null, null);
+                .hazelcastMember(new HazelcastProperties(), null, null, null, null, NestSettings.defaults());
         try {
             // A run with no provisioner (mongo disabled) binds nothing; the member is then not sink-capable and
             // a sink open fails loudly rather than silently dropping writes.
@@ -229,7 +229,7 @@ class HazelcastMemberTest {
     void hazelcastMemberBindsTheSnapshotBufferIntoTheUserContext() {
         SnapshotBuffer buffer = new SnapshotBuffer();
         HazelcastInstance member = new HazelcastConfiguration()
-                .hazelcastMember(new HazelcastProperties(), null, null, buffer, null);
+                .hazelcastMember(new HazelcastProperties(), null, null, buffer, null, NestSettings.defaults());
         try {
             // A source vertex resolves the buffer member-side from the user context to emit its ring's snapshot
             // rows ahead of the cdc tail, so the assembly root binds the same instance under the well-known key.
@@ -242,7 +242,7 @@ class HazelcastMemberTest {
     @Test
     void hazelcastMemberLeavesTheSnapshotBufferUnboundWhenNoneIsConfigured() {
         HazelcastInstance member = new HazelcastConfiguration()
-                .hazelcastMember(new HazelcastProperties(), null, null, null, null);
+                .hazelcastMember(new HazelcastProperties(), null, null, null, null, NestSettings.defaults());
         try {
             // A run with no buffer (mongo disabled) binds nothing; a source then emits no snapshot ahead of the
             // tail rather than failing.

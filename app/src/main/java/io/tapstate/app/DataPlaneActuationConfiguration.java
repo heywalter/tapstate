@@ -4,6 +4,7 @@ import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
 import io.tapstate.adapters.pdk.PdkCapturePort;
 import io.tapstate.runtime.engine.Engine;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.scheduler.LifecycleActuator;
 import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
@@ -35,8 +36,8 @@ class DataPlaneActuationConfiguration {
     }
 
     @Bean
-    DagSource dagSource(StorePort storePort) {
-        return new StoreBackedDagSource(storePort);
+    DagSource dagSource(StorePort storePort, NestSettings nestSettings) {
+        return new StoreBackedDagSource(storePort, nestSettings);
     }
 
     @Bean
