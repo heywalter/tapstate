@@ -225,6 +225,11 @@ class NestStateSurvivesWhatTheMemoryDoesNotTest {
             byNamespace.remove(namespace);
         }
 
+        @Override
+        public long count(String namespace) {
+            return byNamespace.getOrDefault(namespace, Map.of()).size();
+        }
+
         List<String> namespaces() {
             return new ArrayList<>(byNamespace.keySet());
         }

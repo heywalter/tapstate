@@ -916,6 +916,11 @@ class StorePortTest {
                 public void dropNamespace(String namespace) {
                     keyedState.keySet().removeIf(id -> id.startsWith(namespace + "/"));
                 }
+
+                @Override
+                public long count(String namespace) {
+                    return keyedState.keySet().stream().filter(id -> id.startsWith(namespace + "/")).count();
+                }
             };
         }
 

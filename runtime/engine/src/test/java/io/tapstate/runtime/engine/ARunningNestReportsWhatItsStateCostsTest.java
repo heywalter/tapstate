@@ -290,6 +290,11 @@ class ARunningNestReportsWhatItsStateCostsTest {
         }
 
         @Override
+        public long count(String namespace) {
+            return COLD.keySet().stream().filter(entry -> entry.startsWith(namespace + " ")).count();
+        }
+
+        @Override
         public void dropNamespace(String namespace) {
             COLD.keySet().removeIf(entry -> entry.startsWith(namespace + " "));
         }

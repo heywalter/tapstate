@@ -98,5 +98,10 @@ class TheColdLayerCountsTheTripsItMakesTest {
         @Override
         public void dropNamespace(String namespace) {
         }
+
+        @Override
+        public long count(String namespace) {
+            return 0L;
+        }
     }
 }

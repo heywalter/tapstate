@@ -10,11 +10,13 @@ import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsCoordinator;
 import io.tapstate.spi.capture.CapturePort;
+import io.tapstate.spi.store.KeyedStateStore;
 import io.tapstate.spi.store.SrsMetaStore;
 import io.tapstate.spi.store.StorePort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.lang.Nullable;
 
 /**
  * Wires the data-plane actuation binding into the assembly root: the Jet {@link Engine} over the embedded
@@ -31,8 +33,8 @@ import org.springframework.context.annotation.Configuration;
 class DataPlaneActuationConfiguration {
 
     @Bean
-    Engine engine(HazelcastInstance hazelcastMember) {
-        return new Engine(hazelcastMember);
+    Engine engine(HazelcastInstance hazelcastMember, @Nullable KeyedStateStore nestStateStore) {
+        return new Engine(hazelcastMember, nestStateStore);
     }
 
     @Bean

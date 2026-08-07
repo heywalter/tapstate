@@ -13,6 +13,7 @@ import com.hazelcast.jet.core.metrics.MetricTags;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.NestStateReading;
 import io.tapstate.runtime.engine.nest.NestStateMetricNames;
+import io.tapstate.spi.store.KeyedStateStore;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
@@ -40,8 +41,20 @@ public final class Engine {
 
     private final HazelcastInstance member;
 
+    /**
+     * The layer behind the nest state maps, asked how much a namespace holds altogether. Absent on a run
+     * that keeps its state in memory alone, where what is in memory is all there is.
+     */
+    private final KeyedStateStore nestState;
+
     public Engine(HazelcastInstance member) {
+        this(member, null);
+    }
+
+    /** An engine that can also say how much of a nest's state is on the layer behind its memory. */
+    public Engine(HazelcastInstance member, KeyedStateStore nestState) {
         this.member = Objects.requireNonNull(member, "member");
+        this.nestState = nestState;
     }
 
     /**
@@ -250,8 +263,19 @@ public final class Engine {
                 kinds.getOrDefault(NestStateMetricNames.ENTRIES, 0L),
                 kinds.getOrDefault(NestStateMetricNames.ACCESSES, 0L),
                 kinds.getOrDefault(NestStateMetricNames.BACKFILLS, 0L),
-                kinds.getOrDefault(NestStateMetricNames.BACKFILL_MILLIS, 0L))));
+                kinds.getOrDefault(NestStateMetricNames.BACKFILL_MILLIS, 0L),
+                stored(namespace))));
         return readings;
+    }
+
+    /**
+     * How much the layer behind the memory holds for {@code namespace}, asked here rather than published
+     * from the run: it is a question about a namespace as a whole, so its cost is what the namespace holds
+     * rather than what an event touched, and asking it as state is written would put that cost on every
+     * write. Here it is paid once per namespace by whoever is reporting.
+     */
+    private OptionalLong stored(String namespace) {
+        return nestState == null ? OptionalLong.empty() : OptionalLong.of(nestState.count(namespace));
     }
 
     /** Whether a measurement belongs to a serve-sink vertex, which the builder names by that prefix. */

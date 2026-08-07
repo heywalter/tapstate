@@ -126,6 +126,64 @@ class MongoKeyedStateStoreIT {
         });
     }
 
+    /**
+     * Counting is the one question about a namespace as a whole that gets asked while a run is going, and
+     * it is answered over a range of the id rather than by matching the namespace half of it. The range is
+     * where this can go wrong without looking wrong: bounds that are too tight count nothing and read as an
+     * empty namespace, bounds that are too loose count the neighbours and read as a namespace that grew.
+     * So a sibling is always present here, holding a different number.
+     */
+    @Test
+    void aNamespaceCountsItsOwnEntriesAndNoneOfItsNeighbours() {
+        withStore(store -> {
+            store.save(NAMESPACE, "[\"C1\"]~s", bytes("one"));
+            store.save(NAMESPACE, "[\"C2\"]~s", bytes("two"));
+            store.save(NAMESPACE, "[\"C3\"]~s", bytes("three"));
+            store.save(SIBLING, "[\"C1\"]~s", bytes("someone else's"));
+
+            assertThat(store.count(NAMESPACE)).isEqualTo(3L);
+            assertThat(store.count(SIBLING))
+                    .describedAs("a range that took in the neighbours would answer both with the total")
+                    .isEqualTo(1L);
+        });
+    }
+
+    @Test
+    void aNamespaceNothingWasEverSavedUnderCountsNone() {
+        withStore(store -> {
+            store.save(SIBLING, "[\"C1\"]~s", bytes("someone else's"));
+
+            assertThat(store.count(NAMESPACE)).isZero();
+        });
+    }
+
+    @Test
+    void whatIsDeletedStopsBeingCounted() {
+        withStore(store -> {
+            store.save(NAMESPACE, "[\"C1\"]~s", bytes("one"));
+            store.save(NAMESPACE, "[\"C2\"]~s", bytes("two"));
+
+            store.delete(NAMESPACE, "[\"C1\"]~s");
+
+            assertThat(store.count(NAMESPACE)).isEqualTo(1L);
+        });
+    }
+
+    /**
+     * A key whose rendering is longer than any other, against bounds that have to hold for every key a
+     * business key can produce rather than for the short ones a test reaches for first.
+     */
+    @Test
+    void aKeyOfAnyShapeIsStillInsideTheRangeItsNamespaceIsCountedOver() {
+        withStore(store -> {
+            store.save(NAMESPACE, "", bytes("empty"));
+            store.save(NAMESPACE, "~", bytes("past the letters"));
+            store.save(NAMESPACE, "{\"looks\": \"like a document\"}", bytes("and is not one"));
+
+            assertThat(store.count(NAMESPACE)).isEqualTo(3L);
+        });
+    }
+
     private static byte[] bytes(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }

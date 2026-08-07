@@ -180,5 +180,10 @@ class ANamespaceHoldsOnlyItsBudgetInMemoryTest {
         public void dropNamespace(String namespace) {
             byNamespace.remove(namespace);
         }
+
+        @Override
+        public long count(String namespace) {
+            return byNamespace.getOrDefault(namespace, Map.of()).size();
+        }
     }
 }

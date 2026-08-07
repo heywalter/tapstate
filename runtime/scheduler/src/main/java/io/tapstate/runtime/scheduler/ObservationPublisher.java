@@ -56,6 +56,14 @@ public final class ObservationPublisher {
     private static final String NEST_BACKFILLS_PREFIX = "nestStateBackfills.";
     private static final String NEST_BACKFILL_MILLIS_PREFIX = "nestStateBackfillMillis.";
 
+    /**
+     * How much the namespace holds altogether, against the entries above which are only what is in memory.
+     * Published where there is a layer behind the memory to ask and left out where there is not: a run
+     * holding its state in memory alone has no second number, and one reported anyway would be the first
+     * number wearing the name of the second.
+     */
+    private static final String NEST_STORED_PREFIX = "nestStateStored.";
+
     private final StateStore state;
     private final ObservationStore observations;
     private final Function<String, OptionalLong> recordCounts;
@@ -191,6 +199,7 @@ public final class ObservationPublisher {
             metrics.put(NEST_ACCESSES_PREFIX + namespace, reading.accesses());
             metrics.put(NEST_BACKFILLS_PREFIX + namespace, reading.backfills());
             metrics.put(NEST_BACKFILL_MILLIS_PREFIX + namespace, reading.backfillMillis());
+            reading.stored().ifPresent(stored -> metrics.put(NEST_STORED_PREFIX + namespace, stored));
         });
         return metrics;
     }

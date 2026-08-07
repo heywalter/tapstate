@@ -129,6 +129,45 @@ class ObservationPublisherTest {
                         entry("nestStateBackfillMillis.nest.orders.doc.$root", 210L));
     }
 
+    /**
+     * What is in memory and how much there is are two numbers, and publishing only the first would say a
+     * namespace holds four thousand when it holds a hundred times that with the rest on the layer behind
+     * it. Once what stays in memory is a budget, the entries reading is what the budget costs rather than
+     * what the pipeline has.
+     */
+    @Test
+    void publishWiresHowMuchANamespaceHoldsAltogetherBesideWhatIsInMemory() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(4_000L, 900L, 30L, 210L, OptionalLong.of(400_000L))));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .contains(entry("nestStateEntries.nest.orders.doc.$root", 4_000L),
+                        entry("nestStateStored.nest.orders.doc.$root", 400_000L));
+    }
+
+    /**
+     * A run keeping its state in memory alone has no second number, and one published anyway would be the
+     * first wearing the name of the second - a namespace reading as though its cold layer held exactly what
+     * memory did, which is the one shape that says nothing is being evicted when nothing can be.
+     */
+    @Test
+    void howMuchANamespaceHoldsAltogetherIsAbsentWhereThereIsNoColdLayerToAsk() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root", new NestStateReading(4_000L, 900L, 30L, 210L)));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .doesNotContainKey("nestStateStored.nest.orders.doc.$root");
+    }
+
     @Test
     void theNestStateReadingsAreAbsentFromTheMetricsWhenNoNamespaceReportsAny() {
         state.seed("orders", PipelineState.RUNNING);

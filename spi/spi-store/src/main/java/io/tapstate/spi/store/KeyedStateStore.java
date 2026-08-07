@@ -41,4 +41,22 @@ public interface KeyedStateStore {
      * lets go of its state, and why nothing needs to be able to list the keys in order to drop them.
      */
     void dropNamespace(String namespace);
+
+    /**
+     * How many entries {@code namespace} holds. The one question about a namespace as a whole that can be
+     * asked, and it is not the one the absence above forbids: what comes back is a number, and nothing
+     * that reads it learns a single key from it.
+     *
+     * <p><b>An implementation must not answer it by listing.</b> Counting through the keys would be the
+     * forbidden read wearing a different name - the whole namespace off the store to produce one number -
+     * and it would be reached on a cadence rather than once, which is worse than the case the rule was
+     * written for. A store that cannot count without listing should say so by refusing rather than by
+     * doing it.
+     *
+     * <p>Asked when someone is looking rather than as state is written: it is the only operation here that
+     * is about a namespace rather than a key, so it is the only one whose cost does not shrink with what
+     * is being handled. Callers on the event path have {@code load} and {@code save}; this is for whoever
+     * is reporting.
+     */
+    long count(String namespace);
 }

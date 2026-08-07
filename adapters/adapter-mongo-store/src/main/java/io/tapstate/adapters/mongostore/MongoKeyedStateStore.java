@@ -5,6 +5,8 @@ import com.mongodb.client.model.ReplaceOptions;
 import io.tapstate.spi.store.KeyedStateStore;
 import org.bson.Document;
 import org.bson.types.Binary;
+import org.bson.types.MaxKey;
+import org.bson.types.MinKey;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -76,6 +78,27 @@ public final class MongoKeyedStateStore implements KeyedStateStore {
     public void dropNamespace(String namespace) {
         Objects.requireNonNull(namespace, "namespace");
         StoreIo.run(() -> collection.deleteMany(new Document("_id." + NAMESPACE, namespace)));
+    }
+
+    /**
+     * Counted over a range of the id rather than by matching its namespace half, which is what lets this
+     * be asked repeatedly where dropping a namespace may not. The id is a document of namespace then key,
+     * and documents compare field by field in the order they are written - so every entry of one namespace
+     * is a contiguous stretch of the id index, and a range with the smallest and largest possible key at
+     * its ends is exactly that stretch. Matching {@code _id.ns} instead reads the same entries as a scan
+     * of the whole collection, because the index is on the id and not on a path inside it.
+     *
+     * <p>Still an index walk rather than a stored total, so it is linear in what the namespace holds. That
+     * is why nothing on the event path asks it.
+     */
+    @Override
+    public long count(String namespace) {
+        Objects.requireNonNull(namespace, "namespace");
+        Document lower = new Document(NAMESPACE, namespace).append(KEY, new MinKey());
+        Document upper = new Document(NAMESPACE, namespace).append(KEY, new MaxKey());
+        Document withinNamespace = new Document("_id",
+                new Document("$gte", lower).append("$lte", upper));
+        return StoreIo.call(() -> collection.countDocuments(withinNamespace));
     }
 
     private static Document byId(String namespace, String key) {
