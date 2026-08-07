@@ -62,33 +62,19 @@ public enum NestError implements TapstateErrorCode {
     SNAPSHOT_PASSTHROUGH_FORBIDDEN("nest.snapshot-passthrough-forbidden", Set.of("rootCollection")),
 
     /**
-     * Starting up: a namespace evicts from its hot tier at or above the limit that fails the job, so the
-     * cold tier it was given would never be reached — the deployment would fail before using its capacity.
-     */
-    CAPACITY_THRESHOLD_ORDER_INVALID(
-            "nest.capacity-threshold-order-invalid", Set.of("namespace", "hotCapacity", "guardLimit")),
-
-    /**
      * Starting up: the tree keeps its state under names it no longer compiles to, because an embed path
      * was renamed or a level inserted. What was stored is left where nothing reads it and the new names
      * answer nothing, so the run would rebuild from empty while reporting that it resumed.
      */
     STATE_PATHS_CHANGED("nest.state-paths-changed", Set.of("stepId", "recorded", "compiled")),
 
-    /** Running: one document has grown past the elements a single document may hold. */
-    ROOT_FANOUT_LIMIT_EXCEEDED("nest.root-fanout-limit-exceeded", Set.of("rootKey", "elements", "limit")),
-
     /**
-     * Running: a nest holds more documents than it may. Distinct from the two limits either side of it -
-     * that one is about a single document having too much in it, and the resolver one about a level having
-     * too many keys - and reached for a different reason: how many documents there are is a question about
-     * what the deployment stores them on rather than about what fits in memory, because a document that is
-     * not in memory still occupies the layer behind it.
+     * Running: one document has grown past the elements a single document may hold. The one limit on what
+     * a level holds that is a limit at all: a document is rendered whole, so however much it has absorbed
+     * has to be in memory at once and no eviction reaches inside one. How many documents there are, and how
+     * many keys a level below holds, are bounded by what stays in memory rather than by a count.
      */
-    ROOT_COUNT_LIMIT_EXCEEDED("nest.root-count-limit-exceeded", Set.of("stepId", "roots", "limit")),
-
-    /** Running: one embed holds more resolver keys than its limit allows. */
-    RESOLVER_KEY_LIMIT_EXCEEDED("nest.resolver-key-limit-exceeded", Set.of("embedPath", "keys", "limit")),
+    ROOT_FANOUT_LIMIT_EXCEEDED("nest.root-fanout-limit-exceeded", Set.of("rootKey", "elements", "limit")),
 
     /** Running: a subtree being moved to another document has parked more than the limit allows. */
     MIGRATION_PARKING_LIMIT_EXCEEDED(

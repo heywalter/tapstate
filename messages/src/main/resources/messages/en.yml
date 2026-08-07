@@ -299,21 +299,12 @@ nest.append-mode-conflicts-with-key-tracking:
 nest.snapshot-passthrough-forbidden:
   message: "A nest writing {rootCollection} cannot pass its snapshot reads straight to the sink."
   solution: "Let the nest assemble snapshot reads like any other change; passing them through writes unassembled rows."
-nest.capacity-threshold-order-invalid:
-  message: "Namespace {namespace} evicts at {hotCapacity} but fails the job at {guardLimit}, so its cold tier is never reached."
-  solution: "Set the eviction threshold strictly below the guard limit, or the deployment fails before using the capacity it was given."
 nest.state-paths-changed:
   message: "Nest {stepId} stored its state under {recorded}, and now compiles to {compiled}."
   solution: "Stop the pipeline and start it again rather than resuming: renaming an embed path or inserting a level leaves the stored state where nothing reads it, and the new paths start empty beside documents that are not."
 nest.root-fanout-limit-exceeded:
   message: "Document {rootKey} holds {elements} elements, past the per-document limit of {limit}."
   solution: "Raise the limit if the data really is this wide, or narrow what the nest embeds."
-nest.root-count-limit-exceeded:
-  message: "Nest {stepId} holds {roots} documents, past its limit of {limit}."
-  solution: "Raise the limit if the storage behind this nest can carry that many documents, or narrow what the pipeline covers. This is a limit on how much is stored rather than on how much is in memory, so more memory does not answer it."
-nest.resolver-key-limit-exceeded:
-  message: "Embed {embedPath} holds {keys} keys, past its limit of {limit}."
-  solution: "Raise that embed's key limit, or turn on eviction for its namespace and trade speed for capacity."
 nest.migration-parking-limit-exceeded:
   message: "Moving a subtree to document {newRootKey} parked {bytes} bytes, past the limit of {limit}."
   solution: "Raise the parking limit, or make the structural change in smaller steps."

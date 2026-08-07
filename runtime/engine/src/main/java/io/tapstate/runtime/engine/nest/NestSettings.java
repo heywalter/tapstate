@@ -18,11 +18,17 @@ import java.util.Objects;
  * set them into a combination that cannot work - with nothing able to say so, because neither place can
  * see the other's number.
  *
- * <p><b>Every limit is per namespace.</b> One tree's levels differ in how many keys they hold by orders of
- * magnitude: a level of policies holds one key per policy, the level of claims beneath it one per claim
- * against any of them. A single number covering both is either too large to catch the narrow level growing
- * without bound or too small for the wide one to run at all, so a limit that applies to everything is a
- * limit that catches nothing. A namespace nobody configured takes the default.
+ * <p><b>How much a level holds is not a number anyone sets.</b> A level holds one key per row of its
+ * source and a nest one document per root of its own, neither of which the tree bounds, and both are
+ * absorbed by the layer behind the memory rather than refused: growing past what is held in memory is what
+ * the store is there for. What a deployment sets is how much stays in memory; what is beyond it is on
+ * disk, and how much of that there may be is a question for the disk.
+ *
+ * <p>The one exception is per document, and is here for a reason the others are not: a document is
+ * rendered whole, so a document that has absorbed more than fits is not something a store behind the map
+ * can help with. That one is per namespace, since one tree's documents differ in width by orders of
+ * magnitude and a single number covering all of them catches nothing. A namespace nobody configured takes
+ * the default.
  *
  * <p>This is carried to the member that runs each vertex, because that is where a limit is enforced while
  * here is where it is chosen. Anything added to it has to survive that trip: a knob that stayed behind
@@ -33,82 +39,33 @@ public final class NestSettings implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * How many keys a level may hold when nothing says otherwise.
-     *
-     * <p>It is a ceiling rather than a sizing: it stands above the widest level anyone has described
-     * wanting - a single document drawing on a few hundred thousand keys of one level is an ordinary
-     * shape, not an abusive one - and it is there so that a level growing without bound is stopped by
-     * something that can say what happened, rather than by the heap running out, which cannot.
-     *
-     * <p>Provisional. The number a deployment should actually run with follows from measuring what one
-     * entry of a level costs it, and until that measurement exists this is the honest placeholder: high
-     * enough not to fail work that was always going to fit, low enough to be reached before nothing is
-     * left to reach it with.
-     */
-    public static final long DEFAULT_KEY_LIMIT = 1_000_000L;
-
-    /**
-     * How many documents one nest may hold when nothing says otherwise.
-     *
-     * <p>A separate number from the one above, and not comparable to it: the keys of a level are held to
-     * bound what is holding them, where the documents of a nest are held to bound what the deployment was
-     * built to store them on. One document can draw on hundreds of thousands of keys of a single level, and
-     * a level can serve one document, so neither number tells you anything about the other.
-     *
-     * <p>Provisional, and more so than the other: the figure a deployment should run with follows from the
-     * storage it has rather than from anything measurable here.
-     */
-    public static final long DEFAULT_ROOT_LIMIT = 10_000_000L;
-
-    /**
      * How many elements one document may hold when nothing says otherwise.
      *
-     * <p>The third number, and per document rather than per namespace - it is the one of the three that is
-     * a bound on memory, because a document is assembled whole and however wide it has grown is what has to
-     * fit at once. Provisional like the others: what a deployment should run with follows from measuring
-     * what one element of its documents costs.
+     * <p>Per document rather than per namespace, and the only count that fails a run rather than being
+     * absorbed by the layer behind it: a document is assembled whole, so however wide it has grown is what
+     * has to be in memory at once, and no eviction reaches inside one.
+     *
+     * <p>Provisional. What a deployment should run with follows from measuring what one element of its
+     * documents costs, and until that measurement exists this is the honest placeholder: high enough not to
+     * fail work that was always going to fit, low enough to be reached before nothing is left to reach it
+     * with.
      */
     public static final long DEFAULT_ELEMENT_LIMIT = 100_000L;
 
-    private final Map<String, Long> keyLimits;
-    private final Map<String, Long> rootLimits;
     private final Map<String, Long> elementLimits;
 
-    private NestSettings(Map<String, Long> keyLimits, Map<String, Long> rootLimits,
-            Map<String, Long> elementLimits) {
-        this.keyLimits = Map.copyOf(keyLimits);
-        this.rootLimits = Map.copyOf(rootLimits);
+    private NestSettings(Map<String, Long> elementLimits) {
         this.elementLimits = Map.copyOf(elementLimits);
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of(), Map.of(), Map.of());
-    }
-
-    /** These settings, with {@code namespace} allowed {@code limit} keys instead of the default. */
-    public NestSettings withKeyLimit(String namespace, long limit) {
-        return new NestSettings(with(keyLimits, namespace, limit, "keys"), rootLimits, elementLimits);
-    }
-
-    /** These settings, with the nest at {@code namespace} allowed {@code limit} documents. */
-    public NestSettings withRootLimit(String namespace, long limit) {
-        return new NestSettings(keyLimits, with(rootLimits, namespace, limit, "documents"), elementLimits);
+        return new NestSettings(Map.of());
     }
 
     /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
     public NestSettings withElementLimit(String namespace, long limit) {
-        return new NestSettings(keyLimits, rootLimits, with(elementLimits, namespace, limit, "elements"));
-    }
-
-    /** How many keys {@code namespace} may hold before the job is failed for holding too many. */
-    public long keysAllowedIn(String namespace) {
-        return keyLimits.getOrDefault(namespace, DEFAULT_KEY_LIMIT);
-    }
-
-    /** How many documents {@code namespace} may hold before the job is failed for holding too many. */
-    public long rootsAllowedIn(String namespace) {
-        return rootLimits.getOrDefault(namespace, DEFAULT_ROOT_LIMIT);
+        return new NestSettings(with(elementLimits, namespace, limit, "elements"));
     }
 
     /** How many elements one document of {@code namespace} may hold before the job is failed. */

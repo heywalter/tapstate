@@ -78,15 +78,12 @@ mcp.server-rejected
 monitor.no-observation
 nest.append-mode-conflicts-with-key-tracking
 nest.array-key-unresolvable
-nest.capacity-threshold-order-invalid
 nest.chain-axis-limit-exceeded
 nest.embed-path-conflict
 nest.key-change-tracking-requires-before-image
 nest.migration-parking-limit-exceeded
 nest.pending-protection-expired
-nest.resolver-key-limit-exceeded
 nest.resolver-vertex-limit-exceeded
-nest.root-count-limit-exceeded
 nest.root-fanout-limit-exceeded
 nest.root-key-required
 nest.sibling-embeds-target-different-parent-keys

@@ -43,20 +43,24 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * A limit is chosen where the job is assembled and enforced on the member running the level it is about,
+ * A limit is chosen where the job is assembled and enforced on the member running the vertex it is about,
  * and between those two points there is a seam that nothing else covers. Every other test of the limit
  * hands it to a vertex directly; this one hands it to the job and asks the job.
  *
- * <p>What fails here if the seam is not connected is nothing at all: the level keeps its default limit,
+ * <p>What fails here if the seam is not connected is nothing at all: the nest keeps the default limit,
  * runs, and assembles correct documents, while the configuration that was meant to bound it reads as set
  * everywhere it is looked at. That is why the assertion is a job that stops rather than a value read back.
  *
- * <p>The level is driven to one key past its limit and no further, so what stops the job can only be
- * having too many keys. The vertex is pinned to a single instance because the state under test is
- * per-instance while it is kept on a heap: split across two instances neither would hold enough, which
- * would be a property of the test's store rather than of the limit.
+ * <p>How wide one document may grow is the one limit left that fails a run. What a level holds and how
+ * many documents there are grow past memory into the layer behind it instead, so neither has a number to
+ * carry here; a document does, because it is rendered whole and nothing behind the map assembles half of
+ * one.
+ *
+ * <p>The document is driven to one element past its limit and no further, so what stops the job can only
+ * be its width. The vertex is pinned to a single instance because the state under test is per-instance
+ * while it is kept on a heap.
  */
-class TheLimitOnALevelReachesTheJobThatEnforcesItTest {
+class TheLimitOnADocumentReachesTheJobThatEnforcesItTest {
 
     /** What the sink was handed. Static because the writer is built on the member. */
     private static final List<Envelope> WRITTEN = Collections.synchronizedList(new ArrayList<>());
@@ -64,7 +68,7 @@ class TheLimitOnALevelReachesTheJobThatEnforcesItTest {
     private static final String PIPELINE = "p";
     private static final String NODE = "customer_doc";
 
-    /** Two policies fit; the third is what the job must stop on. */
+    /** Two policies fit in the document; the third is what the job must stop on. */
     private static final long LIMIT = 2L;
 
     private HazelcastInstance member;
@@ -92,17 +96,17 @@ class TheLimitOnALevelReachesTheJobThatEnforcesItTest {
     }
 
     @Test
-    void aLevelDrivenPastTheLimitItWasGivenStopsTheJobSayingSo() {
+    void aDocumentDrivenPastTheLimitItWasGivenStopsTheJobSayingSo() {
         DAG dag = customersWithPoliciesAndClaims(LIMIT + 1);
 
         assertThatThrownBy(() -> member.getJet().newJob(dag).join())
-                .hasStackTraceContaining("nest.resolver-key-limit-exceeded")
-                .hasStackTraceContaining("keys=" + (LIMIT + 1))
+                .hasStackTraceContaining("nest.root-fanout-limit-exceeded")
+                .hasStackTraceContaining("elements=" + (LIMIT + 1))
                 .hasStackTraceContaining("limit=" + LIMIT);
     }
 
     @Test
-    void aLevelInsideTheLimitItWasGivenRunsToCompletion() {
+    void aDocumentInsideTheLimitItWasGivenRunsToCompletion() {
         DAG dag = customersWithPoliciesAndClaims(LIMIT);
 
         member.getJet().newJob(dag).join();
@@ -153,21 +157,21 @@ class TheLimitOnALevelReachesTheJobThatEnforcesItTest {
                 syncElement -> (SupplierEx<SinkWriter>) CollectingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
                 new NestBinding(tables::get, NestBinding.onHeap(), element -> { },
-                        NestSettings.defaults().withKeyLimit(policiesNamespace(body), LIMIT)));
+                        NestSettings.defaults().withElementLimit(documentNamespace(body), LIMIT)));
 
         DAG dag = PipelineDagBuilder.build(pipeline, bindings);
-        dag.getVertex("nest:" + NODE + ":policies").localParallelism(1);
+        dag.getVertex("nest:" + NODE).localParallelism(1);
         return dag;
     }
 
-    /** The name the compiler gives the policies level, asked of the compiler rather than spelled out. */
-    private static String policiesNamespace(TransformBody.Nest body) {
+    /** The name the compiler gives the document level, asked of the compiler rather than spelled out. */
+    private static String documentNamespace(TransformBody.Nest body) {
         Map<String, NestTable> tables = new LinkedHashMap<>();
         tables.put("customer", new NestTable("customers", List.of("customer_id")));
         tables.put("policy", new NestTable("policies", List.of("policy_id")));
         tables.put("claim", new NestTable("claims", List.of("claim_id")));
         return NestTopology.compile(PIPELINE, NODE, body, tables::get)
-                .vertexAt(List.of("policies"))
+                .assembler()
                 .mapName();
     }
 

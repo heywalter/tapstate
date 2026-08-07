@@ -77,7 +77,7 @@ final class MapNestStore<S> implements NestStore<S> {
         }
         String namespace = map.getName();
         NestStateStats.Counted counted = stats.counted(namespace);
-        gauge.reading(namespace, map.getLocalMapStats().getOwnedEntryCount(),
+        gauge.reading(namespace, count(),
                 counted.accesses(), counted.backfills(), counted.backfillNanos() / 1_000_000L);
     }
 

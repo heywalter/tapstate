@@ -46,10 +46,10 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final LevelBounds bounds;
     private final ReplayFloor floor;
 
-    /** How many documents this nest may hold. Read once: it is chosen where the job is built, not here. */
-    private final long rootLimit;
-
-    /** How many elements any one of those documents may hold. Read once, for the same reason. */
+    /**
+     * How many elements any one document may hold. Read once: it is chosen where the job is built, not
+     * here.
+     */
     private final long elementLimit;
 
     /**
@@ -104,8 +104,8 @@ public final class AssemblerProcessor extends AbstractProcessor {
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         this.floor = Objects.requireNonNull(floor, "floor");
-        this.rootLimit = Objects.requireNonNull(settings, "settings").rootsAllowedIn(vertex.mapName());
-        this.elementLimit = settings.elementsAllowedIn(vertex.mapName());
+        this.elementLimit =
+                Objects.requireNonNull(settings, "settings").elementsAllowedIn(vertex.mapName());
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -299,7 +299,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 held.holding(key, document.assembly.lowestHeldByChain());
             }
         });
-        refuseToHoldMoreDocumentsThanAllowed();
     }
 
     /**
@@ -316,24 +315,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
             throw new TapstateException(NestError.ROOT_FANOUT_LIMIT_EXCEEDED,
                     Map.of("rootKey", String.valueOf(keyRow(key)), "elements", elements,
                             "limit", elementLimit), null);
-        }
-    }
-
-    /**
-     * Stops the job once this nest holds more documents than it is allowed to. How many there are is how
-     * many roots the source has, which nothing about the tree bounds, and the cost of one is paid on
-     * whatever stores it whether or not it is in memory - so this is a limit on the deployment's storage
-     * rather than on its heap, and having room in memory does not answer it.
-     *
-     * <p>The count is what is being held rather than a tally of what this run wrote, for the same reason
-     * every level counts that way: documents outlive the run that assembled them, and a nest restarted
-     * onto more of them than it may hold has to say so on the first thing it is asked to do.
-     */
-    private void refuseToHoldMoreDocumentsThanAllowed() {
-        long roots = store.count();
-        if (roots > rootLimit) {
-            throw new TapstateException(NestError.ROOT_COUNT_LIMIT_EXCEEDED,
-                    Map.of("stepId", outputStream, "roots", roots, "limit", rootLimit), null);
         }
     }
 
