@@ -57,13 +57,22 @@ import org.junit.jupiter.api.Test;
  * one drain when data was drained alongside it, and that drain never comes for an edge that has finished -
  * so data in the mix would decide these tests by timing rather than by the property.
  *
- * <p><b>Two different raises carry the same value, and only their place tells them apart.</b> One queue of an
- * edge finishing raises the bound to the lowest of the queues still open, so the low instance finishing while
- * the high one is still open also puts the high promise in front of a receiver - and which of the two senders
- * finishes first is the scheduler's to decide. What separates them is where they sit: an edge that is still
- * being fed hands its bound over before it completes, and the parting raise is worked out as the edge goes
- * away, so it can only ever land after. These cases therefore ask what arrives <i>after the edge completed</i>
- * rather than what value arrived, which is a question the finishing order cannot answer differently.
+ * <p><b>Two different raises can carry the same value, and what tells them apart here is the order the
+ * senders finish in.</b> One queue of an edge finishing raises the bound to the lowest of the queues still
+ * open, so a low instance finishing while the high one is still open would also put the high promise in
+ * front of a receiver. The senders below rule that out: the low instance yields until the high one's DONE is
+ * on its queue, so the high promise is never the lowest of what stays open, and the only rule left that can
+ * produce its value on that edge is the parting raise. These cases therefore ask <i>whether that value ever
+ * arrived</i>, which the finishing order cannot answer differently.
+ *
+ * <p><b>Where it sits in a receiver's log does not tell them apart, though it reads as though it would.</b>
+ * The parting raise is worked out as the edge is retired, which sounds like it can only land after that edge
+ * completed, and measured across twenty receiver instances it landed after in nineteen of them. It is not a
+ * property: one instance in twenty had it land first. A case asking what arrived <i>after the edge
+ * completed</i> is therefore decided by the scheduler rather than by the behaviour, and asking it of every
+ * instance at once only lowers the odds of noticing. Reading the engine's sources concludes that the
+ * reversal cannot happen at all - the second time here that such a reading has been contradicted by printing
+ * what actually arrived.
  *
  * <p>This is engine behaviour rather than ours, and an upgrade could change it without a compile error.
  */
@@ -89,6 +98,9 @@ class JetFinishedQueuesRaiseTheBoundTest {
     /** Per sender vertex, whether its high instance has put its DONE on the queue. */
     private static final Map<String, AtomicBoolean> HIGH_IS_DONE = new ConcurrentHashMap<>();
 
+    /** Per sender vertex, the instances that finished, in the order they did. */
+    private static final Map<String, List<Integer>> FINISHED = new ConcurrentHashMap<>();
+
     /** The thread the flag above was set on, which is what decides whether waiting for it is bounded. */
     private static final AtomicReference<String> DONE_WAS_FLAGGED_ON = new AtomicReference<>();
 
@@ -100,6 +112,7 @@ class JetFinishedQueuesRaiseTheBoundTest {
         SEEN.clear();
         // A flag left set by an earlier case would let a low instance finish first after all.
         HIGH_IS_DONE.clear();
+        FINISHED.clear();
         DONE_WAS_FLAGGED_ON.set(null);
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(4);
@@ -143,7 +156,7 @@ class JetFinishedQueuesRaiseTheBoundTest {
     void everyQueueOfAnEdgeFinishingRaisesTheBoundToTheHighestAnyOfThemPromised() {
         runTwoEdges();
 
-        await(() -> boundsAfterEdgeCompleted(LEFT).contains(edge(LEFT, HIGH)));
+        await(() -> boundsSeen().contains(edge(LEFT, HIGH)));
 
         assertThat(DONE_WAS_FLAGGED_ON.get())
                 .describedAs("the low instance spins on this flag from a cooperative thread, so how long it "
@@ -152,18 +165,25 @@ class JetFinishedQueuesRaiseTheBoundTest {
                         + "the wait then lasts as long as that pool is busy - a question about the machine "
                         + "rather than about this property")
                 .contains("cooperative");
+        assertThat(highFinishedFirstOn("left"))
+                .describedAs("the gate is what makes the value below mean one thing: the low instance is "
+                        + "held until the high one's DONE is queued, so the high promise is never the lowest "
+                        + "of what stays open and the bound one queue finishing leaves behind can only ever "
+                        + "be the low one. Without the gate the same value reaches a receiver by that other "
+                        + "route and the case below stops being about the parting raise")
+                .isTrue();
         assertThat(boundsSeen())
                 .describedAs("the low promise is what the bound stood at while both queues were open, so "
                         + "the raise below is a rise rather than the only value ever sent; and the edge did "
-                        + "complete, without which the raise below would be missing for want of an after to "
-                        + "land in rather than for never having been made")
+                        + "complete, without which the raise below would be missing for never having been "
+                        + "made rather than for not being handed over")
                 .contains(edge(LEFT, LOW), edgeCompleted(LEFT));
-        assertThat(boundsAfterEdgeCompleted(LEFT))
+        assertThat(boundsSeen())
                 .describedAs("with every queue of the edge finished the bound became the highest any of "
                         + "them ever promised - a maximum across instances, which is what would carry a "
-                        + "frontier over a change an instance finished while still holding. Taken after "
-                        + "the edge completed, so it is that parting raise and not the bound one queue "
-                        + "finishing leaves behind, which carries the same value")
+                        + "frontier over a change an instance finished while still holding. That the value "
+                        + "arrived at all is the question, the gate above having left the parting raise as "
+                        + "the only rule on this edge that produces it")
                 .contains(edge(LEFT, HIGH));
     }
 
@@ -175,17 +195,24 @@ class JetFinishedQueuesRaiseTheBoundTest {
         // way. Waiting for the job to have finished is what makes the absence below a decision.
         await(() -> job.getFuture().isDone());
 
+        assertThat(highFinishedFirstOn("senders"))
+                .describedAs("the same gate as the case above, and it is what leaves the absence below with "
+                        + "one meaning: had the low instance finished first, the high promise would reach a "
+                        + "receiver as the bound the still-open queue leaves behind, and the absence would "
+                        + "be failing for a raise this case is not about")
+                .isTrue();
         assertThat(boundsSeen())
                 .describedAs("the low promise never arrived either, so the absence below would be about "
                         + "the job never having run; and the edge did complete, without which there is no "
-                        + "after for the absence below to be about")
+                        + "raise for the absence below to be about")
                 .contains(global(LOW), edge(LEFT, LOW), edgeCompleted(LEFT));
-        assertThat(boundsAfterEdgeCompleted(LEFT))
+        assertThat(boundsSeen())
                 .describedAs("the raise worked out as the last edge finished was handed to the processor, "
-                        + "where a sink is put straight into completing instead and never sees it. Asked "
-                        + "as what came after the edge completed, because the high promise also reaches a "
-                        + "receiver when the low queue finishes first - that one arrives before")
-                .isEmpty();
+                        + "where a sink is put straight into completing instead and never sees it. Asked as "
+                        + "whether the value reached a receiver at all - asking instead what came after the "
+                        + "edge completed passes on any run where a receiver was handed it first, which is "
+                        + "the same run the case is meant to catch")
+                .doesNotContain(edge(LEFT, HIGH));
     }
 
     // ---- the job under test ------------------------------------------------------------
@@ -231,6 +258,8 @@ class JetFinishedQueuesRaiseTheBoundTest {
 
         private final boolean lowFinishes;
         private boolean high;
+        private int instance;
+        private String vertex;
         private boolean promised;
         private AtomicBoolean highIsDone;
 
@@ -240,8 +269,10 @@ class JetFinishedQueuesRaiseTheBoundTest {
 
         @Override
         protected void init(Context context) {
-            high = context.localProcessorIndex() == HIGH_INSTANCE;
-            highIsDone = HIGH_IS_DONE.computeIfAbsent(context.vertexName(), name -> new AtomicBoolean());
+            instance = context.localProcessorIndex();
+            vertex = context.vertexName();
+            high = instance == HIGH_INSTANCE;
+            highIsDone = HIGH_IS_DONE.computeIfAbsent(vertex, name -> new AtomicBoolean());
         }
 
         @Override
@@ -275,6 +306,10 @@ class JetFinishedQueuesRaiseTheBoundTest {
 
         @Override
         public void close() {
+            // Recorded before the flag is raised, so the instance the low one is waiting on is already in
+            // the list by the time the low one can get here.
+            FINISHED.computeIfAbsent(vertex, name -> Collections.synchronizedList(new ArrayList<>()))
+                    .add(instance);
             if (high) {
                 DONE_WAS_FLAGGED_ON.set(Thread.currentThread().getName());
                 highIsDone.set(true);
@@ -334,23 +369,19 @@ class JetFinishedQueuesRaiseTheBoundTest {
     }
 
     /**
-     * Everything a receiver was handed after the given edge completed. A bound produced by one queue of an
-     * edge finishing is handed over while that edge is still being fed, so it cannot appear here; the bound
-     * an edge works out as its last queue goes can appear nowhere else.
+     * Whether the instance holding the high promise was the first of that vertex to finish. The low instance
+     * yields until the high one's DONE is queued, so this holds by construction - asserting it is what keeps
+     * a case reading the high promise's value from silently becoming a case about the bound a still-open
+     * queue leaves behind, which carries that same value.
      */
-    private static List<String> boundsAfterEdgeCompleted(int ordinal) {
-        List<String> after = new ArrayList<>();
-        SEEN.values().forEach(log -> {
-            List<String> handed;
-            synchronized (log) {
-                handed = List.copyOf(log);
-            }
-            int completed = handed.indexOf(edgeCompleted(ordinal));
-            if (completed >= 0) {
-                after.addAll(handed.subList(completed + 1, handed.size()));
-            }
-        });
-        return after.stream().distinct().sorted().toList();
+    private static boolean highFinishedFirstOn(String vertex) {
+        List<Integer> finished = FINISHED.get(vertex);
+        if (finished == null) {
+            return false;
+        }
+        synchronized (finished) {
+            return !finished.isEmpty() && finished.get(0) == HIGH_INSTANCE;
+        }
     }
 
     private static List<String> boundsSeen() {
