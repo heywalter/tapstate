@@ -14,6 +14,7 @@ import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.nest.NestDag;
 import io.tapstate.runtime.engine.nest.NestFrontier;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestStateLedger;
 import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.runtime.engine.nest.NestTopology;
@@ -69,6 +70,47 @@ public final class PipelineDagBuilder {
             }
         }
         return namespaces;
+    }
+
+    /**
+     * What this pipeline's nests are held to: {@code base} - the numbers the deployment was started with -
+     * with whatever its author wrote on the nest steps themselves laid over it.
+     *
+     * <p>The two knobs are laid on differently because they bound different things, and reading them the
+     * same way is the mistake available here. A per-document limit is filed under the namespace of the
+     * nest that wrote it, so two nests in one pipeline keep two limits; the memory budget is one number
+     * for the pipeline, because what it bounds is memory all of its levels share. Two steps naming
+     * different budgets is refused before this, where the author can be told which two numbers disagree.
+     *
+     * <p>A pipeline that wrote neither is answered with {@code base} itself. Rebuilding an identical copy
+     * would be harmless and is avoided anyway: identity is the cheapest way for a caller to see that an
+     * artifact authored before these fields existed changed nothing about how it runs.
+     */
+    public static NestSettings nestSettings(PipelineResource pipeline, Function<String, NestTable> tables,
+            NestSettings base) {
+        if (pipeline.transforms() == null) {
+            return base;
+        }
+        NestSettings settings = base;
+        for (Step step : pipeline.transforms()) {
+            TransformBody.Nest nest = nestOf(step);
+            if (nest == null) {
+                continue;
+            }
+            if (nest.entriesInMemory() != null) {
+                settings = settings.withEntriesHeldInMemory(nest.entriesInMemory());
+            }
+            if (nest.maxElementsPerDocument() != null) {
+                // The document level of this nest and no other. The name comes from the compiler rather
+                // than from anything spelled out here, for the same reason the namespaces do: two places
+                // deriving it would eventually derive it differently, and the limit would then be filed
+                // under a namespace no vertex ever asks about - unenforced, and reported as configured.
+                String documents = NestTopology.compile(pipeline.id(), step.id(), nest, tables)
+                        .assembler().mapName();
+                settings = settings.withElementLimit(documents, nest.maxElementsPerDocument());
+            }
+        }
+        return settings;
     }
 
     /**

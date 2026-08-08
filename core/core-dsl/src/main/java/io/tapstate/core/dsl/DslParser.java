@@ -276,7 +276,8 @@ public final class DslParser {
             case "map" -> Set.of("fields");
             case "filter" -> Set.of("expr");
             case "union" -> Set.of();
-            case "nest" -> Set.of("primary_key", "order", "root");
+            case "nest" -> Set.of(
+                    "primary_key", "order", "entries_in_memory", "max_elements_per_document", "root");
             case "join" -> Set.of("engine", "sql");
             default -> Set.of();
         };
@@ -295,6 +296,8 @@ public final class DslParser {
             case "nest" -> new TransformBody.Nest(
                     s.string("primary_key"),
                     enumByYaml(NestOrder.values(), NestOrder::yaml, s, "order"),
+                    positiveIntValue(s, "entries_in_memory"),
+                    positiveIntValue(s, "max_elements_per_document"),
                     nestRoot(s.mapping("root")));
             case "join" -> new TransformBody.Join(s.string("engine"), s.string("sql"));
             default -> throw YamlMap.error(DslError.ILLEGAL_VALUE, "type", s.node("type"),
@@ -716,6 +719,20 @@ public final class DslParser {
             throw m.errorAt(key, DslError.ILLEGAL_VALUE, Map.of("value", l, "expected", "a 32-bit integer"));
         }
         return num.intValue();
+    }
+
+    /**
+     * As {@link #intValue}, and refused at zero and below. A capacity of none is not a small capacity:
+     * it admits nothing at all, so it fails every run rather than some, and the author is told where the
+     * number was written rather than where it is later enforced.
+     */
+    private static Integer positiveIntValue(YamlMap m, String key) {
+        Integer value = intValue(m, key);
+        if (value != null && value <= 0) {
+            throw m.errorAt(key, DslError.ILLEGAL_VALUE,
+                    Map.of("value", value, "expected", "a count above zero"));
+        }
+        return value;
     }
 
     private static Boolean boolValue(YamlMap m, String key) {

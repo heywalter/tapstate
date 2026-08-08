@@ -1065,6 +1065,14 @@
           "description": "Ordering applied to nested child records.",
           "$ref": "#/$defs/NestOrder"
         },
+        "entries_in_memory": {
+          "description": "How many entries each of this nest's levels keeps in memory; what is beyond it is kept on the layer behind them and read back as it is asked for. A count of entries, not of bytes. Absent leaves the number the deployment was started with.",
+          "type": "integer"
+        },
+        "max_elements_per_document": {
+          "description": "How many embedded elements one document of this nest may hold before the run is failed. Per document rather than per nest: a document is assembled whole, so no layer behind the memory can absorb one that outgrows it. Absent leaves the number the deployment was started with.",
+          "type": "integer"
+        },
         "root": {
           "description": "The root stream whose documents receive the nested children.",
           "$ref": "#/$defs/NestRoot"

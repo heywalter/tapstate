@@ -226,7 +226,12 @@ final class StoreBackedDagSource implements DagSource {
         Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
         return new NestBinding(byAlias::get, NestBinding.onMap(), new CountingNestDeadLetter(),
                 new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()),
-                new StoreBackedNestStateLedger(storePort.keyedState()), nestSettings);
+                new StoreBackedNestStateLedger(storePort.keyedState()),
+                // What the deployment was started with, with what this pipeline's author wrote over it.
+                // Laid on here rather than held as one value for the process because the shape each
+                // number bounds is the pipeline's, not the process's: one tree is deep and narrow and
+                // the next is shallow and wide, and a single number covers neither.
+                PipelineDagBuilder.nestSettings(pipeline, byAlias::get, nestSettings));
     }
 
     /**

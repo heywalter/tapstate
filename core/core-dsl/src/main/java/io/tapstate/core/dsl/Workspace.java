@@ -41,6 +41,7 @@ public final class Workspace {
         }
         ReferenceClosure.validate(byId.values());
         NestAliasRules.validate(byId.values());
+        NestCapacityRules.validate(byId.values());
         ModeRules.validate(byId.values());
         return new Workspace(byId);
     }

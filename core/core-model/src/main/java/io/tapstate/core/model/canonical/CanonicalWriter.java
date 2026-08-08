@@ -223,6 +223,8 @@ public final class CanonicalWriter {
                 if (n.order() != null) {
                     b.scalar("order", n.order().yaml());
                 }
+                b.scalar("entries_in_memory", n.entriesInMemory());
+                b.scalar("max_elements_per_document", n.maxElementsPerDocument());
                 b.put("root", nestRoot(n.root()));
             }
             case TransformBody.Join j -> {
