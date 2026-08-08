@@ -12,10 +12,8 @@ import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.SourceOrder;
 import io.tapstate.spi.store.KeyedStateStore;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 

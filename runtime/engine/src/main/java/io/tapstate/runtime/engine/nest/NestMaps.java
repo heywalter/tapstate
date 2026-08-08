@@ -6,7 +6,6 @@ import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.MapConfig;
 import com.hazelcast.config.MapStoreConfig;
 import com.hazelcast.config.MaxSizePolicy;
-import io.tapstate.spi.store.KeyedStateStore;
 
 /**
  * What every map holding nest state is configured to be. The maps themselves are created on demand, by
