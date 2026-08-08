@@ -73,8 +73,12 @@ class TheColdLayerCountsTheTripsItMakesTest {
         config.getNetworkConfig().getJoin().getAutoDetectionConfig().setEnabled(false);
         config.getNetworkConfig().getJoin().getMulticastConfig().setEnabled(false);
         NestSettings settings = NestSettings.defaults();
-        config.addMapConfig(store == null ? settings.stateMaps() : settings.stateMaps(store));
-        return Hazelcast.newHazelcastInstance(config);
+        config.addMapConfig(store == null ? settings.stateMaps() : settings.backedStateMaps());
+        HazelcastInstance started = Hazelcast.newHazelcastInstance(config);
+        if (store != null) {
+            NestStateMapStoreFactory.bindTo(started, store);
+        }
+        return started;
     }
 
     /** A cold layer holding nothing, so every read of it is a trip that comes back empty. */

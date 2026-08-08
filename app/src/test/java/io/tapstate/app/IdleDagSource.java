@@ -16,6 +16,12 @@ import java.util.Set;
  * those tests do not want to set up; the store-backed builder is what production runs.
  */
 final class IdleDagSource implements DagSource {
+    /** Keeps no state, so there is nothing for a budget to be applied to. */
+    @Override
+    public NestCapacity capacityOf(String pipelineId) {
+        return NestCapacity.none();
+    }
+
 
     @Override
     public DAG dagFor(String pipelineId) {

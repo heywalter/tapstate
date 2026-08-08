@@ -187,6 +187,12 @@ class EngineLifecycleActuatorTest {
 
     /** Records each topology request into the shared log and returns the idle stand-in topology. */
     private static final class RecordingDagSource implements DagSource {
+    /** Keeps no state, so there is nothing for a budget to be applied to. */
+    @Override
+    public NestCapacity capacityOf(String pipelineId) {
+        return NestCapacity.none();
+    }
+
 
         private final List<String> events;
         private final IdleDagSource idle = new IdleDagSource();

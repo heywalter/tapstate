@@ -66,9 +66,9 @@ final class NestMaps {
     }
 
     /**
-     * The configuration every nest state map takes with a store behind it: read through {@code store}
-     * when a key that is not in memory is asked for, and written through it as a key is handled.
-     * when a key that is not in memory is asked for, and written through it as a key is handled.
+     * The configuration every nest state map takes with a store behind it: read through that store when a
+     * key that is not in memory is asked for, and written through it as a key is handled. The store is
+     * named rather than placed here, and is resolved on the member the map runs on.
      *
      * <p>The write is through rather than behind, and that is the decision here rather than the default
      * that happens to agree with it. A queued write would be held in memory, and the only copy of that
@@ -80,12 +80,26 @@ final class NestMaps {
      * "which keys do you have" question with none, so there is no keyspace to preload and a restart pays
      * only for the keys it is actually asked about.
      */
-    static MapConfig stateMaps(KeyedStateStore store, long entriesHeldInMemory) {
-        MapConfig config = stateMaps().setMapStoreConfig(new MapStoreConfig()
+    static MapConfig backedStateMaps(long entriesHeldInMemory) {
+        return backedStateMaps(NAMESPACE_PREFIX + "*", entriesHeldInMemory);
+    }
+
+    /**
+     * As above, for the single namespace {@code name} rather than for all of them. An exact name wins over
+     * the pattern for that namespace alone, which is how one pipeline's budget applies to its own levels
+     * and to nobody else's.
+     *
+     * <p>This is the configuration that can only be written once the member is already running: it names a
+     * namespace, and namespaces come from pipelines, which do not exist when the member starts. That is
+     * why the store behind it is named rather than placed - a configuration added late is broadcast, and a
+     * live store does not survive being written down.
+     */
+    static MapConfig backedStateMaps(String name, long entriesHeldInMemory) {
+        MapConfig config = stateMaps().setName(name).setMapStoreConfig(new MapStoreConfig()
                 .setEnabled(true)
                 .setWriteDelaySeconds(0)
                 .setInitialLoadMode(MapStoreConfig.InitialLoadMode.LAZY)
-                .setFactoryImplementation(new NestStateMapStore.Factory(store)));
+                .setFactoryClassName(NestStateMapStoreFactory.class.getName()));
         // Only ever here, where the store above is what an evicted entry comes back from. On the
         // configuration without one, evicting is losing: the entry is in no other place, and what the map
         // answers afterwards is the absence rather than the state - a resolver that stops answering for

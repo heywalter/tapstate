@@ -11,6 +11,7 @@ import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.runtime.engine.nest.NestSettings;
+import io.tapstate.runtime.engine.nest.NestStateMapStoreFactory;
 import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsItem;
@@ -75,6 +76,14 @@ class HazelcastConfiguration {
         // disabled) binds nothing, and a source then emits no snapshot ahead of the tail.
         if (snapshotBuffer != null) {
             member.getUserContext().put(SnapshotBuffer.USER_CONTEXT_KEY, snapshotBuffer);
+        }
+        // Bind the layer behind the nest state maps onto the member, so a store named in a map's
+        // configuration -- and built by the substrate on whichever member runs that map -- can reach it.
+        // The configuration carries the name and not the instance because a configuration added once the
+        // member is running is written down and broadcast, and a live store does not survive that. A run
+        // with no store (mongo disabled) binds nothing, and its maps declare no store to resolve.
+        if (nestStateStore != null) {
+            NestStateMapStoreFactory.bindTo(member, nestStateStore);
         }
         return member;
     }
@@ -163,7 +172,7 @@ class HazelcastConfiguration {
         // it does the same for.
         config.addMapConfig(nestStateStore == null
                 ? nestSettings.stateMaps()
-                : nestSettings.stateMaps(nestStateStore));
+                : nestSettings.backedStateMaps());
         return config;
     }
 }

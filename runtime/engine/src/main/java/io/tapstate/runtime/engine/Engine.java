@@ -12,6 +12,8 @@ import com.hazelcast.jet.core.metrics.MetricNames;
 import com.hazelcast.jet.core.metrics.MetricTags;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.NestStateReading;
+import io.tapstate.runtime.engine.nest.NestMemoryBudget;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestStateMetricNames;
 import io.tapstate.spi.store.KeyedStateStore;
 import java.time.Duration;
@@ -20,6 +22,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -69,6 +72,22 @@ public final class Engine {
      * never set, which is a no-op.
      */
     public void submit(String pipelineId, DAG dag) {
+        submit(pipelineId, dag, Set.of(), NestSettings.defaults());
+    }
+
+    /**
+     * As above, first holding {@code stateNamespaces} to what {@code settings} asks them to keep in memory.
+     *
+     * <p>Before the job and not after: a state map is created the first moment a vertex asks for it, and
+     * what a map holds is fixed as it is created. Applied afterwards the numbers would be accepted, change
+     * nothing, and report nothing - the run would sit on the process-wide figure while its own artifact
+     * named another.
+     *
+     * <p>A submission naming no namespaces configures none, which is what a pipeline with no nest in it
+     * does.
+     */
+    public void submit(String pipelineId, DAG dag, Set<String> stateNamespaces, NestSettings settings) {
+        NestMemoryBudget.applyTo(member, stateNamespaces, settings);
         JobFailureRegistry.of(member).clear(pipelineId);
         JobConfig config = new JobConfig()
                 .setName(pipelineId)

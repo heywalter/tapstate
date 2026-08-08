@@ -2,7 +2,6 @@ package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.config.MapConfig;
 import io.tapstate.core.common.TapstateException;
-import io.tapstate.spi.store.KeyedStateStore;
 
 import java.io.Serializable;
 import java.util.LinkedHashMap;
@@ -137,10 +136,24 @@ public final class NestSettings implements Serializable {
     }
 
     /**
-     * As above, reading through {@code store} for a key that is not in memory and writing through it, and
-     * holding only {@link #entriesHeldInMemory()} of each namespace in memory at a time.
+     * As above, reading through the member's nest state store for a key that is not in memory and writing
+     * through it, and holding only {@link #entriesHeldInMemory()} of each namespace in memory at a time.
+     *
+     * <p>The store is named in the configuration and resolved on the member that runs the map, so the
+     * member has to have been told its store - see {@code NestStateMapStoreFactory.bindTo} - before any
+     * nest map on it is used.
      */
-    public MapConfig stateMaps(KeyedStateStore store) {
-        return NestMaps.stateMaps(store, entriesHeldInMemory);
+    public MapConfig backedStateMaps() {
+        return NestMaps.backedStateMaps(entriesHeldInMemory);
+    }
+
+    /**
+     * As above, for the one namespace {@code namespace} rather than for all of them, so that this budget
+     * applies to that namespace alone. This is the form a pipeline's own budget takes: it names a
+     * namespace, and namespaces are not known until there is a pipeline, which is after the member is
+     * already running.
+     */
+    public MapConfig backedStateMaps(String namespace) {
+        return NestMaps.backedStateMaps(Objects.requireNonNull(namespace, "namespace"), entriesHeldInMemory);
     }
 }

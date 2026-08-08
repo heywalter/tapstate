@@ -82,6 +82,7 @@ nest.chain-axis-limit-exceeded
 nest.embed-path-conflict
 nest.key-change-tracking-requires-before-image
 nest.memory-budget-below-partition-count
+nest.memory-budget-changed-while-running
 nest.migration-parking-limit-exceeded
 nest.pending-protection-expired
 nest.resolver-vertex-limit-exceeded

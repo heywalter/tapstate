@@ -64,8 +64,9 @@ class NestStateSurvivesWhatTheMemoryDoesNotTest {
         join.getTcpIpConfig().setEnabled(false);
         join.getAutoDetectionConfig().setEnabled(false);
         config.getNetworkConfig().getInterfaces().setEnabled(true).addInterface("127.0.0.1");
-        config.addMapConfig(NestSettings.defaults().stateMaps(store));
+        config.addMapConfig(NestSettings.defaults().backedStateMaps());
         member = Hazelcast.newHazelcastInstance(config);
+        NestStateMapStoreFactory.bindTo(member, store);
     }
 
     @AfterEach
@@ -147,7 +148,7 @@ class NestStateSurvivesWhatTheMemoryDoesNotTest {
      */
     @Test
     void theStoreBehindAMapWillNotListItsKeysAndSaysSoWithAnEmptyAnswer() {
-        MapStoreFactory<Object, Object> factory = factoryFrom(NestSettings.defaults().stateMaps(store));
+        MapStoreFactory<Object, Object> factory = factoryNamedBy(NestSettings.defaults().backedStateMaps());
 
         MapLoader<Object, Object> loader = factory.newMapStore(NAMESPACE, new Properties());
 
@@ -180,9 +181,20 @@ class NestStateSurvivesWhatTheMemoryDoesNotTest {
         return NestBinding.onMap().bind(member);
     }
 
+    /**
+     * The factory the configuration names, built the way the substrate builds it. Named rather than
+     * placed, so reading it back means constructing one from the name - which is also the thing that has
+     * to keep working for a configuration added to a running member to be usable at all.
+     */
     @SuppressWarnings("unchecked")
-    private static MapStoreFactory<Object, Object> factoryFrom(MapConfig config) {
-        return (MapStoreFactory<Object, Object>) config.getMapStoreConfig().getFactoryImplementation();
+    private static MapStoreFactory<Object, Object> factoryNamedBy(MapConfig config) {
+        try {
+            return (MapStoreFactory<Object, Object>) Class
+                    .forName(config.getMapStoreConfig().getFactoryClassName())
+                    .getDeclaredConstructor().newInstance();
+        } catch (ReflectiveOperationException cause) {
+            throw new IllegalStateException("the named map store factory could not be built", cause);
+        }
     }
 
     private static NestVertex vertex(String mapName) {

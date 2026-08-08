@@ -206,6 +206,12 @@ class CaptureToSinkAckFrontierTest {
     private static DagSource withBoundProbe(DagSource product) {
         return new DagSource() {
 
+            /** Delegated whole, so the probe changes the topology and nothing else about the run. */
+            @Override
+            public NestCapacity capacityOf(String pipelineId) {
+                return product.capacityOf(pipelineId);
+            }
+
             @Override
             public DAG dagFor(String pipelineId) {
                 DAG dag = product.dagFor(pipelineId);

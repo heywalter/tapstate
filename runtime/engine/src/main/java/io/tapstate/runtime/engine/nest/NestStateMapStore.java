@@ -1,10 +1,8 @@
 package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.core.HazelcastInstance;
-import com.hazelcast.map.MapLoader;
 import com.hazelcast.map.MapLoaderLifecycleSupport;
 import com.hazelcast.map.MapStore;
-import com.hazelcast.map.MapStoreFactory;
 import io.tapstate.spi.store.KeyedStateStore;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -36,25 +34,26 @@ import java.util.Properties;
  */
 final class NestStateMapStore implements MapStore<Object, Object>, MapLoaderLifecycleSupport {
 
-    private final KeyedStateStore store;
     private final String namespace;
 
     /**
-     * Where a trip made here is counted. The substrate builds this rather than the code that wires the map,
-     * so the member cannot be handed in - it arrives at {@link #init}, which is the one thing the substrate
-     * offers a store built this way. Measured: a store reached through a factory is <em>not</em> given the
-     * member by the awareness interface, only by this one, and the difference is silent - counters that are
-     * simply never written.
+     * The layer this files under, and where a trip made here is counted. Neither can be handed in: the
+     * substrate builds this rather than the code that wires the map, so both arrive at {@link #init},
+     * which is the one thing the substrate offers a store built this way. Measured: a store reached
+     * through a factory is <em>not</em> given the member by the awareness interface, only by this one,
+     * and the difference is silent - counters that are simply never written.
      */
+    private KeyedStateStore store;
+
     private NestStateStats stats;
 
-    NestStateMapStore(KeyedStateStore store, String namespace) {
-        this.store = Objects.requireNonNull(store, "store");
+    NestStateMapStore(String namespace) {
         this.namespace = Objects.requireNonNull(namespace, "namespace");
     }
 
     @Override
     public void init(HazelcastInstance member, Properties properties, String mapName) {
+        this.store = NestStateMapStoreFactory.boundTo(member);
         this.stats = NestStateStats.of(member);
     }
 
@@ -148,21 +147,4 @@ final class NestStateMapStore implements MapStore<Object, Object>, MapLoaderLife
         }
     }
 
-    /**
-     * Builds one store per map, which is what makes the map name the namespace. A single shared store
-     * would have to be told which map each call was about, and there is no call that carries it.
-     */
-    static final class Factory implements MapStoreFactory<Object, Object> {
-
-        private final KeyedStateStore store;
-
-        Factory(KeyedStateStore store) {
-            this.store = Objects.requireNonNull(store, "store");
-        }
-
-        @Override
-        public MapLoader<Object, Object> newMapStore(String mapName, Properties properties) {
-            return new NestStateMapStore(store, mapName);
-        }
-    }
 }

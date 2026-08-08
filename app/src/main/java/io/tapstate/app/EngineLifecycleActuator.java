@@ -54,7 +54,12 @@ final class EngineLifecycleActuator implements LifecycleActuator {
         // what leaves a run that died without a stop with its state - and so with a shape to be held to.
         stateTeardown.finishPending(pipelineId);
         captureCoordinator.startCapture(pipelineId);
-        engine.submit(pipelineId, dagSource.dagFor(pipelineId));
+        // The capacity travels with the submission because the maps are made by the job: what a state map
+        // holds is fixed as it is created, so a number applied after the job started would be accepted and
+        // change nothing.
+        DagSource.NestCapacity capacity = dagSource.capacityOf(pipelineId);
+        engine.submit(pipelineId, dagSource.dagFor(pipelineId),
+                capacity.mapNamespaces(), capacity.settings());
     }
 
     @Override

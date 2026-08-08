@@ -222,6 +222,22 @@ final class StoreBackedDagSource implements DagSource {
      * without moving anything into it, and the tree rebuilds from empty while the pipeline reports that it
      * resumed.
      */
+    /**
+     * The numbers this pipeline's nests are held to, and the maps they apply to. Compiled here from the
+     * same tree the topology and the teardown names come from, so a budget cannot end up on a namespace no
+     * vertex writes to while the ones that are written to run on the deployment's number.
+     */
+    @Override
+    public NestCapacity capacityOf(String pipelineId) {
+        PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
+        if (!PipelineDagBuilder.hasNest(pipeline)) {
+            return NestCapacity.none();
+        }
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable(pipeline));
+        return new NestCapacity(PipelineDagBuilder.nestStateNamespaces(pipeline, byAlias::get),
+                PipelineDagBuilder.nestSettings(pipeline, byAlias::get, nestSettings));
+    }
+
     private NestBinding nestBinding(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
         Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
         return new NestBinding(byAlias::get, NestBinding.onMap(), new CountingNestDeadLetter(),

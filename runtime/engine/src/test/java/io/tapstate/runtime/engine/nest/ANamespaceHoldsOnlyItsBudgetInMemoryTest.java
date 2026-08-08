@@ -52,7 +52,7 @@ class ANamespaceHoldsOnlyItsBudgetInMemoryTest {
     @Test
     void aStateMapWithAStoreBehindItHoldsOnlyItsBudget() {
         var eviction = NestSettings.defaults().withEntriesHeldInMemory(50_000L)
-                .stateMaps(new HeapKeyedStateStore()).getEvictionConfig();
+                .backedStateMaps().getEvictionConfig();
 
         assertThat(eviction.getEvictionPolicy()).isEqualTo(EvictionPolicy.LRU);
         assertThat(eviction.getMaxSizePolicy()).isEqualTo(MaxSizePolicy.PER_NODE);
@@ -137,8 +137,12 @@ class ANamespaceHoldsOnlyItsBudgetInMemoryTest {
         join.getTcpIpConfig().setEnabled(false);
         join.getAutoDetectionConfig().setEnabled(false);
         config.getNetworkConfig().getInterfaces().setEnabled(true).addInterface("127.0.0.1");
-        config.addMapConfig(NestSettings.defaults().withEntriesHeldInMemory(budget).stateMaps(store));
-        return Hazelcast.newHazelcastInstance(config);
+        config.addMapConfig(NestSettings.defaults().withEntriesHeldInMemory(budget).backedStateMaps());
+        HazelcastInstance started = Hazelcast.newHazelcastInstance(config);
+        // The configuration names the store; the member is what holds it. Bound after the member exists
+        // and before any map on it is used, which is the window the resolution happens in.
+        NestStateMapStoreFactory.bindTo(started, store);
+        return started;
     }
 
     private static NestVertex vertex() {
@@ -150,40 +154,5 @@ class ANamespaceHoldsOnlyItsBudgetInMemoryTest {
         ResolverState state = new ResolverState();
         state.declare(parentKey, new SourceOrder(1L, 1L));
         return state;
-    }
-
-    /** A store that keeps what it is given, so an evicted entry has somewhere to have gone. */
-    private static final class HeapKeyedStateStore implements KeyedStateStore {
-
-        private final Map<String, Map<String, byte[]>> byNamespace = new LinkedHashMap<>();
-
-        @Override
-        public Optional<byte[]> load(String namespace, String key) {
-            Map<String, byte[]> entries = byNamespace.get(namespace);
-            return entries == null ? Optional.empty() : Optional.ofNullable(entries.get(key));
-        }
-
-        @Override
-        public void save(String namespace, String key, byte[] state) {
-            byNamespace.computeIfAbsent(namespace, ignored -> new LinkedHashMap<>()).put(key, state);
-        }
-
-        @Override
-        public void delete(String namespace, String key) {
-            Map<String, byte[]> entries = byNamespace.get(namespace);
-            if (entries != null) {
-                entries.remove(key);
-            }
-        }
-
-        @Override
-        public void dropNamespace(String namespace) {
-            byNamespace.remove(namespace);
-        }
-
-        @Override
-        public long count(String namespace) {
-            return byNamespace.getOrDefault(namespace, Map.of()).size();
-        }
     }
 }

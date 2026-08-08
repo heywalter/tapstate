@@ -1,6 +1,7 @@
 package io.tapstate.app;
 
 import com.hazelcast.jet.core.DAG;
+import io.tapstate.runtime.engine.nest.NestSettings;
 
 import java.util.Set;
 
@@ -28,4 +29,26 @@ interface DagSource {
      * the state stays, and the next run reads it as its own.
      */
     Set<String> stateNamespacesOf(String pipelineId);
+
+    /**
+     * What {@code pipelineId}'s nests are held to, and the map namespaces those numbers apply to.
+     *
+     * <p>Both together rather than one each, for the reason the two above are: they come from the same
+     * compiled tree. Numbers applied to namespaces worked out separately would hold maps nothing writes to
+     * and leave the ones that are written to on somebody else's number.
+     *
+     * <p>The namespaces here are the ones that are maps, which is fewer than {@link #stateNamespacesOf}
+     * returns - that one also names where the tree's shape is written down, which lives in the store alone
+     * and has no map to configure.
+     */
+    NestCapacity capacityOf(String pipelineId);
+
+    /** A pipeline's nest settings, and the state map namespaces they apply to. */
+    record NestCapacity(Set<String> mapNamespaces, NestSettings settings) {
+
+        /** A pipeline with no nest in it: no namespaces to hold, and nothing asking to be held. */
+        static NestCapacity none() {
+            return new NestCapacity(Set.of(), NestSettings.defaults());
+        }
+    }
 }

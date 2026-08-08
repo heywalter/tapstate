@@ -270,6 +270,12 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
      */
     private record WritesStateAsItCloses(String namespace) implements DagSource {
 
+        /** Not what this is about: the entry it writes is the subject, not what a map may hold. */
+        @Override
+        public NestCapacity capacityOf(String pipelineId) {
+            return NestCapacity.none();
+        }
+
         @Override
         public DAG dagFor(String pipelineId) {
             DAG dag = new DAG();

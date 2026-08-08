@@ -69,6 +69,20 @@ public enum NestError implements TapstateErrorCode {
             "nest.memory-budget-below-partition-count", Set.of("entries", "partitions")),
 
     /**
+     * Starting up: this pipeline asks its levels to hold a different number than they were already
+     * configured to hold on this process. What a map holds is settled once, the first time a name is
+     * configured, and stays settled for as long as the process runs - so the new number cannot take
+     * effect here however the pipeline is restarted.
+     *
+     * <p>Said rather than swallowed because the substrate's own answer is to keep the number it already
+     * had. Swallowed, the pipeline would run on the earlier budget while the artifact it was started from
+     * reads as the later one, which is the exact shape of "configured, and not in effect".
+     */
+    MEMORY_BUDGET_CHANGED_WHILE_RUNNING(
+            "nest.memory-budget-changed-while-running",
+            Set.of("namespace", "configured", "requested")),
+
+    /**
      * Starting up: the tree keeps its state under names it no longer compiles to, because an embed path
      * was renamed or a level inserted. What was stored is left where nothing reads it and the new names
      * answer nothing, so the run would rebuild from empty while reporting that it resumed.
