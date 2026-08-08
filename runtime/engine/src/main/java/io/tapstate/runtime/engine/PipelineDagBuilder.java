@@ -47,12 +47,12 @@ public final class PipelineDagBuilder {
     /**
      * Every namespace this pipeline's nests keep state in, empty for a pipeline that has none.
      *
-     * <p>This is what a pipeline being taken down is dropped by, and it is answered by compiling the tree
-     * again rather than by reading back anything a run left behind. A record of where state went would be
-     * a second account of it, kept up to date by whoever remembered to - and the run that wrote the state
-     * took the names from the compiled tree, so compiling it is asking the same question of the same
-     * source. The pipeline handed in must be the one the run was built from: compiled from a later
-     * revision this names where the next run would write, not where the last one did.
+     * <p>Answered by compiling the tree rather than by reading back anything a run left behind: the run
+     * that writes the state takes the names from the compiled tree, so compiling it is asking the same
+     * question of the same source. The pipeline handed in must be the one the run is built from — compiled
+     * from a later revision this names where the <em>next</em> run would write, not where this one does —
+     * which is why a run is asked as it starts and what it answers is written down, rather than the
+     * question being put again once the run is over and the pipeline may have been edited since.
      *
      * <p>Which steps are nests is decided by {@link #nestOf}, the same way the build decides it. Two
      * walks that judged that differently would drop the namespaces of one set of steps while a run wrote

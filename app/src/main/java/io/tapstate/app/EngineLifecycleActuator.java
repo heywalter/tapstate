@@ -53,6 +53,10 @@ final class EngineLifecycleActuator implements LifecycleActuator {
         // run never starts onto a half-dropped state. A start with nothing noted drops nothing, which is
         // what leaves a run that died without a stop with its state - and so with a shape to be held to.
         stateTeardown.finishPending(pipelineId);
+        // Where this run keeps state, said before anything can write any: the pipeline is only certainly
+        // the one this run is built from now, and an apply may move it out from under the run at any point
+        // after. Said after the drop above, which is the one thing entitled to clear what earlier runs said.
+        stateTeardown.willKeepStateIn(pipelineId, dagSource.stateNamespacesOf(pipelineId));
         captureCoordinator.startCapture(pipelineId);
         // The capacity travels with the submission because the maps are made by the job: what a state map
         // holds is fixed as it is created, so a number applied after the job started would be accepted and
@@ -77,8 +81,8 @@ final class EngineLifecycleActuator implements LifecycleActuator {
         engine.cancel(pipelineId);
         // Noted before the job is even known to be over, and before the drop: a stop is driven once, on the
         // transition, so a process that dies anywhere after this point leaves a note the next start finishes.
-        // Working the names out now is also the only time they can be - they come from the pipeline as it was
-        // run, and an apply before that next start would move them.
+        // What the runs said they keep is the half that survives an edit; what the pipeline compiles to now
+        // is the half that covers state older than there being anywhere to say it. The note takes both.
         stateTeardown.note(pipelineId, dagSource.stateNamespacesOf(pipelineId));
         boolean jobOver = engine.awaitTerminal(pipelineId, JOB_TEARDOWN_BUDGET);
         captureCoordinator.stopCapture(pipelineId);

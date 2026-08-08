@@ -80,6 +80,9 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
     /** Where the shape the tree compiled to is written down. */
     private static final String SHAPE_NAMESPACE = "nest.shape." + PIPELINE;
 
+    /** Where this pipeline's outstanding drop, and the record of where its runs keep state, are written. */
+    private static final String TEARDOWN_NAMESPACE = "nest.teardown." + PIPELINE;
+
     /** A namespace belonging to some other pipeline, which no stop of this one may touch. */
     private static final String OTHER_PIPELINE_NAMESPACE = "nest.other_pipe.some_step.$root";
 
@@ -150,6 +153,73 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
     }
 
     @Test
+    @DisplayName("a stop lets go of where the run wrote, not where the pipeline edited under it would")
+    void stateTheRunKeptIsDroppedThoughTheNestStepWasTakenOutWhileItRan() {
+        InMemoryStorePort store = seedStore();
+        seedState(store, ROOT_NAMESPACE, ITEMS_NAMESPACE, SHAPE_NAMESPACE, OTHER_PIPELINE_NAMESPACE);
+        EngineLifecycleActuator actuator = actuator(store);
+        actuator.start(PIPELINE);
+        // Taking the nest step out while the run is up is an ordinary edit: an apply never asks what state
+        // the pipeline is in, and the run already up goes on keeping state where it was built to keep it.
+        store.artifacts().save(pipelineWithoutNest());
+
+        actuator.stop(PIPELINE);
+
+        // Worked out from the pipeline as it now reads, the names are none at all - and a stop that drops
+        // none leaves every entry where it is with nothing left that can name it: the namespaces are gone
+        // from the definition, and the store has no way to list what it holds.
+        assertThat(store.keyedState().load(ROOT_NAMESPACE, "k"))
+                .describedAs("what the run kept is dropped by the names it ran under, not the ones it ends under")
+                .isEmpty();
+        assertThat(store.keyedState().load(ITEMS_NAMESPACE, "k")).isEmpty();
+        assertThat(store.keyedState().load(SHAPE_NAMESPACE, "k")).isEmpty();
+        assertThat(member.getMap(ROOT_NAMESPACE).size()).isZero();
+        assertThat(member.getMap(ITEMS_NAMESPACE).size()).isZero();
+        assertThat(store.keyedState().load(OTHER_PIPELINE_NAMESPACE, "k"))
+                .describedAs("naming what the run wrote is still not licence to name anybody else's")
+                .isPresent();
+    }
+
+    @Test
+    @DisplayName("every run's namespaces are still there to be dropped, not only the last one's")
+    void whatEachRunSaidItWouldKeepAddsUpUntilAStopLetsGoOfIt() {
+        InMemoryStorePort store = seedStore();
+        seedState(store, ROOT_NAMESPACE, ITEMS_NAMESPACE);
+        NestStateTeardown teardown = new NestStateTeardown(member, store.keyedState());
+        teardown.willKeepStateIn(PIPELINE, Set.of(ROOT_NAMESPACE));
+        // A later run of the same pipeline keeps state somewhere else - an embed renamed, or taken out and
+        // put back. The earlier run's entries are still there, and a record that only remembered the run
+        // that wrote it last would be the second way to strand them.
+        teardown.willKeepStateIn(PIPELINE, Set.of(ITEMS_NAMESPACE));
+
+        teardown.note(PIPELINE, Set.of());
+        teardown.finishPending(PIPELINE);
+
+        assertThat(store.keyedState().load(ROOT_NAMESPACE, "k")).isEmpty();
+        assertThat(store.keyedState().load(ITEMS_NAMESPACE, "k")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a pipeline that nests nothing writes no record of keeping state, and notes no drop")
+    void anOrdinaryPipelineIsUntouchedByAnyOfThis() {
+        InMemoryStorePort store = seedStore();
+        store.artifacts().save(pipelineWithoutNest());
+        EngineLifecycleActuator actuator = actuator(store);
+
+        actuator.start(PIPELINE);
+        actuator.stop(PIPELINE);
+
+        // Recording "this run keeps state in nowhere" would put a record where a pipeline with no state has
+        // none to describe, and every later reader would have to tell that from a run that kept something.
+        assertThat(store.keyedState().load(TEARDOWN_NAMESPACE, "kept"))
+                .describedAs("a pipeline with no nest in it leaves nothing written down")
+                .isEmpty();
+        assertThat(store.keyedState().load(TEARDOWN_NAMESPACE, "namespaces"))
+                .describedAs("and so notes no drop for a later start to finish")
+                .isEmpty();
+    }
+
+    @Test
     @DisplayName("a start finishes the drop an interrupted stop noted but did not carry out")
     void aStopThatDiedBeforeItFinishedIsFinishedByTheNextStart() {
         InMemoryStorePort store = seedStore();
@@ -166,7 +236,7 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
                 .isEmpty();
         assertThat(store.keyedState().load(ITEMS_NAMESPACE, "k")).isEmpty();
         // The note goes only once what it names is gone, so a start interrupted in its turn still has one.
-        assertThat(store.keyedState().load("nest.teardown." + PIPELINE, "namespaces")).isEmpty();
+        assertThat(store.keyedState().load(TEARDOWN_NAMESPACE, "namespaces")).isEmpty();
     }
 
     @Test
