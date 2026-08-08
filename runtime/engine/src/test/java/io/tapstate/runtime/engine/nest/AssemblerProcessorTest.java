@@ -72,7 +72,7 @@ class AssemblerProcessorTest {
         ElementRef ref = new ElementRef(List.of("policies"), null, List.of("PN-" + policyId), List.of(policyId));
         return new KeyedElement(List.of(customerId),
                 new NestElement(ref, row("policy_id", policyId, "policy_no", "PN-" + policyId), at(seq),
-                        Map.of("policy", new ChainPosition(at(seq), null))));
+                        Map.of("policy", new ChainPosition(at(seq), null)), seq));
     }
 
     /** A claim element as the claims resolver would have routed it: it hangs under a policy, not the root. */
@@ -82,7 +82,7 @@ class AssemblerProcessorTest {
                 List.of("policies", "claims"), List.of(policyId), List.of(claimId), null);
         return new KeyedElement(List.of(customerId),
                 new NestElement(ref, row("claim_id", claimId, "policy_id", policyId), at(seq),
-                        Map.of("claim", new ChainPosition(at(seq), token))));
+                        Map.of("claim", new ChainPosition(at(seq), token)), seq));
     }
 
     private List<Envelope> feed(int ordinal, Object... items) {

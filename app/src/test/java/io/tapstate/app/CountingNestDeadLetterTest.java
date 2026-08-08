@@ -2,13 +2,19 @@ package io.tapstate.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.SourceOrder;
 import io.tapstate.runtime.engine.nest.ElementRef;
 import io.tapstate.runtime.engine.nest.NestElement;
+import io.tapstate.runtime.engine.nest.NestInbound;
+import io.tapstate.runtime.engine.nest.NestVertex;
+import io.tapstate.runtime.engine.nest.PendingVerdict;
+import io.tapstate.runtime.engine.nest.ReleasedChild;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -20,12 +26,20 @@ import org.junit.jupiter.api.Test;
  */
 class CountingNestDeadLetterTest {
 
-    private static NestElement element(int id) {
-        return new NestElement(
-                new ElementRef(List.of("items"), 1, List.of(id), id),
-                Map.of("id", id),
-                new SourceOrder(1L, id),
-                Map.of());
+    private static final NestVertex ITEMS = new NestVertex(List.of("items"), "items", "nest.p.items",
+            List.of("order_id"), List.of("customer_id"),
+            List.of(new NestInbound(0, "item", List.of("items"), List.of("order_id"), List.of("id"))));
+
+    private static ReleasedChild released(int id) {
+        return new ReleasedChild(
+                new NestElement(
+                        new ElementRef(List.of("items"), 1, List.of(id), id),
+                        Map.of("id", id),
+                        new SourceOrder(1L, id),
+                        Map.of("item", new ChainPosition(new SourceOrder(1L, id), "t" + id)),
+                        id),
+                PendingVerdict.PARENT_ABSENT,
+                Duration.ofMinutes(id));
     }
 
     @Test
@@ -33,7 +47,7 @@ class CountingNestDeadLetterTest {
         CountingNestDeadLetter deadLetter = new CountingNestDeadLetter();
 
         for (int i = 0; i < 25; i++) {
-            deadLetter.parentAbsent(element(i));
+            deadLetter.unassemblable(ITEMS, released(i));
         }
 
         // Every one, not only the ones it logged: the log is throttled so a parent deleted with many
@@ -44,7 +58,7 @@ class CountingNestDeadLetterTest {
     @Test
     void survivesSerializationBecauseItTravelsToTheMemberRunningTheVertex() throws Exception {
         CountingNestDeadLetter deadLetter = new CountingNestDeadLetter();
-        deadLetter.parentAbsent(element(1));
+        deadLetter.unassemblable(ITEMS, released(1));
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {

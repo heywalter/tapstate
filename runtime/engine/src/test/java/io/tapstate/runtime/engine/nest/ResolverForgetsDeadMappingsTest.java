@@ -46,7 +46,7 @@ class ResolverForgetsDeadMappingsTest {
     private final HeapNestStore<ResolverState> store = new HeapNestStore<>();
     private final CountingFloor floor = new CountingFloor();
     private final ResolverProcessor processor =
-            new ResolverProcessor(POLICIES, store, element -> { }, floor);
+            new ResolverProcessor(POLICIES, store, (from, released) -> { }, floor);
     private final TestOutbox outbox = new TestOutbox(128);
 
     @BeforeEach

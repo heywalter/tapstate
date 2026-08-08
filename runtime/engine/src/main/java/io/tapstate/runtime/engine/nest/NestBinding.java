@@ -27,7 +27,14 @@ public record NestBinding(
         NestDeadLetter deadLetter,
         ReplayFloorFactory replayFloor,
         NestStateLedger ledger,
-        NestSettings settings) implements Serializable {
+        NestSettings settings,
+        PendingWatch watch) implements Serializable {
+
+    /** A binding on the default watch, which lets a change go only once the backstop ends its wait. */
+    public NestBinding(Function<String, NestTable> tables, NestStores stores, NestDeadLetter deadLetter,
+            ReplayFloorFactory replayFloor, NestStateLedger ledger, NestSettings settings) {
+        this(tables, stores, deadLetter, replayFloor, ledger, settings, PendingWatch.defaults());
+    }
 
     /**
      * A binding with nothing to read a durable resume position through, for a job assembled without one.

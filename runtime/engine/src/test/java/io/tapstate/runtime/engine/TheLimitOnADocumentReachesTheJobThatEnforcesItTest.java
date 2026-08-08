@@ -156,7 +156,7 @@ class TheLimitOnADocumentReachesTheJobThatEnforcesItTest {
                 s -> (SupplierEx<TransformPort>) () -> event -> List.of(event),
                 syncElement -> (SupplierEx<SinkWriter>) CollectingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onHeap(), element -> { },
+                new NestBinding(tables::get, NestBinding.onHeap(), (from, released) -> { },
                         NestSettings.defaults().withElementLimit(documentNamespace(body), LIMIT)));
 
         DAG dag = PipelineDagBuilder.build(pipeline, bindings);

@@ -108,7 +108,7 @@ public enum NestError implements TapstateErrorCode {
      * and those mean very different things to whoever reads it.
      */
     PENDING_PROTECTION_EXPIRED("nest.pending-protection-expired",
-            Set.of("chain", "bucket", "order", "verdict", "maxAge"), Severity.WARNING),
+            Set.of("chain", "bucket", "order", "verdict", "heldFor"), Severity.WARNING),
 
     /**
      * Running: a stream tracks structural key changes but its source does not provide a before image, so

@@ -11,14 +11,18 @@ import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.LevelBounds;
 import io.tapstate.runtime.engine.ReplayFloor;
 
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
 
 /**
  * One resolver vertex: it answers, for one embed, which row of the level above each of its keys hangs
@@ -58,6 +62,33 @@ public final class ResolverProcessor extends AbstractProcessor {
      */
     private final Map<Object, Map<String, ChainPosition>> deleted = new LinkedHashMap<>();
 
+    /**
+     * Keys with something waiting in them, which is where the sweep for changes that may stop waiting has
+     * to look. Kept here because the store cannot be asked which keys hold anything: listing what it has
+     * is exactly what reading through it on demand is there to avoid.
+     *
+     * <p>A restart starts it empty, and the keys that matter re-enter it on their own: a change still
+     * being held is one the frontier never passed, so a restart replays it, and it is filed here again the
+     * moment its key is touched.
+     */
+    private final Set<Object> holding = new LinkedHashSet<>();
+
+    /** The stream this vertex's own rows - the parents everything here waits for - arrive on. */
+    private final String parentStream;
+
+    /**
+     * How far that stream has been read, in its own clock, or null before any of its rows has arrived.
+     *
+     * <p>Read from what has arrived here rather than from anything global, and that is what makes it
+     * answer the question at all: a parent row and the children waiting for it are keyed alike, so they
+     * are partitioned alike and land on this same processor. A row of that stream stamped later than a
+     * change still waiting here therefore means the row that would have answered it does not exist -
+     * had it existed, it would have come past here first.
+     */
+    private Long parentStreamReached;
+
+    private final PendingWatch watch;
+
     /** A resolver in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter) {
         this(vertex, store, deadLetter, null, null, ReplayFloor.NONE);
@@ -67,6 +98,12 @@ public final class ResolverProcessor extends AbstractProcessor {
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ReplayFloor floor) {
         this(vertex, store, deadLetter, null, null, floor);
+    }
+
+    /** A resolver held to {@code watch} over what it may go on holding for a parent that never arrives. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            PendingWatch watch) {
+        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE, watch);
     }
 
     /**
@@ -82,14 +119,23 @@ public final class ResolverProcessor extends AbstractProcessor {
     /** The whole of it: a frontier passed on, and tombstones forgotten once it is safe to. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor) {
+        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, PendingWatch.defaults());
+    }
+
+    /** All of the above, and held to {@code watch} over how long it may wait for a parent. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
+            PendingWatch watch) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.store = Objects.requireNonNull(store, "store");
         this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         this.floor = Objects.requireNonNull(floor, "floor");
+        this.watch = Objects.requireNonNull(watch, "watch");
         if (vertex.isAssembler()) {
             throw new IllegalArgumentException("the assembler is not a resolver: " + vertex.name());
         }
+        this.parentStream = vertex.inboundFor(vertex.pathId()).alias();
     }
 
     /**
@@ -110,7 +156,79 @@ public final class ResolverProcessor extends AbstractProcessor {
                 candidates.remove();
             }
         }
+        stopWaitingWhereNothingIsComing();
         return true;
+    }
+
+    /**
+     * Lets go of the changes held here for parents that are not coming, so the bound this level reports
+     * can rise past them. Off the path a change takes, like the tombstone sweep above and for the same
+     * reason: nothing here is urgent to the millisecond, and the price of being wrong is a row nobody can
+     * get back.
+     *
+     * <p>What each key was holding is re-read into the reported bound whether or not anything went, since
+     * a change let go of that still counted against the bound would leave the frontier exactly where it
+     * was - with the change dead-lettered as well, which is both halves of the damage and neither of the
+     * benefits. A key left holding nothing and saying nothing is dropped outright: it is indistinguishable
+     * from one that was never there, and keeping it would leak an entry per dangling reference.
+     */
+    private void stopWaitingWhereNothingIsComing() {
+        if (holding.isEmpty()) {
+            return;
+        }
+        long now = watch.clock().millis();
+        PendingRelease rule = releaseRule();
+        Iterator<Object> keys = holding.iterator();
+        while (keys.hasNext()) {
+            Object key = keys.next();
+            ResolverState state = store.load(key);
+            if (state == null) {
+                keys.remove();
+                continue;
+            }
+            List<ReleasedChild> released = state.letGo(rule, now);
+            if (!released.isEmpty()) {
+                if (state.vacant()) {
+                    store.remove(key);
+                } else {
+                    store.save(key, state);
+                }
+                released.forEach(child -> deadLetter.unassemblable(vertex, child));
+            }
+            if (bounds != null) {
+                held.holding(key, state.lowestHeldByChain());
+            }
+            if (!state.holdsChildren()) {
+                keys.remove();
+            }
+        }
+    }
+
+    /**
+     * The rule as this level applies it: the protection, with what is known about the stream a parent
+     * would come on filled in. Worked out once per sweep rather than per change, because it is the same
+     * answer for every change held here - they are all waiting for a row of the one stream.
+     */
+    private PendingRelease releaseRule() {
+        boolean loaded = watch.facts().loaded(parentStream);
+        String parentClock = watch.facts().clockOf(parentStream);
+        return (child, heldFor) -> watch.protection()
+                .verdictOn(new ParentProgress(loaded, readPast(child, parentClock)), child.eventTime(), heldFor);
+    }
+
+    /**
+     * How far the parent's stream has been read, in a clock this change may be compared against - absent
+     * where there is no such clock. A change covering more than one stream has no single clock of its own
+     * and is never comparable; nor is one whose stream is not known to share a clock with the parent's.
+     */
+    private OptionalLong readPast(NestElement child, String parentClock) {
+        if (parentStreamReached == null || parentClock == null || child.positions().size() != 1) {
+            return OptionalLong.empty();
+        }
+        String stream = child.positions().keySet().iterator().next();
+        return parentClock.equals(watch.facts().clockOf(stream))
+                ? OptionalLong.of(parentStreamReached)
+                : OptionalLong.empty();
     }
 
     /**
@@ -239,31 +357,37 @@ public final class ResolverProcessor extends AbstractProcessor {
         List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
         List<Object> parent = NestKeys.valuesOf(row, vertex.parentKeyFields());
         ResolverState state = stateFor(key, touched);
-        List<NestElement> released;
-        if (NestKeys.isDeletion(event)) {
-            released = state.deleteMapping(order);
-            deleted.put(key, event.positions());
-        } else {
-            released = state.declare(parent, order);
-            deleted.remove(key);
-        }
+        // How far this stream has been read, which is what says whether a parent still missing from a key
+        // is late or absent. Taken from every row of it, including one that loses to what a key already
+        // holds: the read passed it either way, and that is all this records.
+        parentStreamReached = parentStreamReached == null
+                ? event.ts()
+                : Math.max(parentStreamReached, event.ts());
         emit(new KeyedElement(parent, element(edge, event, row, parentIdentity(edge, parent), key)));
-        for (NestElement child : released) {
-            if (NestKeys.isDeletion(event)) {
-                deadLetter.parentAbsent(child);
-            } else {
+        if (NestKeys.isDeletion(event)) {
+            deleted.put(key, event.positions());
+            for (ReleasedChild child : state.deleteMapping(order, watch.clock().millis())) {
+                deadLetter.unassemblable(vertex, child);
+            }
+        } else {
+            deleted.remove(key);
+            for (NestElement child : state.declare(parent, order)) {
                 emit(new KeyedElement(parent, child));
             }
+        }
+        if (!state.holdsChildren()) {
+            holding.remove(key);
         }
     }
 
     /** One change from beneath, offered to the key its join field names. */
     private void route(Object key, NestElement element, Map<Object, ResolverState> touched) {
         ResolverState state = stateFor(key, touched);
-        switch (state.resolve(element)) {
+        switch (state.resolve(element, watch.clock().millis())) {
             case RESOLVED -> emit(new KeyedElement(state.parentKey(), element));
-            case HELD -> { }
-            case PARENT_ABSENT -> deadLetter.parentAbsent(element);
+            case HELD -> holding.add(key);
+            case PARENT_ABSENT -> deadLetter.unassemblable(vertex,
+                    new ReleasedChild(element, PendingVerdict.PARENT_ABSENT, Duration.ZERO));
         }
     }
 
@@ -280,13 +404,21 @@ public final class ResolverProcessor extends AbstractProcessor {
         ElementRef ref = new ElementRef(edge.pathId(), parentIdentity,
                 NestKeys.valuesOf(row, edge.elementKey()), identity);
         return new NestElement(ref, NestKeys.isDeletion(event) ? null : row,
-                NestKeys.orderOf(event), event.positions());
+                NestKeys.orderOf(event), event.positions(), event.ts());
     }
 
     private ResolverState stateFor(Object key, Map<Object, ResolverState> touched) {
         return touched.computeIfAbsent(key, k -> {
-            ResolverState held = store.load(k);
-            return held == null ? new ResolverState() : held;
+            ResolverState kept = store.load(k);
+            if (kept == null) {
+                return new ResolverState();
+            }
+            // Reading a key back is the one moment a bucket filled before this run - or before this entry
+            // was last evicted - becomes visible again, so it is where it re-enters the sweep.
+            if (kept.holdsChildren()) {
+                holding.add(k);
+            }
+            return kept;
         });
     }
 

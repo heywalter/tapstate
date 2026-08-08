@@ -127,7 +127,7 @@ class ANestJobIsNotBuiltOntoStateOfAnotherShapeTest {
                 step -> (SupplierEx<TransformPort>) () -> ev -> List.of(ev),
                 syncElement -> (SupplierEx<SinkWriter>) NoOpSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onHeap(), element -> { },
+                new NestBinding(tables::get, NestBinding.onHeap(), (from, released) -> { },
                         ReplayFloorFactory.NONE, ledger));
     }
 

@@ -29,6 +29,17 @@ import java.util.Objects;
  * let the frontier claim coverage of a change that has not reached a sink, which after a restart is a
  * change that can neither be replayed nor found.
  *
+ * <p>{@code eventTime} is what the source says the time of the change was, and it travels for one purpose:
+ * a change waiting for a parent that has not arrived is answered by asking whether the parent's chain has
+ * been read past this time, which can only be asked where the change is held — a level above the one the
+ * envelope carrying it existed at. <b>It is read for liveness and never to order anything.</b> Ordering is
+ * {@code order} alone: a source clock can jump, repeat and run backwards, and two sources have two clocks,
+ * so deciding which of two changes is later by this would silently reorder data.
+ *
+ * <p>There is deliberately no constructor that leaves it out. An absent time would read as the epoch, and
+ * every chain has been read past the epoch — so the change it was meant to protect would be let go the
+ * first time anything asked, and nothing would say so.
+ *
  * <p>The maps are copied on the way in, so a change cannot be altered from under the state holding it.
  * {@link Serializable} because a waiting bucket outlives a single run. An order is never null: a null
  * order is an engine invariant violation and crashes bare rather than being reported as a diagnosable
@@ -38,7 +49,8 @@ public record NestElement(
         ElementRef ref,
         Map<String, Object> fields,
         SourceOrder order,
-        Map<String, ChainPosition> positions) implements Serializable {
+        Map<String, ChainPosition> positions,
+        long eventTime) implements Serializable {
 
     public NestElement {
         Objects.requireNonNull(ref, "ref");

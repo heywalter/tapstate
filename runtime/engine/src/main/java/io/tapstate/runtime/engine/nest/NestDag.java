@@ -185,7 +185,7 @@ public final class NestDag {
         List<EmbedSlot> slots = topology.slots();
         ChainAxes axes = frontier == null ? null : frontier.axes();
         return ProcessorMetaSupplier.of(new NestVertexSupplier(spec, slots, stores, deadLetter, outputStream,
-                axes, chainsByOrdinal, binding.replayFloor(), binding.settings()));
+                axes, chainsByOrdinal, binding.replayFloor(), binding.settings(), binding.watch()));
     }
 
     /** Reads the key off the fields a row carries it in. */
@@ -221,13 +221,15 @@ public final class NestDag {
         private final Map<Integer, List<String>> chainsByOrdinal;
         private final ReplayFloorFactory replayFloor;
         private final NestSettings settings;
+        private final PendingWatch watch;
         private transient ReplayFloor floor;
         private transient NestBinding.NestStores bound;
 
         private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
                 NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
                 Map<Integer, List<String>> chainsByOrdinal, ReplayFloorFactory replayFloor,
-                NestSettings settings) {
+                NestSettings settings, PendingWatch watch) {
+            this.watch = watch;
             this.spec = spec;
             this.slots = slots;
             this.stores = stores;
@@ -255,7 +257,7 @@ public final class NestDag {
                         ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
                                 axes, chainsByOrdinal, floor, settings)
                         : new ResolverProcessor(spec, bound.forResolver(spec), deadLetter, axes,
-                                chainsByOrdinal, floor));
+                                chainsByOrdinal, floor, watch));
             }
             return processors;
         }

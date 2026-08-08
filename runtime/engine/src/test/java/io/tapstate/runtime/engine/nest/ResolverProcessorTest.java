@@ -44,8 +44,9 @@ class ResolverProcessorTest {
     private static final int CLAIMS = 1;
 
     private final HeapNestStore<ResolverState> store = new HeapNestStore<>();
-    private final List<NestElement> dead = new ArrayList<>();
-    private final ResolverProcessor processor = new ResolverProcessor(POLICIES, store, dead::add);
+    private final List<ReleasedChild> dead = new ArrayList<>();
+    private final ResolverProcessor processor =
+            new ResolverProcessor(POLICIES, store, (from, released) -> dead.add(released));
     private final TestOutbox outbox = new TestOutbox(128);
 
     @BeforeEach
@@ -138,7 +139,7 @@ class ResolverProcessorTest {
                 .describedAs("it can never reach a document, so it is not held either")
                 .isEmpty();
         assertThat(dead).hasSize(1);
-        assertThat(dead.get(0).ref().elementKey()).containsExactly("CL1");
+        assertThat(dead.get(0).child().ref().elementKey()).containsExactly("CL1");
     }
 
     @Test
@@ -155,13 +156,14 @@ class ResolverProcessorTest {
         assertThat(dead)
                 .describedAs("those children were waiting for a row now known to be gone")
                 .hasSize(1);
-        assertThat(dead.get(0).ref().elementKey()).containsExactly("CL1");
+        assertThat(dead.get(0).child().ref().elementKey()).containsExactly("CL1");
     }
 
     @Test
     void writesTheStateBackOncePerKeyHoweverManyEventsTouchedItInOneDrain() throws Exception {
         CountingStore counting = new CountingStore();
-        ResolverProcessor folding = new ResolverProcessor(POLICIES, counting, dead::add);
+        ResolverProcessor folding =
+                new ResolverProcessor(POLICIES, counting, (from, released) -> dead.add(released));
         TestOutbox out = new TestOutbox(128);
         folding.init(out, new TestProcessorContext());
 
@@ -223,7 +225,7 @@ class ResolverProcessorTest {
     void refusesToBeBuiltOnTheAssemblerVertex() {
         NestVertex assembler = NestTopology.compile("p", "doc", TREE, tables()).assembler();
 
-        assertThatThrownBy(() -> new ResolverProcessor(assembler, store, dead::add))
+        assertThatThrownBy(() -> new ResolverProcessor(assembler, store, (from, released) -> dead.add(released)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

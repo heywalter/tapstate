@@ -50,7 +50,7 @@ class NoLevelForwardsABoundItHasNotEarnedTest {
     @Test
     void aResolverDoesNotPassOnABoundThatArrivedWithoutAnEdge() throws Exception {
         Processor resolver = new ResolverProcessor(TOPOLOGY.vertexAt(List.of("policies")),
-                new HeapNestStore<>(), element -> {
+                new HeapNestStore<>(), (from, released) -> {
                 });
 
         assertThat(accepts(resolver)).isTrue();

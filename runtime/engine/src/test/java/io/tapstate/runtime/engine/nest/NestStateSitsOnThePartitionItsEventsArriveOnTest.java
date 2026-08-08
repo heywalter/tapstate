@@ -95,7 +95,7 @@ class NestStateSitsOnThePartitionItsEventsArriveOnTest {
         }
         NestDag.attach(dag, topology, "doc", "customer", "doc",
                 alias -> List.of(sources.get(alias)),
-                new NestBinding(tables(), NestBinding.onHeap(), element -> { }),
+                new NestBinding(tables(), NestBinding.onHeap(), (from, released) -> { }),
                 vertex -> 0, null);
     }
 
@@ -172,7 +172,7 @@ class NestStateSitsOnThePartitionItsEventsArriveOnTest {
                 ? new AssemblerProcessor(vertex, topology.slots(),
                         (NestStore<RootAssembly>) (NestStore<?>) store, "doc")
                 : new ResolverProcessor(vertex, (NestStore<ResolverState>) (NestStore<?>) store,
-                        element -> { });
+                        (from, released) -> { });
         TestOutbox outbox = new TestOutbox(128);
         try {
             processor.init(outbox, new TestProcessorContext());

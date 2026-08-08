@@ -18,12 +18,15 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 class ResolverStateTest {
 
+    /** When a change entered the bucket. These tests are about what is held, not about how long for. */
+    private static final long ARRIVED = 1_700_000_000_000L;
+
     /** One child element waiting on this key, carrying the position the frontier must not pass. */
     private static NestElement child(String chain, long seq, String token, Object... pairs) {
         return new NestElement(
                 element(List.of("items"), "P1", pairs[1], null),
                 row(pairs), at(seq),
-                Map.of(chain, new ChainPosition(at(seq), token)));
+                Map.of(chain, new ChainPosition(at(seq), token)), seq);
     }
 
     @Test
@@ -31,7 +34,7 @@ class ResolverStateTest {
         ResolverState state = new ResolverState();
         state.declare("C1", at(1));
 
-        assertThat(state.resolve(child("items", 2, "t2", "sku", "a"))).isEqualTo(Resolution.RESOLVED);
+        assertThat(state.resolve(child("items", 2, "t2", "sku", "a"), ARRIVED)).isEqualTo(Resolution.RESOLVED);
         assertThat(state.parentKey()).isEqualTo("C1");
     }
 
@@ -40,7 +43,7 @@ class ResolverStateTest {
         ResolverState state = new ResolverState();
         NestElement early = child("items", 2, "t2", "sku", "a");
 
-        assertThat(state.resolve(early)).isEqualTo(Resolution.HELD);
+        assertThat(state.resolve(early, ARRIVED)).isEqualTo(Resolution.HELD);
         assertThat(state.waiting()).containsExactly(early);
 
         assertThat(state.declare("C1", at(3))).containsExactly(early);
@@ -75,7 +78,7 @@ class ResolverStateTest {
         ResolverState state = new ResolverState();
         state.declare("C1", at(5));
 
-        assertThat(state.deleteMapping(at(5))).isEmpty();
+        assertThat(state.deleteMapping(at(5), ARRIVED)).isEmpty();
         assertThat(state.deleted()).isFalse();
         assertThat(state.parentKey()).isEqualTo("C1");
     }
@@ -84,7 +87,7 @@ class ResolverStateTest {
     void deletingTheRowLeavesAVersionedTombstoneNotAHole() {
         ResolverState state = new ResolverState();
         state.declare("C1", at(5));
-        state.deleteMapping(at(10));
+        state.deleteMapping(at(10), ARRIVED);
 
         assertThat(state.deleted()).isTrue();
         assertThat(state.parentKey()).isNull();
@@ -103,11 +106,15 @@ class ResolverStateTest {
     void deletingTheRowDrainsWhatWasWaitingImmediately() {
         ResolverState state = new ResolverState();
         NestElement orphaned = child("items", 2, "t2", "sku", "a");
-        state.resolve(orphaned);
+        state.resolve(orphaned, ARRIVED);
 
         // The parent is known deleted, so the bucket empties now rather than waiting for a timeout: those
         // children can never resolve, and holding them would pin the frontier for nothing.
-        assertThat(state.deleteMapping(at(10))).containsExactly(orphaned);
+        List<ReleasedChild> released = state.deleteMapping(at(10), ARRIVED);
+        assertThat(released).extracting(ReleasedChild::child).containsExactly(orphaned);
+        assertThat(released).extracting(ReleasedChild::verdict)
+                .describedAs("a parent that is known deleted is absent for certain, never a guess")
+                .containsExactly(PendingVerdict.PARENT_ABSENT);
         assertThat(state.waiting()).isEmpty();
     }
 
@@ -115,9 +122,9 @@ class ResolverStateTest {
     void aChildArrivingAfterTheRowIsDeletedIsNotHeld() {
         ResolverState state = new ResolverState();
         state.declare("C1", at(1));
-        state.deleteMapping(at(10));
+        state.deleteMapping(at(10), ARRIVED);
 
-        assertThat(state.resolve(child("items", 11, "t11", "sku", "a")))
+        assertThat(state.resolve(child("items", 11, "t11", "sku", "a"), ARRIVED))
                 .isEqualTo(Resolution.PARENT_ABSENT);
         assertThat(state.waiting()).isEmpty();
     }
@@ -125,9 +132,9 @@ class ResolverStateTest {
     @Test
     void theWaitingBucketReportsThePositionsTheFrontierMustNotPass() {
         ResolverState state = new ResolverState();
-        state.resolve(child("items", 7, "t7", "sku", "a"));
-        state.resolve(child("items", 4, "t4", "sku", "b"));
-        state.resolve(child("prices", 9, "t9", "amount", 1));
+        state.resolve(child("items", 7, "t7", "sku", "a"), ARRIVED);
+        state.resolve(child("items", 4, "t4", "sku", "b"), ARRIVED);
+        state.resolve(child("prices", 9, "t9", "amount", 1), ARRIVED);
 
         assertThat(state.lowestHeldByChain()).containsExactly(
                 Map.entry("items", new ChainPosition(at(4), "t4")),
@@ -141,7 +148,7 @@ class ResolverStateTest {
 
         // The bucket is non-empty only while there is no mapping entry at all: a live mapping resolves on
         // the spot and a tombstone answers absent, so nothing accumulates behind either.
-        assertThat(state.resolve(child("items", 6, "t6", "sku", "a"))).isEqualTo(Resolution.RESOLVED);
+        assertThat(state.resolve(child("items", 6, "t6", "sku", "a"), ARRIVED)).isEqualTo(Resolution.RESOLVED);
         assertThat(state.waiting()).isEmpty();
     }
 
@@ -149,14 +156,14 @@ class ResolverStateTest {
     void everyMutationCarriesAnOrder() {
         ResolverState state = new ResolverState();
         assertThatNullPointerException().isThrownBy(() -> state.declare("C1", null));
-        assertThatNullPointerException().isThrownBy(() -> state.deleteMapping(null));
+        assertThatNullPointerException().isThrownBy(() -> state.deleteMapping(null, ARRIVED));
     }
 
     @Test
     void theStateRoundTripsWithItsTombstoneAndItsWaitingChildren() throws Exception {
         ResolverState state = new ResolverState();
         NestElement waiting = child("items", 2, "t2", "sku", "a");
-        state.resolve(waiting);
+        state.resolve(waiting, ARRIVED);
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
@@ -174,7 +181,7 @@ class ResolverStateTest {
     @Test
     void aHeldChildKeepsTheTokenItArrivedWith() {
         ResolverState state = new ResolverState();
-        state.resolve(child("items", 2, "binlog.000042:1024", "sku", "a"));
+        state.resolve(child("items", 2, "binlog.000042:1024", "sku", "a"), ARRIVED);
 
         List<NestElement> released = state.declare("C1", at(3));
         assertThat(released).hasSize(1);

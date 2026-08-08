@@ -213,7 +213,7 @@ class NestAdvancesTheDurableFrontierTest {
                 NestTopology.compile("p", "doc", body, tables::get),
                 "doc", "c", "doc",
                 alias -> List.of(byAlias.get(alias)),
-                new NestBinding(tables::get, NestBinding.onHeap(), element -> { }),
+                new NestBinding(tables::get, NestBinding.onHeap(), (from, released) -> { }),
                 vertex -> outbound.merge(vertex, 1, Integer::sum) - 1,
                 new NestFrontier(AXES, alias -> List.of(List.of(chainOfAlias.get(alias)))));
 

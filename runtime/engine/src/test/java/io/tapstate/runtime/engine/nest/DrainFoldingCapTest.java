@@ -70,7 +70,7 @@ class DrainFoldingCapTest {
     void aResolverWiderThanTheCeilingStoresPartwayThroughTheDrain() throws Exception {
         RecordingStore<ResolverState> store = new RecordingStore<>();
         ResolverProcessor processor = new ResolverProcessor(
-                TOPOLOGY.vertexAt(List.of("policies")), store, element -> { });
+                TOPOLOGY.vertexAt(List.of("policies")), store, (from, released) -> { });
         processor.init(new TestOutbox(KEYS * 2), new TestProcessorContext());
 
         TestInbox inbox = new TestInbox();

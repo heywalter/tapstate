@@ -1,7 +1,12 @@
 package io.tapstate.app;
 
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.runtime.engine.nest.NestDeadLetter;
-import io.tapstate.runtime.engine.nest.NestElement;
+import io.tapstate.runtime.engine.nest.NestError;
+import io.tapstate.runtime.engine.nest.NestVertex;
+import io.tapstate.runtime.engine.nest.ReleasedChild;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,12 +33,28 @@ final class CountingNestDeadLetter implements NestDeadLetter {
     private final AtomicLong count = new AtomicLong();
 
     @Override
-    public void parentAbsent(NestElement element) {
+    public void unassemblable(NestVertex from, ReleasedChild released) {
         long seen = count.incrementAndGet();
-        if (isFirstOfItsDecade(seen)) {
-            LOG.warn("nest dropped a change whose parent row is gone: {} (dropped {} so far on this member)",
-                    element.ref(), seen);
+        if (!isFirstOfItsDecade(seen)) {
+            return;
         }
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("chain", chainOf(released));
+        args.put("bucket", from.name());
+        args.put("order", released.child().order());
+        args.put("verdict", released.verdict().verdict());
+        args.put("heldFor", released.heldFor());
+        // Built rather than thrown: the code names what happened and the pipeline goes on running, which
+        // is what this severity means. Throwing it would stop a job over a reference pointing nowhere.
+        TapstateException coded = new TapstateException(NestError.PENDING_PROTECTION_EXPIRED, args, null);
+        LOG.warn("{} ({} handed over so far on this member)", coded.getMessage(), seen);
+    }
+
+    /** The streams the change covered, which is what a reader needs to know where to go looking. */
+    private static String chainOf(ReleasedChild released) {
+        return released.child().positions().isEmpty()
+                ? "none"
+                : String.join(",", released.child().positions().keySet());
     }
 
     /** How many have been handed over on this member — what a caller asserts on rather than the log. */

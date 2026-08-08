@@ -148,19 +148,19 @@ class ADocumentMayNotHoldMoreElementsThanItsLimitTest {
         return new KeyedElement(List.of(customerId), new NestElement(
                 new ElementRef(List.of("policies"), null, List.of("PN-" + policyId), List.of(policyId)),
                 row("policy_id", policyId, "policy_no", "PN-" + policyId), at(seq),
-                Map.of("policy", new ChainPosition(at(seq), null))));
+                Map.of("policy", new ChainPosition(at(seq), null)), seq));
     }
 
     private static KeyedElement policyDeleted(long seq, String customerId, String policyId) {
         return new KeyedElement(List.of(customerId), new NestElement(
                 new ElementRef(List.of("policies"), null, List.of("PN-" + policyId), List.of(policyId)),
-                null, at(seq), Map.of("policy", new ChainPosition(at(seq), null))));
+                null, at(seq), Map.of("policy", new ChainPosition(at(seq), null)), seq));
     }
 
     private static KeyedElement claim(long seq, String customerId, String policyId, String claimId) {
         return new KeyedElement(List.of(customerId), new NestElement(
                 new ElementRef(List.of("policies", "claims"), List.of(policyId), List.of(claimId), null),
                 row("claim_id", claimId, "policy_id", policyId), at(seq),
-                Map.of("claim", new ChainPosition(at(seq), null))));
+                Map.of("claim", new ChainPosition(at(seq), null)), seq));
     }
 }

@@ -200,7 +200,7 @@ class ARunningNestReportsWhatItsStateCostsTest {
                 s -> (SupplierEx<TransformPort>) () -> event -> List.of(event),
                 syncElement -> (SupplierEx<SinkWriter>) DiscardingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onMap(), element -> { }));
+                new NestBinding(tables::get, NestBinding.onMap(), (from, released) -> { }));
 
         return PipelineDagBuilder.build(pipeline, bindings);
     }

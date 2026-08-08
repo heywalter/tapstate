@@ -315,7 +315,7 @@ nest.migration-parking-limit-exceeded:
   message: "Moving a subtree to document {newRootKey} parked {bytes} bytes, past the limit of {limit}."
   solution: "Raise the parking limit, or make the structural change in smaller steps."
 nest.pending-protection-expired:
-  message: "An event of chain {chain} waiting in {bucket} since {order} was released after {maxAge}: {verdict}."
+  message: "An event of chain {chain} waiting in {bucket} since {order} was released after {heldFor}: {verdict}."
   solution: "parent-absent is a dangling reference in the source and is normal; wall-clock-backstop means a slow parent may have been given up on, and is worth investigating."
 nest.key-change-tracking-requires-before-image:
   message: "Stream {alias} tracks structural key changes, but source table {table} provides no before image."

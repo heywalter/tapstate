@@ -5,17 +5,25 @@ import java.io.Serializable;
 /**
  * Where changes that can never reach a document go.
  *
- * <p>A child whose parent row is known deleted, and a child still waiting when that parent is deleted,
- * are both past saving: no later event will give them a document to sit in. They must still go somewhere.
- * Dropping them loses data that no assertion about a document can ever see, because those rows were never
- * going to appear in one - and holding them instead would pin the durable frontier for events that will
- * never be emitted.
+ * <p>Three things end up here and they are not the same news. A child whose parent row is known deleted,
+ * and a child still waiting when that parent is deleted, are past saving: no later event will give them a
+ * document to sit in. A child whose parent was established absent — the stream it would have come on
+ * finished loading and has been read past the child's own time — is the ordinary shape of a reference
+ * pointing nowhere. A child the backstop gave up on is neither: nothing was established, the wait was
+ * simply ended so the frontier could move again, and the parent may have been about to arrive. The verdict
+ * is what tells them apart, and running them together into one undifferentiated channel leaves whoever
+ * reads it unable to see which of "this is how the data is" and "a row may just have been lost" they are
+ * looking at.
+ *
+ * <p>They must still go somewhere. Dropping them loses data that no assertion about a document can ever
+ * see, because those rows were never going to appear in one - and holding them instead would pin the
+ * durable frontier for events that will never be emitted.
  *
  * <p>Whoever builds the vertex decides where they go; the vertex only insists that they go.
  */
 @FunctionalInterface
 public interface NestDeadLetter extends Serializable {
 
-    /** Hands over a change whose parent row is known to be gone. */
-    void parentAbsent(NestElement element);
+    /** Hands over a change that can never reach a document, from the level that was holding it. */
+    void unassemblable(NestVertex from, ReleasedChild released);
 }

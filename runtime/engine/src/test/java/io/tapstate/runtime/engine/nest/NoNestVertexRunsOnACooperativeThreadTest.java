@@ -48,6 +48,6 @@ class NoNestVertexRunsOnACooperativeThreadTest {
     private static Processor processorFor(NestTopology topology, NestVertex vertex) {
         return vertex.isAssembler()
                 ? new AssemblerProcessor(vertex, topology.slots(), new HeapNestStore<>(), "doc")
-                : new ResolverProcessor(vertex, new HeapNestStore<>(), element -> { });
+                : new ResolverProcessor(vertex, new HeapNestStore<>(), (from, released) -> { });
     }
 }
