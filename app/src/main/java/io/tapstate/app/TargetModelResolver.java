@@ -114,23 +114,58 @@ final class TargetModelResolver {
     }
 
     private static String compoundCase(String name, boolean capitalizeFirst) {
-        String separated = name
-                .replaceAll("([a-z0-9])([A-Z])", "$1 $2")
-                .replaceAll("([A-Z]+)([A-Z][a-z])", "$1 $2");
         StringBuilder result = new StringBuilder();
-        for (String word : separated.split("[^A-Za-z0-9]+")) {
-            if (word.isEmpty()) {
+        StringBuilder word = new StringBuilder();
+        for (int index = 0; index < name.length(); index++) {
+            char current = name.charAt(index);
+            if (!isAsciiAlphaNumeric(current)) {
+                appendWord(result, word, capitalizeFirst);
                 continue;
             }
-            String lower = word.toLowerCase(Locale.ROOT);
-            if (result.length() > 0 || capitalizeFirst) {
-                result.append(Character.toUpperCase(lower.charAt(0)));
-                result.append(lower.substring(1));
-            } else {
-                result.append(lower);
+            boolean lowerOrDigitFollowedByUpper = index > 0
+                    && isAsciiLowerOrDigit(name.charAt(index - 1))
+                    && isAsciiUpper(current);
+            boolean acronymFollowedByWord = isAsciiUpper(current)
+                    && index + 2 < name.length()
+                    && isAsciiUpper(name.charAt(index + 1))
+                    && isAsciiLower(name.charAt(index + 2));
+            if (lowerOrDigitFollowedByUpper || acronymFollowedByWord) {
+                appendWord(result, word, capitalizeFirst);
             }
+            word.append(current);
         }
+        appendWord(result, word, capitalizeFirst);
         return result.toString();
+    }
+
+    private static void appendWord(StringBuilder result, StringBuilder word, boolean capitalizeFirst) {
+        if (word.isEmpty()) {
+            return;
+        }
+        String lower = word.toString().toLowerCase(Locale.ROOT);
+        if (result.length() > 0 || capitalizeFirst) {
+            result.append(Character.toUpperCase(lower.charAt(0)));
+            result.append(lower.substring(1));
+        } else {
+            result.append(lower);
+        }
+        word.setLength(0);
+    }
+
+    private static boolean isAsciiAlphaNumeric(char value) {
+        return isAsciiUpper(value) || isAsciiLower(value) || value >= '0' && value <= '9';
+    }
+
+    private static boolean isAsciiUpper(char value) {
+        return value >= 'A' && value <= 'Z';
+    }
+
+    private static boolean isAsciiLower(char value) {
+        return value >= 'a' && value <= 'z';
+    }
+
+    private static boolean isAsciiLowerOrDigit(char value) {
+        return isAsciiLower(value) || value >= '0' && value <= '9';
     }
 
     /** The discovered field a key column names; a key naming no discovered field is a broken source model. */

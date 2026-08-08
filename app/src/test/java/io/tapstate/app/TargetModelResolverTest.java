@@ -104,6 +104,17 @@ class TargetModelResolverTest {
     }
 
     @Test
+    void bulk_table_rename_preserves_acronym_and_digit_boundaries() {
+        SourceTable server = new SourceTable(
+                "HTTP2ServerV1", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+
+        TargetTable target = TargetModelResolver.toTargetTable(server,
+                new RenameSpec(null, RenameCase.PASCAL, null, null));
+
+        assertThat(target.name()).isEqualTo("Http2ServerV1");
+    }
+
+    @Test
     void bulk_table_rename_supports_upper_case() {
         SourceTable address = new SourceTable(
                 "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
