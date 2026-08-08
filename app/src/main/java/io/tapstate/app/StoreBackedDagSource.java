@@ -20,8 +20,11 @@ import io.tapstate.runtime.engine.FrontierOrders;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
 import io.tapstate.runtime.engine.SinkAckFactory;
 import io.tapstate.runtime.engine.nest.NestBinding;
+import io.tapstate.runtime.engine.nest.NestClock;
 import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestTable;
+import io.tapstate.runtime.engine.nest.PendingProtection;
+import io.tapstate.runtime.engine.nest.PendingWatch;
 import io.tapstate.runtime.srs.SrsReadCursorPublisherFactory;
 import io.tapstate.runtime.srs.SrsSourceProcessor;
 import io.tapstate.runtime.srs.StartFrom;
@@ -247,7 +250,25 @@ final class StoreBackedDagSource implements DagSource {
                 // Laid on here rather than held as one value for the process because the shape each
                 // number bounds is the pipeline's, not the process's: one tree is deep and narrow and
                 // the next is shallow and wide, and a single number covers neither.
-                PipelineDagBuilder.nestSettings(pipeline, byAlias::get, nestSettings));
+                PipelineDagBuilder.nestSettings(pipeline, byAlias::get, nestSettings),
+                // How long a change may wait for a parent, and what the levels may be told about the
+                // streams involved so that most waits end on something established rather than on a
+                // clock running out.
+                new PendingWatch(new PendingProtection(PendingWatch.DEFAULT_BACKSTOP),
+                        new StoreBackedNestStreamFacts(tableByStream(byAlias), chainIdByTable(pipeline),
+                                sourceIdByTable),
+                        NestClock.SYSTEM));
+    }
+
+    /**
+     * The table behind each stream a nest reads, which is what turns an alias on an edge into something the
+     * capture side has an answer about. An alias resolving to a step rather than a table keeps that step's
+     * name here and is simply never matched, which reads as "nothing known about it".
+     */
+    private static Map<String, String> tableByStream(Map<String, NestTable> byAlias) {
+        Map<String, String> tableByStream = new LinkedHashMap<>();
+        byAlias.forEach((alias, table) -> tableByStream.put(alias, table.name()));
+        return tableByStream;
     }
 
     /**

@@ -1,5 +1,7 @@
 package io.tapstate.runtime.engine.nest;
 
+import com.hazelcast.core.HazelcastInstance;
+
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Objects;
@@ -30,6 +32,11 @@ public record PendingWatch(PendingProtection protection, NestStreamFacts facts, 
         Objects.requireNonNull(protection, "protection");
         Objects.requireNonNull(facts, "facts");
         Objects.requireNonNull(clock, "clock");
+    }
+
+    /** This watch with its facts bound to {@code member}, which is where they will be asked. */
+    public PendingWatch boundTo(HazelcastInstance member) {
+        return new PendingWatch(protection, facts.bind(member), clock);
     }
 
     /**

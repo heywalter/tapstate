@@ -86,7 +86,9 @@ class LevelPassesOnEveryChainsBoundTest {
 
         await(() -> SEEN.contains(bound(LEFT_ONLY, 100)) && SEEN.contains(bound(RIGHT_ONLY, 200)));
 
-        assertThat(SEEN)
+        // Asserted on a snapshot: the job goes on emitting after the await is satisfied, and a
+        // synchronized list synchronizes each call but not an iteration walking it.
+        assertThat(List.copyOf(SEEN))
                 .describedAs("a level keeping its books on the combined bound would never hear about "
                         + "either of these, and both chains would stand still with nothing reported")
                 .contains(bound(LEFT_ONLY, 100), bound(RIGHT_ONLY, 200));
@@ -98,7 +100,7 @@ class LevelPassesOnEveryChainsBoundTest {
 
         await(() -> SEEN.contains(bound(BOTH, 50)));
 
-        assertThat(SEEN)
+        assertThat(List.copyOf(SEEN))
                 .describedAs("reaching 50 at all means both edges had spoken, and the higher of the two "
                         + "would have claimed changes still travelling the other edge")
                 .doesNotContain(bound(BOTH, 70));

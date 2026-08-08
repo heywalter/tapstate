@@ -94,6 +94,43 @@ class AVertexReleasesWhatItHoldsForAParentThatWillNotComeTest {
         processor.process(ordinal, inbox);
     }
 
+    /** Facts that count how often they are asked, so the cost of sweeping can be measured. */
+    private static final class CountingFacts implements NestStreamFacts {
+
+        private int asked;
+
+        @Override
+        public boolean loaded(String stream) {
+            asked++;
+            return false;
+        }
+
+        @Override
+        public String clockOf(String stream) {
+            return "db1";
+        }
+    }
+
+    @Test
+    void theSweepDoesNotRunOnEveryIdleTurn() throws Exception {
+        // A vertex with nothing arriving is asked to tryProcess over and over. Both halves of a sweep read
+        // the layer behind the map - what each key still holds, and whether the parent's stream has
+        // finished loading - so sweeping on every turn would put a store read on the idle path, which is
+        // the one place it must never be. Nothing here is urgent to the millisecond.
+        CountingFacts facts = new CountingFacts();
+        ResolverProcessor vertex = vertex(facts);
+        feed(vertex, CLAIMS, claim(2, "CL1", "P1"));
+
+        vertex.tryProcess();
+        vertex.tryProcess();
+        vertex.tryProcess();
+        assertThat(facts.asked).isEqualTo(1);
+
+        now += Duration.ofSeconds(1).toMillis();
+        vertex.tryProcess();
+        assertThat(facts.asked).isEqualTo(2);
+    }
+
     @Test
     void aChangeIsReleasedOnceItsParentsStreamHasFinishedLoadingAndBeenReadPastIt() throws Exception {
         ResolverProcessor vertex = vertex(oneDatabase(true));

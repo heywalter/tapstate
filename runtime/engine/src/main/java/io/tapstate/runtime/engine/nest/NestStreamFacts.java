@@ -1,5 +1,7 @@
 package io.tapstate.runtime.engine.nest;
 
+import com.hazelcast.core.HazelcastInstance;
+
 import java.io.Serializable;
 
 /**
@@ -34,6 +36,16 @@ public interface NestStreamFacts extends Serializable {
             return null;
         }
     };
+
+    /**
+     * Binds these facts to the member whose vertices are about to ask them, returning what to ask from
+     * there on. It exists because whether a read has finished is not a fact of the graph but of a store
+     * that is only reachable once the vertex is where it will run: only coordinates travel with the job.
+     * Facts that need nothing from the member answer themselves, which is why the default is to do so.
+     */
+    default NestStreamFacts bind(HazelcastInstance member) {
+        return this;
+    }
 
     /** Whether the initial read of {@code stream} has produced everything it was going to produce. */
     boolean loaded(String stream);

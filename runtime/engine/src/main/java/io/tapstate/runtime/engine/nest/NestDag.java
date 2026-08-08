@@ -224,6 +224,7 @@ public final class NestDag {
         private final PendingWatch watch;
         private transient ReplayFloor floor;
         private transient NestBinding.NestStores bound;
+        private transient PendingWatch boundWatch;
 
         private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
                 NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
@@ -247,6 +248,9 @@ public final class NestDag {
             // Metered from here and nowhere else: this is the one place a job is what the stores are
             // being bound for, and a reading can only be left from a thread running its processors.
             bound = stores.bind(context.hazelcastInstance(), JetNestStateGauge::new);
+            // Whether a stream has finished its initial read is a fact of a store, not of the graph, so
+            // it can only be asked from the member the vertex will run on.
+            boundWatch = watch.boundTo(context.hazelcastInstance());
         }
 
         @Override
@@ -257,7 +261,7 @@ public final class NestDag {
                         ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
                                 axes, chainsByOrdinal, floor, settings)
                         : new ResolverProcessor(spec, bound.forResolver(spec), deadLetter, axes,
-                                chainsByOrdinal, floor, watch));
+                                chainsByOrdinal, floor, boundWatch));
             }
             return processors;
         }

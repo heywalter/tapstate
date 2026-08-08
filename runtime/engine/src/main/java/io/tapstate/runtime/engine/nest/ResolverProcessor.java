@@ -47,6 +47,17 @@ import java.util.Set;
  */
 public final class ResolverProcessor extends AbstractProcessor {
 
+    /**
+     * The shortest gap between two sweeps for changes that may stop waiting.
+     *
+     * <p>A vertex with nothing arriving is asked to make progress over and over, and a sweep reads the
+     * layer behind the map twice over - what each key still holds, and whether the stream a parent would
+     * come on has finished loading. Sweeping every turn would put those reads on the idle path, which is
+     * the one place they must never be. Nothing here is urgent to the second, let alone the millisecond:
+     * what is being bounded is measured in hours.
+     */
+    private static final long SWEEP_INTERVAL_MILLIS = 1_000L;
+
     private final NestVertex vertex;
     private final NestStore<ResolverState> store;
     private final NestDeadLetter deadLetter;
@@ -86,6 +97,9 @@ public final class ResolverProcessor extends AbstractProcessor {
      * had it existed, it would have come past here first.
      */
     private Long parentStreamReached;
+
+    /** When the last sweep ran, or null before the first one. */
+    private Long sweptAt;
 
     private final PendingWatch watch;
 
@@ -177,6 +191,10 @@ public final class ResolverProcessor extends AbstractProcessor {
             return;
         }
         long now = watch.clock().millis();
+        if (sweptAt != null && now - sweptAt < SWEEP_INTERVAL_MILLIS) {
+            return;
+        }
+        sweptAt = now;
         PendingRelease rule = releaseRule();
         Iterator<Object> keys = holding.iterator();
         while (keys.hasNext()) {
