@@ -1,9 +1,12 @@
 package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.config.MapConfig;
+import com.hazelcast.core.DistributedObject;
 import com.hazelcast.core.HazelcastInstance;
+import com.hazelcast.map.IMap;
 import io.tapstate.core.common.TapstateException;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -19,6 +22,12 @@ import java.util.Set;
  * configuration again is accepted, adding a different one is refused by the substrate, and the number
  * already in place is the one that remains in force. So the three cases are not symmetrical, and treating
  * them as though they were is how a pipeline comes to run on a budget its own artifact contradicts.
+ *
+ * <p><b>Settled before the map is made, equally.</b> Also measured: a configuration written for a map that
+ * already exists is taken without complaint and applies to nothing - 3,000 entries written under a
+ * process-wide 5,000, a budget of 271 then applied, and 3,878 of 4,000 still resident. The substrate says
+ * nothing here, and neither does the configuration afterwards: it reads back as the number that was asked
+ * for. So this is the quieter of the two failures and is refused before the write rather than after it.
  */
 public final class NestMemoryBudget {
 
@@ -38,6 +47,7 @@ public final class NestMemoryBudget {
      * still has - that it can be started with a different number tomorrow.
      */
     public static void applyTo(HazelcastInstance member, Set<String> namespaces, NestSettings settings) {
+        Set<String> alreadyMade = mapsAlreadyOn(member);
         for (String namespace : namespaces) {
             MapConfig wanted = settings.backedStateMaps(namespace);
             int asked = wanted.getEvictionConfig().getSize();
@@ -58,14 +68,41 @@ public final class NestMemoryBudget {
             if (fallsBackTo.getEvictionConfig().getSize() == asked) {
                 continue;
             }
+            // Settled the first time the name is configured means settled before the map is made, too: a
+            // configuration written for one that already exists is taken and applies to nothing. This is the
+            // worse of the two ways the number can fail to be in force, because afterwards the configuration
+            // reads back as the one that was asked for - the map running on one number while every way of
+            // asking says the other. Refused here, before the write that would be accepted and ignored.
+            if (alreadyMade.contains(namespace)) {
+                refuse(namespace, fallsBackTo.getEvictionConfig().getSize(), asked);
+            }
             member.getConfig().addMapConfig(wanted);
         }
+    }
+
+    /**
+     * The state maps that have already been made on {@code member}. Asked once, and never by name: asking
+     * for a map by name is what makes one, so a check written that way would create every map it went on to
+     * report as absent - and would fix each of them on the pattern in the act of looking.
+     */
+    private static Set<String> mapsAlreadyOn(HazelcastInstance member) {
+        Set<String> names = new HashSet<>();
+        for (DistributedObject object : member.getDistributedObjects()) {
+            if (object instanceof IMap<?, ?>) {
+                names.add(object.getName());
+            }
+        }
+        return names;
     }
 
     private static void refuseIfDifferent(String namespace, int configured, int asked) {
         if (configured == asked) {
             return;
         }
+        refuse(namespace, configured, asked);
+    }
+
+    private static void refuse(String namespace, int configured, int asked) {
         throw new TapstateException(NestError.MEMORY_BUDGET_CHANGED_WHILE_RUNNING,
                 Map.of("namespace", namespace,
                         "configured", (long) configured,

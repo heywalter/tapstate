@@ -33,6 +33,13 @@ import org.junit.jupiter.api.Test;
  *
  * <p>A pipeline asking for what the process already gives is left alone entirely. Pinning an exact
  * configuration that merely repeats the pattern would buy nothing and cost the ability to ever change it.
+ *
+ * <p><b>Settled the first time the name is configured means settled before the map is made, too.</b>
+ * Measured: writing a configuration for a map that already exists is accepted and changes nothing about it
+ * - 3,000 entries written under a process-wide 5,000, a budget of 271 then applied, and 3,878 of 4,000
+ * still resident afterwards. This is the worse half of the pair, because the configuration reads back
+ * afterwards as the number that was asked for: the map runs on one number while every way of asking says
+ * the other. So the moment to refuse is before the write that would be accepted and ignored.
  */
 class APipelineBudgetReachesItsOwnMapsTest {
 
@@ -174,6 +181,81 @@ class APipelineBudgetReachesItsOwnMapsTest {
         assertThat(((TapstateException) thrown).args())
                 .containsEntry("configured", 40_000L)
                 .containsEntry("requested", 70_000L);
+    }
+
+    /**
+     * Makes the map exist, by the same call a level of a running pipeline makes it with. Nothing else on
+     * the process brings one into being: the state maps are made by the vertices that write to them.
+     */
+    private void mapIsAlreadyThere(String namespace) {
+        member.getMap(namespace);
+    }
+
+    @Test
+    void aBudgetForAMapThatIsAlreadyThereIsRefusedRatherThanAcceptedAndIgnored() {
+        mapIsAlreadyThere(MINE);
+
+        Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(() -> apply(40_000L));
+
+        // Accepting it is the failure this guards: the write goes through, the configuration reads back as
+        // 40,000, and the map goes on holding the process-wide number with nothing anywhere disagreeing.
+        assertThat(thrown).isInstanceOf(TapstateException.class);
+        assertThat(((TapstateException) thrown).code().code())
+                .isEqualTo("nest.memory-budget-changed-while-running");
+    }
+
+    @Test
+    void theRefusalNamesTheNumberTheLiveMapIsActuallyHeldTo() {
+        mapIsAlreadyThere(MINE);
+
+        Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(() -> apply(40_000L));
+
+        // The number in force is the one the map was made under - the process-wide figure - and not the one
+        // being asked for. Naming the asked-for number on both sides would report the state of the world as
+        // the state the author wanted, which is the confusion this whole path exists to prevent.
+        assertThat(((TapstateException) thrown).args())
+                .containsEntry("configured", DEPLOYMENT)
+                .containsEntry("requested", 40_000L);
+    }
+
+    @Test
+    void aBudgetMatchingWhatTheLiveMapAlreadyHoldsIsNotRefused() {
+        mapIsAlreadyThere(MINE);
+
+        // The discriminating case, and the reason the check cannot simply be "is the map there". A pipeline
+        // whose author wrote no budget asks for the process-wide number on every start, and its maps are
+        // there from the run before; refusing that would be refusing the ordinary restart.
+        assertThatCode(() -> apply(DEPLOYMENT)).doesNotThrowAnyException();
+        assertThat(member.getConfig().getMapConfigs()).doesNotContainKey(MINE);
+    }
+
+    @Test
+    void aPipelineRestartingUnchangedOnALiveMapIsNotRefused() {
+        apply(40_000L);
+        mapIsAlreadyThere(MINE);
+
+        // The map was made after its own configuration was written, so that configuration is the one in
+        // force and asking for it again asks for nothing. The check belongs where the write would happen,
+        // not before the cases that write nothing.
+        assertThatCode(() -> apply(40_000L)).doesNotThrowAnyException();
+        assertThat(sizeOf(MINE)).isEqualTo(40_000);
+    }
+
+    @Test
+    void aProcessWithNothingBehindItsMapsIsStillLeftAloneOnceTheyAreThere() {
+        HazelcastInstance heapOnly = Hazelcast.newHazelcastInstance(memberConfig()
+                .addMapConfig(NestSettings.defaults().stateMaps()));
+        try {
+            heapOnly.getMap(MINE);
+
+            // Nothing is being ignored here, because nothing would have been written: a budget is not
+            // carried onto maps with no store behind them at all. Refusing would turn a shape that is
+            // deliberately left alone into one that cannot start twice.
+            assertThatCode(() -> NestMemoryBudget.applyTo(heapOnly, Set.of(MINE),
+                    NestSettings.defaults().withEntriesHeldInMemory(40_000L))).doesNotThrowAnyException();
+        } finally {
+            heapOnly.shutdown();
+        }
     }
 
     @Test
