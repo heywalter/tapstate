@@ -78,6 +78,7 @@ mcp.server-rejected
 monitor.no-observation
 nest.append-mode-conflicts-with-key-tracking
 nest.array-key-unresolvable
+nest.capacity-estimate-incomplete
 nest.chain-axis-limit-exceeded
 nest.embed-path-conflict
 nest.key-change-tracking-requires-before-image
@@ -90,6 +91,7 @@ nest.root-fanout-limit-exceeded
 nest.root-key-required
 nest.sibling-embeds-target-different-parent-keys
 nest.snapshot-passthrough-forbidden
+nest.state-far-exceeds-memory-budget
 nest.state-paths-changed
 nest.state-served-from-cold-layer
 role.unsupported

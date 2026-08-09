@@ -19,6 +19,7 @@ import io.tapstate.control.core.SchemaQueryService;
 import io.tapstate.control.core.StoredArtifact;
 import io.tapstate.control.core.ValidationDiagnostic;
 import io.tapstate.core.catalog.TapstateCatalog;
+import io.tapstate.core.dsl.DiscoveredTable;
 import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.canonical.CanonicalWriter;
@@ -620,7 +621,8 @@ class ControlApiTest {
      * judges capacity; what this one stands in for is the shape — a coded finding, with named params,
      * over a batch that validated.
      */
-    private static List<ValidationDiagnostic> adviseOnWarnedArtifacts(List<Resource> resources) {
+    private static List<ValidationDiagnostic> adviseOnWarnedArtifacts(
+            List<Resource> resources, Map<String, List<DiscoveredTable>> tablesBySource) {
         List<ValidationDiagnostic> findings = new ArrayList<>();
         for (Resource resource : resources) {
             if (resource.id().startsWith("warned")) {

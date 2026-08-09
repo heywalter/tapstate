@@ -600,7 +600,7 @@ class ApplyServiceTest {
         // There is no plan to review when validation failed, and the refusal is already the message. A
         // rule that ran anyway would be judging half-parsed resources and would bury the actual reason.
         List<List<Resource>> reviewed = new ArrayList<>();
-        ApplyService advised = advisedBy(resources -> {
+        ApplyService advised = advisedBy((resources, tablesBySource) -> {
             reviewed.add(resources);
             return List.of(WIDE_NAMESPACE);
         });
@@ -634,7 +634,7 @@ class ApplyServiceTest {
 
     /** A stand-in advisory rule that reports the same findings for every batch it is handed. */
     private static PlanAdvisories reporting(ValidationDiagnostic... findings) {
-        return resources -> List.of(findings);
+        return (resources, tablesBySource) -> List.of(findings);
     }
 
     /** The service under test, wired to one advisory pass instead of the default no-op. */

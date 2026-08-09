@@ -1,8 +1,10 @@
 package io.tapstate.control.core;
 
+import io.tapstate.core.dsl.DiscoveredTable;
 import io.tapstate.core.model.Resource;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * The advisory pass over a batch that has already validated: findings worth telling the author about
@@ -21,11 +23,20 @@ import java.util.List;
 @FunctionalInterface
 public interface PlanAdvisories {
 
-    /** The findings over one validated batch, in report order; empty when there is nothing to say. */
-    List<ValidationDiagnostic> review(List<Resource> resources);
+    /**
+     * The findings over one validated batch, in report order; empty when there is nothing to say.
+     *
+     * <p>{@code tablesBySource} is what each source in the batch was discovered to hold, keyed by the
+     * source's id — the same reading the validation stack judged the batch against, handed on rather
+     * than taken again. A rule that fetched it for itself would pay a second round trip for an answer
+     * already in hand, and could reach a different one, so a batch would be advised about a state of
+     * the world it was never judged against.
+     */
+    List<ValidationDiagnostic> review(
+            List<Resource> resources, Map<String, List<DiscoveredTable>> tablesBySource);
 
     /** The pass that finds nothing — what an assembly carrying no advisory rules is wired with. */
     static PlanAdvisories none() {
-        return resources -> List.of();
+        return (resources, tablesBySource) -> List.of();
     }
 }

@@ -11,7 +11,7 @@ import io.tapstate.adapters.pdk.PdkSchemaDiscoverer;
 import io.tapstate.adapters.pdk.RegistryConnectorProvisioner;
 import io.tapstate.adapters.pdk.SeedConnectorSweep;
 import io.tapstate.control.core.ApplyService;
-import io.tapstate.control.core.PlanAdvisories;
+import io.tapstate.control.core.NestSizingAdvisories;
 import io.tapstate.control.core.ConnectorCatalogView;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
@@ -41,6 +41,7 @@ import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.logging.LogSink;
 import io.tapstate.core.logging.RingBufferLogSink;
 import io.tapstate.core.logging.SecretRedactor;
+import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.probe.ConnectionProbe;
 import io.tapstate.runtime.probe.DelegatingConnectionProbe;
 import io.tapstate.runtime.probe.DelegatingSchemaDiscoveryProbe;
@@ -177,16 +178,16 @@ class ControlPlaneConfiguration {
     @Bean
     ApplyService applyService(
             ArtifactStore artifactStore, ConnectorCatalogView connectorCatalogView, AuditGate auditGate,
-            SchemaStore schemaStore) {
+            SchemaStore schemaStore, NestSettings nestSettings) {
         // The online apply validates against the live catalog view (the bundled snapshot union the
         // connectors registered so far), so a connector registered at runtime is honoured without a restart.
         // It also reads the schema store, which is what lets it judge a row expression against the columns
         // its sources were discovered to hold - the one check that cannot run offline.
-        // No advisory rule is wired yet, so the assembly names the empty pass rather than leaving the
-        // channel unset: an apply reports no findings because there is nothing asking, not because
-        // something asked and stayed quiet.
+        // The advisory pass sizes each nest against the budget a pipeline that writes none of its own
+        // would run on, which is this process's. Passing the running number rather than a copy is what
+        // keeps a deployment that changed it from being advised against the number it used to have.
         return new ApplyService(connectorCatalogView::merged, artifactStore, auditGate, schemaStore,
-                PlanAdvisories.none());
+                new NestSizingAdvisories(nestSettings.entriesHeldInMemory()));
     }
 
     @Bean

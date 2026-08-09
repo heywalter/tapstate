@@ -1,0 +1,69 @@
+package io.tapstate.core.dsl;
+
+import io.tapstate.core.common.Severity;
+import io.tapstate.core.common.TapstateErrorCode;
+
+import java.util.Set;
+
+/**
+ * The {@code nest} domain's authoring-time capacity codes: what sizing a nest against the memory it
+ * will run on has to say to the author writing it. They are warnings — a batch carrying one is applied,
+ * and the pipeline it describes runs.
+ *
+ * <p>They live apart from the domain's runtime codes because the ring that judges a batch cannot reach
+ * the ring that runs one, the same split the {@code connector} domain already carries between loading a
+ * connector and cataloguing one. The domain is shared, so the codes are still one namespace and still
+ * globally unique.
+ *
+ * <p>{@code placeholders()} is the named-argument contract: every raise site supplies a value for each
+ * name, and the build-time placeholder gate checks the catalog templates against it.
+ */
+public enum NestSizingError implements TapstateErrorCode {
+
+    /**
+     * A level of a nest is estimated to hold so much more than its in-memory budget that nearly every
+     * read of its state would come from storage instead. {@code embedPath} is the path the author wrote
+     * the level at, {@code estimatedEntries} how many entries its tables would put in it,
+     * {@code budget} how many it keeps in memory, and {@code multiple} the ratio that crossed the line.
+     */
+    STATE_FAR_EXCEEDS_MEMORY_BUDGET(
+            "nest.state-far-exceeds-memory-budget",
+            Set.of("pipeline", "embedPath", "estimatedEntries", "budget", "multiple")),
+
+    /**
+     * A level could be sized from only some of the tables that feed it, because the rest report no row
+     * count. {@code counted} of {@code total} is how much of the level the estimate could see; what it
+     * did see is a floor rather than an answer.
+     */
+    CAPACITY_ESTIMATE_INCOMPLETE(
+            "nest.capacity-estimate-incomplete",
+            Set.of("pipeline", "embedPath", "counted", "total"));
+
+    private final String code;
+    private final Set<String> placeholders;
+
+    NestSizingError(String code, Set<String> placeholders) {
+        this.code = code;
+        this.placeholders = placeholders;
+    }
+
+    @Override
+    public String code() {
+        return code;
+    }
+
+    /**
+     * Sizing tells the author what a pipeline will cost to run, never that it may not run. Being over
+     * the budget is the design — what is beyond it is kept on the layer behind and read back — so a
+     * refusal here would reject deployments that are working as intended.
+     */
+    @Override
+    public Severity severity() {
+        return Severity.WARNING;
+    }
+
+    @Override
+    public Set<String> placeholders() {
+        return placeholders;
+    }
+}

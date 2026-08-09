@@ -96,14 +96,17 @@ public final class ApplyService {
             resources.add(parse(draft));
         }
         Workspace workspace = Workspace.of(resources, catalog.get());
-        RowExpressionTypeRules.validate(resources, discoveredTables(resources));
+        // Read once and handed to both: the gate judges the batch against it, then the advisory pass
+        // advises on the same reading rather than paying a second round trip for a possibly different one.
+        Map<String, List<DiscoveredTable>> discovered = discoveredTables(resources);
+        RowExpressionTypeRules.validate(resources, discovered);
         List<Resource> validated = List.copyOf(workspace.resources());
         List<PreparedArtifact> prepared = new ArrayList<>();
         for (Resource resource : validated) {
             String canonicalForm = writer.write(resource);
             prepared.add(new PreparedArtifact(resource, canonicalForm, CanonicalHash.of(canonicalForm)));
         }
-        return new ApplyPlan(prepared, advisories.review(validated));
+        return new ApplyPlan(prepared, advisories.review(validated, discovered));
     }
 
     /** Validates and plans a batch while performing no store or audit write. */
@@ -211,7 +214,10 @@ public final class ApplyService {
                             for (SourceField field : table.fields()) {
                                 columns.put(field.name(), field.type());
                             }
-                            tables.add(new DiscoveredTable(table.name(), columns));
+                            // The row count travels with the columns, absence and all: a table nobody
+                            // counted has to stay distinguishable from one counted and found empty.
+                            tables.add(new DiscoveredTable(
+                                    table.name(), columns, table.approximateRowCount()));
                         }
                         bySource.put(source.id(), tables);
                     });

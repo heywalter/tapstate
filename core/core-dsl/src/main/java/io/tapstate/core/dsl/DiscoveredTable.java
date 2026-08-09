@@ -18,11 +18,21 @@ import java.util.Objects;
  * Keeping the tables apart means an expression is judged against the columns of the table it actually
  * reads, and where it genuinely reads several, against each of them in turn.
  */
-public record DiscoveredTable(String name, Map<String, TapstateType> columns) {
+public record DiscoveredTable(
+        String name, Map<String, TapstateType> columns, Long approximateRowCount) {
 
     public DiscoveredTable {
         Objects.requireNonNull(name, "name");
         columns = columns == null ? Map.of()
                 : Collections.unmodifiableMap(new LinkedHashMap<>(columns));
+    }
+
+    /**
+     * A table whose rows were never counted. Absent is not zero: a rule sizing a level from a count
+     * that was never taken would read an unmeasured table as an empty one, so the absence travels as
+     * an absence and each rule decides what it can still answer without it.
+     */
+    public DiscoveredTable(String name, Map<String, TapstateType> columns) {
+        this(name, columns, null);
     }
 }
