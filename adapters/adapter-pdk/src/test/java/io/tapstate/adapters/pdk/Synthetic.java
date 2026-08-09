@@ -374,6 +374,11 @@ final class Synthetic {
      * the coded discover-failure path.
      */
     private static String discoverSource(String simpleName, String discoverBody) {
+        return discoverSource(simpleName, discoverBody, "");
+    }
+
+    /** As above, with a registerCapabilities body — used to give a discoverable connector a count function. */
+    private static String discoverSource(String simpleName, String discoverBody, String registerBody) {
         return ""
                 + "package synthetic;"
                 + "import io.tapdata.pdk.apis.TapConnector;"
@@ -390,7 +395,7 @@ final class Synthetic {
                 + "import java.util.List;"
                 + "import java.util.function.Consumer;"
                 + "public class " + simpleName + " implements TapConnector {"
-                + "  public void registerCapabilities(ConnectorFunctions functions, TapCodecsRegistry codecs) {}"
+                + "  public void registerCapabilities(ConnectorFunctions functions, TapCodecsRegistry codecs) {" + registerBody + "}"
                 + "  public void init(TapConnectionContext c) {}"
                 + "  public void stop(TapConnectionContext c) {}"
                 + "  public ConnectionOptions connectionTest(TapConnectionContext c, Consumer<TestItem> s) { return ConnectionOptions.create(); }"
@@ -399,21 +404,60 @@ final class Synthetic {
                 + "}";
     }
 
+    /** The one-table discoverSchema body the discovery fixtures share. */
+    private static final String ORDERS_TABLE = ""
+            + "TapTable table = new TapTable(\"orders\");"
+            + "table.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
+            + "table.add(new TapField(\"amount\", \"decimal\"));"
+            + "table.add(new TapIndex().name(\"idx_amount\").unique(false)"
+            + "    .indexField(new TapIndexField().name(\"amount\").fieldAsc(true)));"
+            + "List<TapTable> tables = new ArrayList<>();"
+            + "tables.add(table);"
+            + "s.accept(tables);";
+
     /**
      * A connector whose discoverSchema reports one table with a primary-key field, a plain field and a
-     * non-unique secondary index — enough to prove field, primary-key and index normalization.
+     * non-unique secondary index — enough to prove field, primary-key and index normalization. It
+     * registers no count function, so its tables are the uncounted shape.
      */
     static Path discoverableSource(Path dir) {
+        return SyntheticJar.compileToJar(dir, "synthetic.Discoverable",
+                discoverSource("Discoverable", ORDERS_TABLE));
+    }
+
+    /** As above, plus a count function reporting a fixed row count for whatever table it is handed. */
+    static Path countingDiscoverableSource(Path dir) {
+        return SyntheticJar.compileToJar(dir, "synthetic.CountingDiscoverable",
+                discoverSource("CountingDiscoverable", ORDERS_TABLE,
+                        "functions.supportBatchCount((context, table) -> 4200000L);"));
+    }
+
+    /**
+     * Two tables whose count function throws for the first and answers for the second — the shape that
+     * tells "this table could not be counted" apart from "counting stopped at the first refusal".
+     */
+    static Path partiallyCountableSource(Path dir) {
         String body = ""
-                + "TapTable table = new TapTable(\"orders\");"
-                + "table.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
-                + "table.add(new TapField(\"amount\", \"decimal\"));"
-                + "table.add(new TapIndex().name(\"idx_amount\").unique(false)"
-                + "    .indexField(new TapIndexField().name(\"amount\").fieldAsc(true)));"
+                + "TapTable orders = new TapTable(\"orders\");"
+                + "orders.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
+                + "TapTable items = new TapTable(\"items\");"
+                + "items.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
                 + "List<TapTable> tables = new ArrayList<>();"
-                + "tables.add(table);"
+                + "tables.add(orders);"
+                + "tables.add(items);"
                 + "s.accept(tables);";
-        return SyntheticJar.compileToJar(dir, "synthetic.Discoverable", discoverSource("Discoverable", body));
+        return SyntheticJar.compileToJar(dir, "synthetic.PartiallyCountable",
+                discoverSource("PartiallyCountable", body,
+                        "functions.supportBatchCount((context, table) -> {"
+                                + "if (\"orders\".equals(table.getId())) { throw new RuntimeException(\"count boom\"); }"
+                                + "return 7L; });"));
+    }
+
+    /** As above, but the count throws — the table is still discovered, just not counted. */
+    static Path throwingCountSource(Path dir) {
+        return SyntheticJar.compileToJar(dir, "synthetic.ThrowingCount",
+                discoverSource("ThrowingCount", ORDERS_TABLE,
+                        "functions.supportBatchCount((context, table) -> { throw new RuntimeException(\"count boom\"); });"));
     }
 
     /** A connector whose discoverSchema throws — discovery could not complete, a coded drive failure. */

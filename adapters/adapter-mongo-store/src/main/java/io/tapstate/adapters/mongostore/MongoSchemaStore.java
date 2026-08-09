@@ -119,10 +119,14 @@ public final class MongoSchemaStore implements SchemaStore {
                     .append("fields", List.copyOf(index.fields()))
                     .append("unique", index.unique()));
         }
+        // A table nothing counted stores a null under the key rather than the key being left out; either
+        // reads back as uncounted, and writing it keeps the shape of a stored table the same whether or
+        // not the source could be counted.
         return new Document("name", table.name())
                 .append("fields", fields)
                 .append("primaryKey", List.copyOf(table.primaryKey()))
-                .append("indexes", indexes);
+                .append("indexes", indexes)
+                .append("approximateRowCount", table.approximateRowCount());
     }
 
     /**
@@ -188,7 +192,20 @@ public final class MongoSchemaStore implements SchemaStore {
             }
             indexes.add(new SourceIndex(indexName, stringList(index.get("fields"), id), unique(index, id)));
         }
-        return new SourceTable(name, fields, stringList(table.get("primaryKey"), id), indexes);
+        return new SourceTable(
+                name, fields, stringList(table.get("primaryKey"), id), indexes, approximateRowCount(table));
+    }
+
+    /**
+     * The row count a stored table carries, or null where it carries none — a document written before
+     * counting existed, or a source that could not be counted. Absence stays absence rather than
+     * becoming zero: zero says the table is empty, which is an answer a reader sizing state off it
+     * would act on, and the two must not arrive as the same value. A non-numeric value is read as
+     * absent for the same reason the resolved type is: the model is a derived observation that a
+     * re-discovery replaces, so an unreadable measurement is one nobody took.
+     */
+    private static Long approximateRowCount(Document table) {
+        return table.get("approximateRowCount") instanceof Number number ? number.longValue() : null;
     }
 
     /** Reads a stored array-of-documents field: an absent field is empty, a non-array or non-document element is corrupt. */

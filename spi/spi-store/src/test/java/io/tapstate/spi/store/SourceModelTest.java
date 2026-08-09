@@ -89,6 +89,17 @@ class SourceModelTest {
     }
 
     @Test
+    void aTableCarriesTheRowCountDiscoveryTookAndAbsenceIsNotZero() {
+        SourceTable counted = new SourceTable("orders", List.of(), List.of(), List.of(), 4_200_000L);
+        SourceTable uncounted = new SourceTable("orders", List.of(), List.of(), List.of());
+
+        assertThat(counted.approximateRowCount()).isEqualTo(4_200_000L);
+        assertThat(uncounted.approximateRowCount())
+                .as("a count nobody took is unknown; read as zero it would size a level at nothing")
+                .isNull();
+    }
+
+    @Test
     void requiresTableFieldAndIndexNames() {
         assertThatNullPointerException().isThrownBy(() -> new SourceTable(null, List.of(), List.of(), List.of()));
         assertThatNullPointerException().isThrownBy(() -> new SourceField(null, "int"));

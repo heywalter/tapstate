@@ -91,6 +91,55 @@ class PdkSchemaDiscovererTest {
     }
 
     @Test
+    void carriesTheRowCountFromAConnectorThatCanCount(@TempDir Path dir) {
+        SchemaDiscoverer discoverer =
+                discoverer(Synthetic.countingDiscoverableSource(dir), "synthetic.CountingDiscoverable");
+
+        SourceModel model = discoverer.discover(config());
+
+        assertThat(model.tables().get(0).approximateRowCount()).isEqualTo(4_200_000L);
+    }
+
+    @Test
+    void aConnectorThatRegistersNoCountLeavesItsTablesUncounted(@TempDir Path dir) {
+        SchemaDiscoverer discoverer = discoverer(Synthetic.discoverableSource(dir), "synthetic.Discoverable");
+
+        SourceModel model = discoverer.discover(config());
+
+        assertThat(model.tables().get(0).approximateRowCount())
+                .as("counting is not a capability every connector has, and not having it is not a count of zero")
+                .isNull();
+    }
+
+    @Test
+    void aCountThatThrowsLeavesThatTableUncountedRatherThanFailingTheDiscovery(@TempDir Path dir) {
+        SchemaDiscoverer discoverer = discoverer(Synthetic.throwingCountSource(dir), "synthetic.ThrowingCount");
+
+        SourceModel model = discoverer.discover(config());
+
+        // The count is a measurement taken alongside the schema, never the reason the schema is refused:
+        // a source whose count fails is one an author can still wire, and turning that into a discover
+        // failure would take away the schema over a number nobody asked for.
+        assertThat(model.tables()).extracting(SourceTable::name).containsExactly("orders");
+        assertThat(model.tables().get(0).fields()).extracting(SourceField::name).containsExactly("id", "amount");
+        assertThat(model.tables().get(0).approximateRowCount()).isNull();
+    }
+
+    @Test
+    void aCountFailureOnOneTableDoesNotCostTheOtherTablesTheirCounts(@TempDir Path dir) {
+        SchemaDiscoverer discoverer =
+                discoverer(Synthetic.partiallyCountableSource(dir), "synthetic.PartiallyCountable");
+
+        SourceModel model = discoverer.discover(config());
+
+        assertThat(model.tables()).extracting(SourceTable::name).containsExactly("orders", "items");
+        assertThat(model.tables().get(0).approximateRowCount()).isNull();
+        assertThat(model.tables().get(1).approximateRowCount())
+                .as("one table refusing to be counted says nothing about the next one")
+                .isEqualTo(7L);
+    }
+
+    @Test
     void aConnectorWhoseDiscoverThrowsIsACodedDiscoverFailure(@TempDir Path dir) {
         SchemaDiscoverer discoverer = discoverer(Synthetic.throwingDiscoverSource(dir), "synthetic.ThrowingDiscover");
 

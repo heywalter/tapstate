@@ -10,6 +10,9 @@ import io.tapstate.spi.store.SourceTable;
 import io.tapdata.entity.schema.TapIndex;
 import io.tapdata.entity.schema.TapIndexField;
 import io.tapdata.entity.schema.TapTable;
+import io.tapdata.pdk.apis.functions.connector.source.BatchCountFunction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,16 +44,55 @@ public final class PdkSchemaDiscoverer implements SchemaDiscoverer {
         this.provisioner = provisioner;
     }
 
+    private static final Logger LOG = LoggerFactory.getLogger(PdkSchemaDiscoverer.class);
+
     @Override
     public SourceModel discover(ConnectionConfig config) {
         PdkConnector connector = PdkConnector.open(
                 config.connectorId(), provisioner.resolve(config.connectorId()), config.settings());
         try {
-            return toSourceModel(drive(connector));
+            List<TapTable> tables = drive(connector);
+            return toSourceModel(tables, counts(connector, tables));
         } finally {
             connector.stopQuietly();
             connector.close();
         }
+    }
+
+    /**
+     * How many rows each discovered table holds, for the tables the connector will answer for. Counting
+     * is a capability of its own, separate from discovering: a connector registering no count function
+     * contributes no counts at all, and one whose count fails contributes none for that table.
+     *
+     * <p>A failure here never reaches the caller as a failure. The schema is what discovery was asked
+     * for and the count is taken alongside it; refusing the schema because a number could not be
+     * produced would take away what the author needs over what only sizes their state, and the reader
+     * of a count already has to handle its absence — no connector is obliged to offer one. The failure
+     * is logged rather than swallowed, so a count that never arrives can still be explained.
+     */
+    private static Map<TapTable, Long> counts(PdkConnector connector, List<TapTable> tables) {
+        BatchCountFunction count = connector.functions().getBatchCountFunction();
+        if (count == null) {
+            return Map.of();
+        }
+        Map<TapTable, Long> counted = new IdentityHashMap<>();
+        try {
+            connector.underLoader(() -> {
+                for (TapTable table : tables) {
+                    try {
+                        counted.put(table, count.count(connector.context(), table));
+                    } catch (Throwable t) {
+                        // Per table, so one source refusing to be counted does not cost the rest theirs.
+                        LOG.warn("connector {} could not count table {}: {}",
+                                connector.connectorId(), table.getId(), detail(t));
+                    }
+                }
+                return null;
+            });
+        } catch (Throwable t) {
+            LOG.warn("connector {} could not be asked to count: {}", connector.connectorId(), detail(t));
+        }
+        return counted;
     }
 
     /**
@@ -77,10 +119,11 @@ public final class PdkSchemaDiscoverer implements SchemaDiscoverer {
         }
     }
 
-    private static SourceModel toSourceModel(List<TapTable> tables) {
+    private static SourceModel toSourceModel(List<TapTable> tables, Map<TapTable, Long> counts) {
         List<SourceTable> mapped = new ArrayList<>(tables.size());
         for (TapTable table : tables) {
-            mapped.add(new SourceTable(table.getId(), fields(table), primaryKey(table), indexes(table)));
+            mapped.add(new SourceTable(
+                    table.getId(), fields(table), primaryKey(table), indexes(table), counts.get(table)));
         }
         return new SourceModel(mapped);
     }
