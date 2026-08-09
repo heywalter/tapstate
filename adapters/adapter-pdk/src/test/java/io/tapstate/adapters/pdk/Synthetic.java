@@ -432,25 +432,45 @@ final class Synthetic {
                         "functions.supportBatchCount((context, table) -> 4200000L);"));
     }
 
+    /** The two-table discoverSchema body the multi-table counting fixtures share. */
+    private static final String ORDERS_AND_ITEMS = ""
+            + "TapTable orders = new TapTable(\"orders\");"
+            + "orders.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
+            + "TapTable items = new TapTable(\"items\");"
+            + "items.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
+            + "List<TapTable> tables = new ArrayList<>();"
+            + "tables.add(orders);"
+            + "tables.add(items);"
+            + "s.accept(tables);";
+
     /**
      * Two tables whose count function throws for the first and answers for the second — the shape that
      * tells "this table could not be counted" apart from "counting stopped at the first refusal".
      */
     static Path partiallyCountableSource(Path dir) {
-        String body = ""
-                + "TapTable orders = new TapTable(\"orders\");"
-                + "orders.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
-                + "TapTable items = new TapTable(\"items\");"
-                + "items.add(new TapField(\"id\", \"int\").isPrimaryKey(true).primaryKeyPos(1));"
-                + "List<TapTable> tables = new ArrayList<>();"
-                + "tables.add(orders);"
-                + "tables.add(items);"
-                + "s.accept(tables);";
         return SyntheticJar.compileToJar(dir, "synthetic.PartiallyCountable",
-                discoverSource("PartiallyCountable", body,
+                discoverSource("PartiallyCountable", ORDERS_AND_ITEMS,
                         "functions.supportBatchCount((context, table) -> {"
                                 + "if (\"orders\".equals(table.getId())) { throw new RuntimeException(\"count boom\"); }"
                                 + "return 7L; });"));
+    }
+
+    /** How long one count of the slow fixture takes. Any budget under test is set well either side of it. */
+    static final long SLOW_COUNT_MILLIS = 150L;
+
+    /**
+     * Two tables the connector answers for with counts of its own, each count taking real time to come
+     * back. Both halves matter: because neither table is one the connector refuses, a table that ends up
+     * uncounted can only have been left so by the caller giving up, and because a count is slow, a budget
+     * far shorter than one count is spent by the time the second table comes round.
+     */
+    static Path slowCountableTwoTableSource(Path dir) {
+        return SyntheticJar.compileToJar(dir, "synthetic.SlowCountableTwoTable",
+                discoverSource("SlowCountableTwoTable", ORDERS_AND_ITEMS,
+                        "functions.supportBatchCount((context, table) -> {"
+                                + "try { Thread.sleep(" + SLOW_COUNT_MILLIS + "L); }"
+                                + "catch (InterruptedException e) { Thread.currentThread().interrupt(); }"
+                                + "return \"orders\".equals(table.getId()) ? 11L : 7L; });"));
     }
 
     /** As above, but the count throws — the table is still discovered, just not counted. */

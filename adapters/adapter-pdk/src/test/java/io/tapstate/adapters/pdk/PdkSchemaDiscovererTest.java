@@ -12,6 +12,7 @@ import io.tapstate.spi.store.SourceIndex;
 import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,12 @@ class PdkSchemaDiscovererTest {
     private static SchemaDiscoverer discoverer(Path jar, String className) {
         ConnectorRef ref = new ConnectorRef(List.of(jar), className, "2.0.8", null);
         return new PdkSchemaDiscoverer(connectorId -> ref);
+    }
+
+    /** As above, with the counting phase held to a budget of the test's choosing. */
+    private static SchemaDiscoverer discoverer(Path jar, String className, Duration countBudget) {
+        ConnectorRef ref = new ConnectorRef(List.of(jar), className, "2.0.8", null);
+        return new PdkSchemaDiscoverer(connectorId -> ref, countBudget);
     }
 
     private static ConnectionConfig config() {
@@ -137,6 +144,54 @@ class PdkSchemaDiscovererTest {
         assertThat(model.tables().get(1).approximateRowCount())
                 .as("one table refusing to be counted says nothing about the next one")
                 .isEqualTo(7L);
+    }
+
+    @Test
+    void aCountBudgetSpentPartWayThroughLeavesTheRemainingTablesUncounted(@TempDir Path dir) {
+        // Counting is taken table by table, and discovery is a synchronous verb whose callers give the
+        // whole round trip a fixed window. Counting a wide source without a bound can spend that window,
+        // and what reaches the author is then a timeout rather than the schema - which, before a count
+        // was taken alongside it, would have arrived. The budget bounds the counting instead, and a table
+        // it does not reach is left uncounted: the same absence a connector that cannot count already
+        // produces, which every reader of a count has to handle anyway.
+        SchemaDiscoverer discoverer = discoverer(
+                Synthetic.slowCountableTwoTableSource(dir), "synthetic.SlowCountableTwoTable",
+                Duration.ofMillis(Synthetic.SLOW_COUNT_MILLIS / 3));
+
+        SourceModel model = discoverer.discover(config());
+
+        assertThat(model.tables()).extracting(SourceTable::name).containsExactly("orders", "items");
+        assertThat(model.tables().get(0).approximateRowCount())
+                .as("the budget bounds which counts are started, so the first table is always attempted")
+                .isEqualTo(11L);
+        assertThat(model.tables().get(1).approximateRowCount())
+                .as("the first count spent the budget, so the second table is never asked")
+                .isNull();
+    }
+
+    @Test
+    void aCountBudgetWiderThanTheWholeSourceLeavesNoTableUncounted(@TempDir Path dir) {
+        // The positive control for the test above: same two tables, same slow counts, only the budget
+        // changed. Without it, a discoverer that had simply stopped counting after the first table would
+        // satisfy that test just as well.
+        SchemaDiscoverer discoverer = discoverer(
+                Synthetic.slowCountableTwoTableSource(dir), "synthetic.SlowCountableTwoTable",
+                Duration.ofHours(1));
+
+        SourceModel model = discoverer.discover(config());
+
+        assertThat(model.tables().get(0).approximateRowCount()).isEqualTo(11L);
+        assertThat(model.tables().get(1).approximateRowCount())
+                .as("a budget nothing can exhaust leaves counting exactly as it was before there was one")
+                .isEqualTo(7L);
+    }
+
+    @Test
+    void aNonPositiveCountBudgetIsRefusedRatherThanSilentlyCountingNothing() {
+        // A budget of zero reaches no table at all while reading as configured, which surfaces as a source
+        // whose every table is uncounted and nothing anywhere saying why.
+        assertThatThrownBy(() -> new PdkSchemaDiscoverer(connectorId -> null, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
