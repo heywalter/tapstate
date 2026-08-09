@@ -125,10 +125,11 @@ final class TargetModelResolver {
             boolean lowerOrDigitFollowedByUpper = index > 0
                     && isAsciiLowerOrDigit(name.charAt(index - 1))
                     && isAsciiUpper(current);
-            boolean acronymFollowedByWord = isAsciiUpper(current)
-                    && index + 2 < name.length()
-                    && isAsciiUpper(name.charAt(index + 1))
-                    && isAsciiLower(name.charAt(index + 2));
+            boolean acronymFollowedByWord = index > 0
+                    && index + 1 < name.length()
+                    && isAsciiUpper(name.charAt(index - 1))
+                    && isAsciiUpper(current)
+                    && isAsciiLower(name.charAt(index + 1));
             if (lowerOrDigitFollowedByUpper || acronymFollowedByWord) {
                 appendWord(result, word, capitalizeFirst);
             }

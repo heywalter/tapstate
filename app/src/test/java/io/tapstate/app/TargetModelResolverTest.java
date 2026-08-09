@@ -115,6 +115,18 @@ class TargetModelResolverTest {
     }
 
     @Test
+    void bulk_table_rename_splits_acronyms_before_a_word() {
+        RenameSpec pascal = new RenameSpec(null, RenameCase.PASCAL, null, null);
+        SourceTable httpServer = new SourceTable(
+                "HTTPServer", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+        SourceTable xmlHttpRequest = new SourceTable(
+                "XMLHttpRequest", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+
+        assertThat(TargetModelResolver.toTargetTable(httpServer, pascal).name()).isEqualTo("HttpServer");
+        assertThat(TargetModelResolver.toTargetTable(xmlHttpRequest, pascal).name()).isEqualTo("XmlHttpRequest");
+    }
+
+    @Test
     void bulk_table_rename_supports_upper_case() {
         SourceTable address = new SourceTable(
                 "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
