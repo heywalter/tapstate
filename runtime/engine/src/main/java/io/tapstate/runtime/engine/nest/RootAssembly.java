@@ -4,6 +4,7 @@ import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.SourceOrder;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -73,6 +74,14 @@ import java.util.Optional;
  */
 public final class RootAssembly implements Serializable {
 
+    /**
+     * A change taken in without saying when it happened or when this document took it in. It holds the
+     * frontier back like any other and is never let go of: with neither time, nothing here can tell a root
+     * that is merely late from one that is absent, and ending a wait on no evidence is the one outcome that
+     * loses a row for good.
+     */
+    static final long UNTIMED = Long.MIN_VALUE;
+
     private Map<String, Object> rootFields;
     private SourceOrder rootOrder;
     private boolean rootPresent;
@@ -87,13 +96,20 @@ public final class RootAssembly implements Serializable {
     private final Map<WaitingOn, List<Pending>> waiting = new LinkedHashMap<>();
 
     /**
-     * What has been taken in since the last thing went out, kept apart by what carries it out again. A
-     * rendered document carries the root row and every element, so both are released by one; the key row
-     * of a deleted root carries the root's own change alone, and releasing the elements with it would say
-     * they had been shown when a key row holds none of them.
+     * What the root row has contributed since the last thing carrying it went out. Kept apart from the
+     * elements by what carries it out again: a rendered document carries the root row and every element, so
+     * both are released by one; the key row of a deleted root carries the root's own change alone, and
+     * releasing the elements with it would say they had been shown when a key row holds none of them.
      */
     private final Absorbed fromRoot = new Absorbed();
-    private final Absorbed fromElements = new Absorbed();
+
+    /**
+     * Every element change taken in since the last document went out, one entry each rather than merged.
+     * They are merged for the bound they report and would take far less room that way, but a change that
+     * may stop being held has to be picked out of them one at a time — and a merged low-water mark cannot
+     * have one change taken out of it.
+     */
+    private final List<Held> heldElements = new ArrayList<>();
 
     /** Whether the root row is currently in the document — false before it arrives and after it is deleted. */
     public boolean rootPresent() {
@@ -159,7 +175,7 @@ public final class RootAssembly implements Serializable {
     public boolean applyElement(ElementRef ref, Map<String, Object> fields, SourceOrder order,
             Map<String, ChainPosition> positions) {
         Objects.requireNonNull(fields, "fields");
-        return mutate(ref, copyOf(fields), order, positions);
+        return mutate(new NestElement(ref, fields, order, positions, UNTIMED), UNTIMED);
     }
 
     /**
@@ -167,7 +183,55 @@ public final class RootAssembly implements Serializable {
      * whether the assembly changed.
      */
     public boolean deleteElement(ElementRef ref, SourceOrder order, Map<String, ChainPosition> positions) {
-        return mutate(ref, null, order, positions);
+        return mutate(new NestElement(ref, null, order, positions, UNTIMED), UNTIMED);
+    }
+
+    /**
+     * Applies one element's change — the row it carries, or its deletion — noting that this document began
+     * holding it at {@code heldSince}. That time is what {@link #letGo} measures a wait against, and it is
+     * the holding's own rather than the change's: the same change replayed after a restart starts waiting
+     * again.
+     */
+    public boolean take(NestElement change, long heldSince) {
+        Objects.requireNonNull(change, "change");
+        return mutate(change, heldSince);
+    }
+
+    /**
+     * Lets go of what the two rules say need not be held any longer, and hands back each with the grounds
+     * it went on.
+     *
+     * <p>The two buckets end differently, which is the whole reason they are not one. A change absorbed
+     * into a document whose root has not arrived <b>keeps its place in the tree</b>: it is already where it
+     * belongs, this state is stored, and the root turning up later still renders it — what is given up is
+     * the promise that a replay could produce it again, not the row. A change waiting for an ancestor is in
+     * no document and nowhere a sink can see it, so letting go of it <b>takes it out of here</b>, and what
+     * comes back must be routed by the caller: dropping it loses a row no assertion about a document could
+     * ever notice.
+     *
+     * <p>They are asked by separate rules because they wait for different things. What waits under an
+     * absent root waits for a root row, which arrives on a stream the level holding this can name and say
+     * how far has been read. What waits for an ancestor waits for an element the level below has already
+     * routed, arriving on an edge that names no stream — so nothing about that stream can be asked, and
+     * only a backstop can ever end that wait.
+     */
+    public List<ReleasedChild> letGo(PendingRelease whileTheRootIsAbsent,
+            PendingRelease whileAnAncestorIsAbsent, long now) {
+        List<ReleasedChild> released = new ArrayList<>();
+        heldElements.removeIf(held -> held.letGoOf(whileTheRootIsAbsent, now, released));
+        for (List<Pending> bucket : waiting.values()) {
+            bucket.removeIf(pending -> pending.held().letGoOf(whileAnAncestorIsAbsent, now, released));
+        }
+        waiting.values().removeIf(List::isEmpty);
+        return released;
+    }
+
+    /**
+     * Whether this document is holding anything the durable frontier has to stay below — asked far more
+     * often than what, and answered without building it.
+     */
+    public boolean holdsAnything() {
+        return !heldElements.isEmpty() || !waiting.isEmpty() || !fromRoot.lowest.isEmpty();
     }
 
     /**
@@ -193,19 +257,20 @@ public final class RootAssembly implements Serializable {
         Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
         Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
         ElementNode moved = slot == null ? null : slot.get(from.elementKey());
+        NestElement change = new NestElement(to, fields, order, positions, UNTIMED);
         if (slot == null || moved == null || moved.deleted()) {
-            return mutate(to, copyOf(fields), order, positions);
+            return mutate(change, UNTIMED);
         }
         if (!wins(order, moved.order())) {
             return false;
         }
         slot.remove(from.elementKey());
-        moved.set(copyOf(fields), order);
-        absorbed(positions);
+        moved.set(change.fields(), order);
+        absorbed(change, UNTIMED);
         Map<String, Map<List<Object>, ElementNode>> target = containerFor(to);
         if (target == null) {
             waiting.computeIfAbsent(new WaitingOn(to.parentPathId(), to.parentIdentity()), on -> new ArrayList<>())
-                    .add(Pending.of(to, moved, order, positions));
+                    .add(new Pending(new Held(change, UNTIMED), moved));
             return true;
         }
         target.computeIfAbsent(to.field(), field -> new LinkedHashMap<>()).put(to.elementKey(), moved);
@@ -221,10 +286,12 @@ public final class RootAssembly implements Serializable {
      */
     public Map<String, ChainPosition> lowestHeldByChain() {
         Map<String, ChainPosition> lowest = new LinkedHashMap<>(fromRoot.lowest);
-        lowest(lowest, fromElements.lowest);
-        for (List<Pending> held : waiting.values()) {
-            for (Pending pending : held) {
-                lowest(lowest, pending.positions());
+        for (Held held : heldElements) {
+            lowest(lowest, held.change().positions());
+        }
+        for (List<Pending> bucket : waiting.values()) {
+            for (Pending pending : bucket) {
+                lowest(lowest, pending.held().change().positions());
             }
         }
         return lowest;
@@ -242,7 +309,9 @@ public final class RootAssembly implements Serializable {
      */
     public Map<String, ChainPosition> covered() {
         Map<String, ChainPosition> highest = new LinkedHashMap<>(fromRoot.highest);
-        highest(highest, fromElements.highest);
+        for (Held held : heldElements) {
+            highest(highest, held.change().positions());
+        }
         return highest;
     }
 
@@ -260,7 +329,7 @@ public final class RootAssembly implements Serializable {
      */
     public void documentSent() {
         fromRoot.clear();
-        fromElements.clear();
+        heldElements.clear();
     }
 
     /**
@@ -287,17 +356,16 @@ public final class RootAssembly implements Serializable {
         return Optional.of(document);
     }
 
-    private boolean mutate(ElementRef ref, Map<String, Object> fields, SourceOrder order,
-            Map<String, ChainPosition> positions) {
-        Objects.requireNonNull(ref, "ref");
-        Objects.requireNonNull(order, "order");
-        Objects.requireNonNull(positions, "positions");
+    private boolean mutate(NestElement change, long heldSince) {
+        ElementRef ref = change.ref();
+        Map<String, Object> fields = change.fields();
+        SourceOrder order = change.order();
         Map<String, Map<List<Object>, ElementNode>> container = containerFor(ref);
         if (container == null) {
-            // Not recorded as absorbed: what waits keeps its own position and is reported from there, and
-            // it goes on being reported after a document has released everything absorbed.
+            // Not recorded among what the document absorbed: what waits keeps its own position and is
+            // reported from there, and it goes on being reported after a document has released the rest.
             waiting.computeIfAbsent(new WaitingOn(ref.parentPathId(), ref.parentIdentity()), on -> new ArrayList<>())
-                    .add(Pending.of(ref, fields, order, positions));
+                    .add(new Pending(new Held(change, heldSince), null));
             return true;
         }
         Map<List<Object>, ElementNode> slot = container.computeIfAbsent(ref.field(), field -> new LinkedHashMap<>());
@@ -307,12 +375,12 @@ public final class RootAssembly implements Serializable {
                 return false;
             }
             held.set(fields, order);
-            absorbed(positions);
+            absorbed(change, heldSince);
             return true;
         }
         ElementNode element = new ElementNode(fields, order);
         slot.put(ref.elementKey(), element);
-        absorbed(positions);
+        absorbed(change, heldSince);
         if (ref.identity() != null) {
             byIdentity.computeIfAbsent(ref.pathId(), path -> new LinkedHashMap<>()).put(ref.identity(), element);
             release(ref.pathId(), ref.identity());
@@ -357,10 +425,11 @@ public final class RootAssembly implements Serializable {
             return;
         }
         for (Pending pending : held) {
+            NestElement change = pending.held().change();
             if (pending.node() == null) {
-                mutate(pending.ref(), pending.fields(), pending.order(), pending.positions());
+                mutate(change, pending.held().heldSince());
             } else {
-                ElementRef ref = pending.ref();
+                ElementRef ref = change.ref();
                 // Released only from the parent that just arrived, so its embed is there by construction;
                 // if it were not, attaching would lose the node and its subtree with no error anywhere.
                 Map<String, Map<List<Object>, ElementNode>> parent = Objects.requireNonNull(
@@ -368,15 +437,16 @@ public final class RootAssembly implements Serializable {
                 parent.computeIfAbsent(ref.field(), field -> new LinkedHashMap<>())
                         .put(ref.elementKey(), pending.node());
                 // Off the waiting bucket and into the tree, which is not the same as out of here: until a
-                // document carries it away it is as unsent as it was while it waited.
-                absorbed(pending.positions());
+                // document carries it away it is as unsent as it was while it waited, and it goes on being
+                // held from when it first arrived rather than from now.
+                absorbed(change, pending.held().heldSince());
             }
         }
     }
 
-    /** Takes note of where a change taken in came from, so the frontier is kept below it until it leaves. */
-    private void absorbed(Map<String, ChainPosition> positions) {
-        fromElements.add(positions);
+    /** Takes note of a change taken in, so the frontier is kept below it until a document carries it out. */
+    private void absorbed(NestElement change, long heldSince) {
+        heldElements.add(new Held(change, heldSince));
     }
 
     private static void lowest(Map<String, ChainPosition> into, Map<String, ChainPosition> positions) {
@@ -390,10 +460,13 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
-     * What one kind of change has contributed since the last thing carrying it went out, from both ends:
-     * the lowest is what the frontier must stay below while it is still here, the highest is what goes out
-     * with it. Both are positions that really arrived — a frontier is persisted with the token that came
-     * with the order, so a value made up between two of them could never be written down.
+     * What the root row has contributed since the last thing carrying it went out, from both ends: the
+     * lowest is what the frontier must stay below while it is still here, the highest is what goes out with
+     * it. Both are positions that really arrived — a frontier is persisted with the token that came with the
+     * order, so a value made up between two of them could never be written down.
+     *
+     * <p>Merged rather than kept one by one, unlike the elements: nothing ever stops holding for a root row
+     * on its own, because the root is the one thing a document cannot be assembled without.
      */
     private static final class Absorbed implements Serializable {
 
@@ -408,6 +481,29 @@ public final class RootAssembly implements Serializable {
         void clear() {
             lowest.clear();
             highest.clear();
+        }
+    }
+
+    /**
+     * One change this document is holding, and when it began holding it. The time is a property of the
+     * holding rather than of the change — the same change replayed after a restart starts waiting again —
+     * which is why it is kept beside the change rather than inside it.
+     */
+    private record Held(NestElement change, long heldSince) implements Serializable {
+
+        /**
+         * Whether {@code decide} ends this wait, adding it to {@code released} with the grounds and how long
+         * it really waited when it does. A change taken in without a time is never ended: see
+         * {@link RootAssembly#UNTIMED}.
+         */
+        boolean letGoOf(PendingRelease decide, long now, List<ReleasedChild> released) {
+            if (heldSince == UNTIMED) {
+                return false;
+            }
+            Duration waited = Duration.ofMillis(now - heldSince);
+            return decide.verdictOn(change, waited)
+                    .map(verdict -> released.add(new ReleasedChild(change, verdict, waited)))
+                    .orElse(false);
         }
     }
 
@@ -509,21 +605,9 @@ public final class RootAssembly implements Serializable {
     private record WaitingOn(List<String> pathId, Object identity) implements Serializable { }
 
     /**
-     * Held until the row it hangs under arrives: either an element event to apply ({@code node} null,
-     * a null {@code fields} meaning a deletion), or a whole node being moved, which is attached as it
-     * stands so its subtree travels with it.
+     * Held until the row it hangs under arrives: either an element change to apply ({@code node} null),
+     * or a whole node being moved, which is attached as it stands so its subtree travels with it.
      */
-    private record Pending(ElementRef ref, Map<String, Object> fields, SourceOrder order, ElementNode node,
-            Map<String, ChainPosition> positions) implements Serializable {
-
-        private static Pending of(ElementRef ref, Map<String, Object> fields, SourceOrder order,
-                Map<String, ChainPosition> positions) {
-            return new Pending(ref, fields, order, null, positions);
-        }
-
-        private static Pending of(ElementRef ref, ElementNode node, SourceOrder order,
-                Map<String, ChainPosition> positions) {
-            return new Pending(ref, null, order, node, positions);
-        }
+    private record Pending(Held held, ElementNode node) implements Serializable {
     }
 }

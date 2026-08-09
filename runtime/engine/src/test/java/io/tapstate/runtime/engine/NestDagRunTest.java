@@ -7,6 +7,7 @@ import com.hazelcast.config.JoinConfig;
 import com.hazelcast.core.Hazelcast;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.function.SupplierEx;
+import com.hazelcast.jet.Job;
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.Processor;
@@ -25,10 +26,19 @@ import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.nest.NestBinding;
+import io.tapstate.runtime.engine.nest.NestClock;
+import io.tapstate.runtime.engine.nest.NestSettings;
+import io.tapstate.runtime.engine.nest.NestStateLedger;
+import io.tapstate.runtime.engine.nest.NestStreamFacts;
 import io.tapstate.runtime.engine.nest.NestTable;
+import io.tapstate.runtime.engine.nest.PendingProtection;
+import io.tapstate.runtime.engine.nest.PendingVerdict;
+import io.tapstate.runtime.engine.nest.PendingWatch;
+import io.tapstate.runtime.engine.nest.ReleasedChild;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.WriteResult;
 import io.tapstate.spi.transform.TransformPort;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -60,12 +70,16 @@ class NestDagRunTest {
     /** How many times the read side of the durable frontier was bound. Static for the same reason. */
     private static final AtomicInteger FLOORS_BOUND = new AtomicInteger();
 
+    /** What a level stopped holding for a root that was not coming. Static for the same reason. */
+    private static final List<ReleasedChild> RELEASED = Collections.synchronizedList(new ArrayList<>());
+
     private HazelcastInstance member;
 
     @BeforeEach
     void startMember() {
         WRITTEN.clear();
         FLOORS_BOUND.set(0);
+        RELEASED.clear();
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(2);
         config.setProperty("hazelcast.phone.home.enabled", "false");
@@ -126,10 +140,56 @@ class NestDagRunTest {
                 .isPositive();
     }
 
+    @Test
+    void anItemWhoseOrderNeverArrivesIsLetGoOfByTheAssemblerTheGraphBuilt() throws Exception {
+        // An assembler supplied without a watch assembles every document here correctly and passes every
+        // other test in this file, and simply holds that stray item — and with it the position its source
+        // reads from — for as long as the job runs. Nothing about the output says so, which is why what is
+        // asserted is that something came out the other channel.
+        //
+        // The sources here go on running after their rows, because a job that ends is a job whose vertices
+        // are never idle: letting go of what is held is done when nothing is arriving, and a tasklet whose
+        // inputs are all finished goes straight to completing. A real pipeline is never in that state, and
+        // a finite one here would witness the mechanism only by never reaching it.
+        DAG dag = ordersWithItems(List.of(row("order_id", 1, "code", "A")),
+                List.of(row("item_id", 10, "order_id", 1, "sku", "s10"),
+                        row("item_id", 99, "order_id", 999, "sku", "stray")),
+                true);
+
+        Job job = member.getJet().newJob(dag);
+        try {
+            awaitReleased();
+        } finally {
+            job.cancel();
+        }
+
+        assertThat(RELEASED)
+                .describedAs("the assembler the graph builds was supplied without a watch, so it never "
+                        + "stops holding a change for a root that is not coming")
+                .isNotEmpty();
+        assertThat(List.copyOf(RELEASED)).allSatisfy(released -> {
+            assertThat(released.child().ref().elementKey()).containsExactly(99);
+            assertThat(released.verdict()).isEqualTo(PendingVerdict.WALL_CLOCK_BACKSTOP);
+        });
+    }
+
+    /** Waits for the assembler's idle sweep to reach the stray item, which takes one turn of an idle vertex. */
+    private static void awaitReleased() throws InterruptedException {
+        for (int attempt = 0; attempt < 200 && RELEASED.isEmpty(); attempt++) {
+            Thread.sleep(50);
+        }
+    }
+
     // ---- the pipeline under test ------------------------------------------------------
 
     /** orders as the root, order_items embedded beneath it as an array at {@code items}. */
     private static DAG ordersWithItems(List<Map<String, Object>> orders, List<Map<String, Object>> items) {
+        return ordersWithItems(orders, items, false);
+    }
+
+    /** The same, with {@code endless} keeping the sources alive after their rows so the vertices go idle. */
+    private static DAG ordersWithItems(List<Map<String, Object>> orders, List<Map<String, Object>> items,
+            boolean endless) {
         Embed item = new Embed("item", Map.of("order_id", "order_id"), EmbedAs.ARRAY, "items",
                 List.of("item_id"), null, null, null);
         TransformBody.Nest body = new TransformBody.Nest(null, null,
@@ -148,8 +208,8 @@ class NestDagRunTest {
                 null, null);
 
         Map<String, ProcessorMetaSupplier> sources = new LinkedHashMap<>();
-        sources.put("orders", rowsSource("orders", orders));
-        sources.put("order_items", rowsSource("order_items", items));
+        sources.put("orders", rowsSource("orders", orders, endless));
+        sources.put("order_items", rowsSource("order_items", items, endless));
 
         Map<String, NestTable> tables = new LinkedHashMap<>();
         tables.put("order", new NestTable("orders", List.of("order_id")));
@@ -160,7 +220,14 @@ class NestDagRunTest {
                 s -> (SupplierEx<TransformPort>) () -> event -> List.of(event),
                 syncElement -> (SupplierEx<SinkWriter>) CollectingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onHeap(), (from, released) -> { }, new CountingFloors()));
+                new NestBinding(tables::get, NestBinding.onHeap(),
+                        (from, released) -> RELEASED.add(released), new CountingFloors(),
+                        NestStateLedger.NONE, NestSettings.defaults(),
+                        // A backstop of nothing at all, so what would be given up on after six hours is
+                        // given up on inside a job that lasts a second. It is the wait that is shortened
+                        // here and nothing else: what decides the wait is over is the same rule.
+                        new PendingWatch(new PendingProtection(Duration.ZERO), NestStreamFacts.UNKNOWN,
+                                NestClock.SYSTEM)));
 
         return PipelineDagBuilder.build(pipeline, bindings);
     }
@@ -214,20 +281,23 @@ class NestDagRunTest {
      * have given it. A stateful node crashes bare on an event with no order, so a synthetic source that
      * leaves it null tests nothing.
      */
-    private static ProcessorMetaSupplier rowsSource(String src, List<Map<String, Object>> rows) {
+    private static ProcessorMetaSupplier rowsSource(String src, List<Map<String, Object>> rows,
+            boolean endless) {
         return ProcessorMetaSupplier.forceTotalParallelismOne(
-                ProcessorSupplier.of((SupplierEx<Processor>) () -> new RowsSource(src, rows)));
+                ProcessorSupplier.of((SupplierEx<Processor>) () -> new RowsSource(src, rows, endless)));
     }
 
     private static final class RowsSource extends AbstractProcessor {
 
         private final String src;
         private final List<Map<String, Object>> rows;
+        private final boolean endless;
         private int next;
 
-        RowsSource(String src, List<Map<String, Object>> rows) {
+        RowsSource(String src, List<Map<String, Object>> rows, boolean endless) {
             this.src = src;
             this.rows = rows;
+            this.endless = endless;
         }
 
         @Override
@@ -240,7 +310,7 @@ class NestDagRunTest {
                 }
                 next++;
             }
-            return true;
+            return !endless;
         }
     }
 

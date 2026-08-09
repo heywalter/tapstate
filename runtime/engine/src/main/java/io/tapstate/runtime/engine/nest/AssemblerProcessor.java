@@ -15,10 +15,13 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
 
 /**
  * The vertex that holds whole documents: root rows arrive and become the document, elements arrive
@@ -37,6 +40,21 @@ import java.util.Optional;
  */
 public final class AssemblerProcessor extends AbstractProcessor {
 
+    /**
+     * The shortest gap between two sweeps for changes that may stop being held.
+     *
+     * <p>A vertex with nothing arriving is asked to make progress over and over, and a sweep reads the
+     * layer behind the map — what each document is still holding, and whether the stream its root would
+     * come on has finished loading. Sweeping every turn would put those reads on the idle path, which is
+     * the one place they must never be. What is being bounded here is measured in hours.
+     */
+    private static final long SWEEP_INTERVAL_MILLIS = 1_000L;
+
+    /** Where a vertex built without a watch would send what it let go of, since it lets go of nothing. */
+    private static final NestDeadLetter NOTHING_IS_LET_GO_OF = (from, released) -> {
+        throw new IllegalStateException("an assembler with no watch let go of " + released);
+    };
+
     private final NestVertex vertex;
     private final List<EmbedSlot> slots;
     private final NestStore<RootAssembly> store;
@@ -45,6 +63,38 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final ChainBounds held = new ChainBounds();
     private final LevelBounds bounds;
     private final ReplayFloor floor;
+    private final NestDeadLetter deadLetter;
+
+    /** What this vertex is held to over how long it may go on holding a change, or null when it is not. */
+    private final PendingWatch watch;
+
+    /** The stream this vertex's root rows — the rows every document here waits for — arrive on. */
+    private final String rootStream;
+
+    /**
+     * How far that stream has been read, in its own clock, or null before any root row has arrived.
+     *
+     * <p>Read from what has arrived here rather than from anything global, and that is what makes it
+     * answer the question at all: a root row and the elements of its document are keyed alike, so they are
+     * partitioned alike and land on this same processor. A root row stamped later than an element still
+     * held here therefore means the root that would have carried it does not exist — had it existed, it
+     * would have come past here first.
+     */
+    private Long rootStreamReached;
+
+    /**
+     * Keys holding something, which is where the sweep has to look. Kept here because the store cannot be
+     * asked which keys hold anything: listing what it has is exactly what reading through it on demand is
+     * there to avoid.
+     *
+     * <p>A restart starts it empty, and the keys that matter re-enter it on their own: a change still held
+     * is one the frontier never passed, so a restart replays it, and it is filed here again the moment its
+     * key is touched.
+     */
+    private final Set<Object> holding = new LinkedHashSet<>();
+
+    /** When the last sweep ran, or null before the first one. */
+    private Long sweptAt;
 
     /**
      * How many elements any one document may hold. Read once: it is chosen where the job is built, not
@@ -98,10 +148,34 @@ public final class AssemblerProcessor extends AbstractProcessor {
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
             ReplayFloor floor, NestSettings settings) {
+        this(vertex, slots, store, outputStream, NOTHING_IS_LET_GO_OF, null, axes, chainsByOrdinal, floor,
+                settings);
+    }
+
+    /**
+     * An assembler held to {@code watch} over how long a document may go on holding a change for a root
+     * that never arrives, with nowhere else to promise anything.
+     */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, NestDeadLetter deadLetter, PendingWatch watch) {
+        this(vertex, slots, store, outputStream, deadLetter, watch, null, null, ReplayFloor.NONE,
+                NestSettings.defaults());
+    }
+
+    /**
+     * All of it. The dead letter and the watch travel together and neither is optional here: a vertex that
+     * may stop holding a change has to have somewhere to hand it, and one that never stops holding pins its
+     * source's read position for as long as the job runs.
+     */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, NestDeadLetter deadLetter, PendingWatch watch, ChainAxes axes,
+            Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor, NestSettings settings) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
+        this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
+        this.watch = watch;
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
         this.floor = Objects.requireNonNull(floor, "floor");
         this.elementLimit =
@@ -109,6 +183,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
+        this.rootStream = vertex.inboundFor(List.of()).alias();
     }
 
     @Override
@@ -137,7 +212,92 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 candidates.remove();
             }
         }
+        stopHoldingWhereNothingIsComing();
         return true;
+    }
+
+    /**
+     * Lets go of what is held here for a root, or for an ancestor, that is not coming, so the bound this
+     * level reports can rise past it. Off the path a change takes, like the sweep above and for the same
+     * reason: nothing here is urgent to the millisecond, and the price of being wrong is a row nobody can
+     * get back.
+     *
+     * <p>What each document was holding is re-read into the reported bound whether or not anything went,
+     * since a change let go of that still counted against the bound would leave the frontier exactly where
+     * it was — with the change reported as let go of as well, which is both halves of the damage and
+     * neither of the benefits.
+     */
+    private void stopHoldingWhereNothingIsComing() {
+        if (watch == null || holding.isEmpty()) {
+            return;
+        }
+        long now = watch.clock().millis();
+        if (sweptAt != null && now - sweptAt < SWEEP_INTERVAL_MILLIS) {
+            return;
+        }
+        sweptAt = now;
+        PendingRelease whileTheRootIsAbsent = rootReleaseRule();
+        PendingRelease whileAnAncestorIsAbsent = ancestorReleaseRule();
+        Iterator<Object> keys = holding.iterator();
+        while (keys.hasNext()) {
+            Object key = keys.next();
+            RootAssembly assembly = store.load(key);
+            if (assembly == null) {
+                keys.remove();
+                continue;
+            }
+            List<ReleasedChild> released =
+                    assembly.letGo(whileTheRootIsAbsent, whileAnAncestorIsAbsent, now);
+            if (!released.isEmpty()) {
+                store.save(key, assembly);
+                released.forEach(child -> deadLetter.unassemblable(vertex, child));
+            }
+            if (bounds != null) {
+                held.holding(key, assembly.lowestHeldByChain());
+            }
+            if (!assembly.holdsAnything()) {
+                keys.remove();
+            }
+        }
+    }
+
+    /**
+     * The rule as it applies to what waits for a root row: the protection, with what is known about the
+     * stream those rows come on filled in. Worked out once per sweep rather than per change, because every
+     * document here waits for a row of that one stream.
+     */
+    private PendingRelease rootReleaseRule() {
+        boolean loaded = watch.facts().loaded(rootStream);
+        String rootClock = watch.facts().clockOf(rootStream);
+        return (change, heldFor) -> watch.protection()
+                .verdictOn(new ParentProgress(loaded, readPast(change, rootClock)), change.eventTime(),
+                        heldFor);
+    }
+
+    /**
+     * The rule as it applies to what waits for an ancestor element: the backstop and nothing else. That
+     * element arrives already routed by the level below, on an edge that names no stream, so neither
+     * whether its load has finished nor how far it has been read can be asked here — and answering with
+     * what is known about the root's stream would end the wait on evidence about something else entirely.
+     */
+    private PendingRelease ancestorReleaseRule() {
+        return (change, heldFor) -> watch.protection()
+                .verdictOn(new ParentProgress(false, OptionalLong.empty()), change.eventTime(), heldFor);
+    }
+
+    /**
+     * How far the root's stream has been read, in a clock this change may be compared against — absent
+     * where there is no such clock. A change covering more than one stream has no single clock of its own
+     * and is never comparable; nor is one whose stream is not known to share a clock with the root's.
+     */
+    private OptionalLong readPast(NestElement change, String rootClock) {
+        if (rootStreamReached == null || rootClock == null || change.positions().size() != 1) {
+            return OptionalLong.empty();
+        }
+        String stream = change.positions().keySet().iterator().next();
+        return rootClock.equals(watch.facts().clockOf(stream))
+                ? OptionalLong.of(rootStreamReached)
+                : OptionalLong.empty();
     }
 
     /**
@@ -224,7 +384,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private void handle(NestInbound edge, Object item, Map<Object, Touched> touched) {
         if (edge.isCascade()) {
             KeyedElement arrived = (KeyedElement) item;
-            apply(touched(arrived.key(), touched), arrived.element());
+            touched(arrived.key(), touched).assembly.take(arrived.element(), now());
             return;
         }
         Envelope event = (Envelope) item;
@@ -234,6 +394,12 @@ public final class AssemblerProcessor extends AbstractProcessor {
             List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
             Touched document = touched(key, touched);
             document.ts = event.ts();
+            // How far this stream has been read, which is what says whether a root still missing from a key
+            // is late or absent. Taken from every row of it, including one that loses to what a key already
+            // holds: the read passed it either way, and that is all this records.
+            rootStreamReached = rootStreamReached == null
+                    ? event.ts()
+                    : Math.max(rootStreamReached, event.ts());
             if (NestKeys.isDeletion(event)) {
                 document.assembly.deleteRoot(order, event.positions());
                 document.rootDeleted = true;
@@ -247,16 +413,16 @@ public final class AssemblerProcessor extends AbstractProcessor {
         document.ts = event.ts();
         ElementRef ref = new ElementRef(edge.pathId(), null,
                 NestKeys.valuesOf(row, edge.elementKey()), null);
-        apply(document, new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
-                event.positions(), event.ts()));
+        document.assembly.take(new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
+                event.positions(), event.ts()), now());
     }
 
-    private static void apply(Touched document, NestElement element) {
-        if (element.deletion()) {
-            document.assembly.deleteElement(element.ref(), element.order(), element.positions());
-        } else {
-            document.assembly.applyElement(element.ref(), element.fields(), element.order(), element.positions());
-        }
+    /**
+     * What time it is where a hold is timed from. A vertex built without a watch times nothing and lets
+     * nothing go, so what it records is the one value that says exactly that.
+     */
+    private long now() {
+        return watch == null ? RootAssembly.UNTIMED : watch.clock().millis();
     }
 
     /**
@@ -297,6 +463,11 @@ public final class AssemblerProcessor extends AbstractProcessor {
             refuseToLetOneDocumentGrowPastItsWidth(key, document.assembly);
             if (bounds != null) {
                 held.holding(key, document.assembly.lowestHeldByChain());
+            }
+            if (document.assembly.holdsAnything()) {
+                holding.add(key);
+            } else {
+                holding.remove(key);
             }
         });
     }
