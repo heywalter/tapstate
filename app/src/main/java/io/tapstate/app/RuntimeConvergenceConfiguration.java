@@ -1,7 +1,9 @@
 package io.tapstate.app;
 
+import io.tapstate.core.lifecycle.NestColdLayerPressure;
 import io.tapstate.runtime.engine.Engine;
 import io.tapstate.runtime.scheduler.LifecycleActuator;
+import io.tapstate.runtime.scheduler.NestColdLayerWatch;
 import io.tapstate.runtime.scheduler.ObservationPublisher;
 import io.tapstate.runtime.scheduler.PipelineConverger;
 import io.tapstate.spi.store.StorePort;
@@ -40,9 +42,14 @@ class RuntimeConvergenceConfiguration {
         // per-table initial load from the capture coordinator. All are ports, so the scheduler stays clear
         // of the engine, the store and the capture side that back them; a stopped pipeline, an unacked
         // table, an unloaded one or a chain with no reading reports absence, not zero.
+        // The readings also go to a watch that reports a namespace which has stopped being served from
+        // memory. Nothing else about such a pipeline moves -- per-key state fills no edge queue, so the
+        // queues, the lag and the throughput all go on reading normal -- so without this it is not
+        // observable at all except by someone who already suspected it and went looking at two ratios.
         return new ObservationPublisher(storePort.state(), storePort.observations(),
                 engine::recordCount, new StoreBackedSinkPositions(storePort),
-                captureCoordinator::snapshotProgress, engine::frontierGaps, engine::nestStateReadings);
+                captureCoordinator::snapshotProgress, engine::frontierGaps, engine::nestStateReadings,
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, new LoggingNestColdLayerAlert()));
     }
 
     @Bean

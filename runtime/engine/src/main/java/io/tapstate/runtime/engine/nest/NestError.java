@@ -111,6 +111,17 @@ public enum NestError implements TapstateErrorCode {
             Set.of("chain", "bucket", "order", "verdict", "heldFor"), Severity.WARNING),
 
     /**
+     * Running: a namespace's state is being served from the storage behind its memory rather than from the
+     * memory, so what used to be a lookup is now a round trip on most events. A warning because nothing is
+     * wrong in the sense that anything failed — the pipeline runs, the queues are short and the throughput
+     * is whatever the storage can sustain — and that is exactly why it is said out loud: per-key state is a
+     * buffer backpressure cannot see, so no other statistic moves when this happens.
+     */
+    STATE_SERVED_FROM_COLD_LAYER("nest.state-served-from-cold-layer",
+            Set.of("namespace", "backfills", "accesses", "share", "millis", "entries", "stored", "resident"),
+            Severity.WARNING),
+
+    /**
      * Running: a stream tracks structural key changes but its source does not provide a before image, so
      * a key change cannot be told from an ordinary update and the document would silently diverge.
      */

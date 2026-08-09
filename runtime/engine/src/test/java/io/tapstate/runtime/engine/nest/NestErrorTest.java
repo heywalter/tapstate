@@ -46,16 +46,18 @@ class NestErrorTest {
     }
 
     @Test
-    void onlyTheDeadLetterCodeIsAWarning() {
-        // Releasing an event whose parent never resolved dead-letters that event and lets the frontier
-        // move on; the pipeline keeps running. Every other code here stops something -- a tree that will
-        // not compile, a deployment that would never reach its cold tier, a limit that fails the job --
-        // and reading them at the same severity would hide which is which.
-        assertThat(NestError.PENDING_PROTECTION_EXPIRED.severity()).isEqualTo(Severity.WARNING);
+    void onlyTheCodesThatLeaveThePipelineRunningAreWarnings() {
+        // Releasing an event whose parent never resolved dead-letters that event and lets the frontier move
+        // on, and a namespace being served from storage rather than memory is slow rather than broken. Both
+        // leave the pipeline running, which is the whole of what this severity means. Every other code here
+        // stops something -- a tree that will not compile, a deployment that would never reach its cold
+        // tier, a limit that fails the job -- and reading them at one severity would hide which is which.
+        Set<NestError> keepRunning =
+                Set.of(NestError.PENDING_PROTECTION_EXPIRED, NestError.STATE_SERVED_FROM_COLD_LAYER);
         for (NestError error : NestError.values()) {
-            if (error != NestError.PENDING_PROTECTION_EXPIRED) {
-                assertThat(error.severity()).as("%s", error.code()).isEqualTo(Severity.ERROR);
-            }
+            assertThat(error.severity())
+                    .as("%s", error.code())
+                    .isEqualTo(keepRunning.contains(error) ? Severity.WARNING : Severity.ERROR);
         }
     }
 

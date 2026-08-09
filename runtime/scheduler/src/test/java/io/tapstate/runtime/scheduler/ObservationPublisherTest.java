@@ -2,6 +2,8 @@ package io.tapstate.runtime.scheduler;
 
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
+import io.tapstate.core.lifecycle.NestColdLayerPressure;
+import io.tapstate.core.lifecycle.NestStateWindow;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.NestStateReading;
@@ -13,12 +15,16 @@ import io.tapstate.spi.store.StateStore;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 
 /**
@@ -35,6 +41,31 @@ class ObservationPublisherTest {
     private final MutableStateStore state = new MutableStateStore();
     private final RecordingObservationStore observations = new RecordingObservationStore();
     private final ObservationPublisher publisher = new ObservationPublisher(state, observations);
+
+    /** A publisher whose only wired source is the nest readings, watching them through {@code alert}. */
+    private ObservationPublisher withWatch(
+            NestColdLayerAlert alert, Function<String, Map<String, NestStateReading>> readings) {
+        return new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(), readings,
+                new NestColdLayerWatch(new NestColdLayerPressure(0.5, 100), alert));
+    }
+
+    /** Collects the namespaces reported, which is what a caller of the publisher can observe of the watch. */
+    private static final class RecordingAlert implements NestColdLayerAlert {
+
+        private final List<String> crossed = new ArrayList<>();
+        private final List<String> cleared = new ArrayList<>();
+
+        @Override
+        public void crossed(String pipelineId, String namespace, NestStateWindow window) {
+            crossed.add(namespace);
+        }
+
+        @Override
+        public void cleared(String pipelineId, String namespace, NestStateWindow window) {
+            cleared.add(namespace);
+        }
+    }
 
     @Test
     void publishesTheActualStateAsAnObservation() {
@@ -166,6 +197,75 @@ class ObservationPublisherTest {
 
         assertThat(observations.read("orders").orElseThrow().metrics())
                 .doesNotContainKey("nestStateStored.nest.orders.doc.$root");
+    }
+
+    /**
+     * The readings are fetched once per pass and the pass is the only place they exist together, so this is
+     * where the watch that turns them into a window has to be fed from. Fetching them a second time for it
+     * would pay for the cold layer's count twice a tick.
+     */
+    @Test
+    void publishFeedsTheReadingsItPublishesToTheColdLayerWatch() {
+        state.seed("orders", PipelineState.RUNNING);
+        RecordingAlert alert = new RecordingAlert();
+        ObservationPublisher wired = withWatch(alert,
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(100L, 4_000L, 3_800L, 19_000L, OptionalLong.of(400_000L))));
+
+        wired.publish("orders");
+
+        assertThat(alert.crossed).containsExactly("nest.orders.doc.$root");
+    }
+
+    /**
+     * Each pass is one end of a window, which is the whole reason the watch is fed from here rather than
+     * handed a reading out of context: the second pass has to be differenced against the first.
+     */
+    @Test
+    void theWindowTheWatchJudgesIsBetweenTwoPassesAndNotTheRunningTotals() {
+        state.seed("orders", PipelineState.RUNNING);
+        RecordingAlert alert = new RecordingAlert();
+        Map<String, NestStateReading> readings = new HashMap<>();
+        readings.put("nest.orders.doc.$root",
+                new NestStateReading(100L, 4_000L, 40L, 200L, OptionalLong.of(400_000L)));
+        ObservationPublisher wired = withWatch(alert, id -> Map.copyOf(readings));
+
+        wired.publish("orders");
+        readings.put("nest.orders.doc.$root",
+                new NestStateReading(100L, 5_000L, 990L, 4_750L, OptionalLong.of(400_000L)));
+        wired.publish("orders");
+
+        // The totals read 20% served from storage and the interval between the passes read 95%. Judging the
+        // totals would have found nothing: a run healthy for most of its life drowns the hour it was not.
+        assertThat(alert.crossed).containsExactly("nest.orders.doc.$root");
+    }
+
+    /**
+     * The observation is the contract; the alert is a courtesy on top of it. Written the other way round a
+     * fault in the alerting path would take the read face down with it, and the read face is what says the
+     * pipeline is alive at all.
+     */
+    @Test
+    void anAlertThatThrowsDoesNotCostThePipelineItsObservation() {
+        state.seed("orders", PipelineState.RUNNING);
+        NestColdLayerAlert throwing = new NestColdLayerAlert() {
+
+            @Override
+            public void crossed(String pipelineId, String namespace, NestStateWindow window) {
+                throw new IllegalStateException("the alerting path is broken");
+            }
+
+            @Override
+            public void cleared(String pipelineId, String namespace, NestStateWindow window) {
+            }
+        };
+        ObservationPublisher wired = withWatch(throwing,
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(100L, 4_000L, 3_800L, 19_000L, OptionalLong.of(400_000L))));
+
+        assertThatThrownBy(() -> wired.publish("orders")).isInstanceOf(IllegalStateException.class);
+
+        assertThat(observations.read("orders")).isPresent();
     }
 
     @Test

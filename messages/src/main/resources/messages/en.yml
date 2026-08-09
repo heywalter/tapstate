@@ -317,6 +317,9 @@ nest.migration-parking-limit-exceeded:
 nest.pending-protection-expired:
   message: "An event of chain {chain} waiting in {bucket} since {order} was released after {heldFor}: {verdict}."
   solution: "parent-absent is a dangling reference in the source and is normal; wall-clock-backstop means a slow parent may have been given up on, and is worth investigating."
+nest.state-served-from-cold-layer:
+  message: "Nest namespace {namespace} served {backfills} of {accesses} state reads from storage rather than memory ({share}), {millis} each; {entries} of {stored} entries are in memory ({resident})."
+  solution: "Raise this pipeline's in-memory entry budget so more of its working set stays resident, or accept the round trips if the throughput they allow is enough."
 nest.key-change-tracking-requires-before-image:
   message: "Stream {alias} tracks structural key changes, but source table {table} provides no before image."
   solution: "Configure the source to emit full row images, or turn key tracking off for that stream."

@@ -1,5 +1,6 @@
 package io.tapstate.runtime.scheduler;
 
+import io.tapstate.core.lifecycle.NestColdLayerPressure;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
 import io.tapstate.core.lifecycle.NestStateReading;
@@ -71,6 +72,7 @@ public final class ObservationPublisher {
     private final Function<String, Map<String, TableSnapshot>> snapshots;
     private final Function<String, Map<String, Long>> frontierGaps;
     private final Function<String, Map<String, NestStateReading>> nestStateReadings;
+    private final NestColdLayerWatch coldLayer;
 
     /**
      * A publisher with no metric, position or snapshot source: recordCount stays absent and positions and
@@ -123,6 +125,22 @@ public final class ObservationPublisher {
             Function<String, Map<String, TableSnapshot>> snapshots,
             Function<String, Map<String, Long>> frontierGaps,
             Function<String, Map<String, NestStateReading>> nestStateReadings) {
+        this(state, observations, recordCounts, positions, snapshots, frontierGaps, nestStateReadings,
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, NestColdLayerAlert.NONE));
+    }
+
+    /**
+     * A publisher that also hands each pass's nest state readings to {@code coldLayer}, which reports a
+     * namespace that has stopped being served from memory. It is fed from here because this is the one
+     * place the readings already exist: they are fetched once per pass, and asking for them a second time
+     * would pay for counting the cold layer twice a tick.
+     */
+    public ObservationPublisher(StateStore state, ObservationStore observations,
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
+            Function<String, Map<String, TableSnapshot>> snapshots,
+            Function<String, Map<String, Long>> frontierGaps,
+            Function<String, Map<String, NestStateReading>> nestStateReadings,
+            NestColdLayerWatch coldLayer) {
         this.state = Objects.requireNonNull(state, "state");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.recordCounts = Objects.requireNonNull(recordCounts, "recordCounts");
@@ -130,6 +148,7 @@ public final class ObservationPublisher {
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.frontierGaps = Objects.requireNonNull(frontierGaps, "frontierGaps");
         this.nestStateReadings = Objects.requireNonNull(nestStateReadings, "nestStateReadings");
+        this.coldLayer = Objects.requireNonNull(coldLayer, "coldLayer");
     }
 
     /** Publishes the pipeline's latest observation from its actual state; a no-op if it has no checkpoint. */
@@ -154,8 +173,13 @@ public final class ObservationPublisher {
             if (carried == null && actual == PipelineState.FAILED) {
                 carried = observations.read(pipelineId).map(Observation::failure).orElse(null);
             }
-            observations.save(new Observation(pipelineId, actual, metrics(pipelineId, actual),
+            Map<String, NestStateReading> readings = nestStateReadings.apply(pipelineId);
+            observations.save(new Observation(pipelineId, actual, metrics(pipelineId, actual, readings),
                     snapshots.apply(pipelineId), positions.apply(pipelineId), carried));
+            // Fed after the observation is written and never before. The observation is the contract and
+            // the alert is a courtesy on top of it, so a fault in the alerting path must not be able to
+            // cost a pipeline the read face that says it is alive at all.
+            coldLayer.saw(pipelineId, readings);
         });
     }
 
@@ -183,7 +207,8 @@ public final class ObservationPublisher {
      * is one observable error, else zero) and is always present; recordCount is added from its source only
      * when a live job reports one, so its absence reads as "not wired" rather than a zero count.
      */
-    private Map<String, Long> metrics(String pipelineId, PipelineState actual) {
+    private Map<String, Long> metrics(String pipelineId, PipelineState actual,
+            Map<String, NestStateReading> nestReadings) {
         Map<String, Long> metrics = new HashMap<>();
         metrics.put("errorCount", actual == PipelineState.FAILED ? 1L : 0L);
         recordCounts.apply(pipelineId).ifPresent(count -> metrics.put("recordCount", count));
@@ -194,7 +219,7 @@ public final class ObservationPublisher {
         // One set per namespace that reported, so a resolver thrashing against its cold layer stays
         // distinguishable from an assembler that is not; a namespace reporting nothing is absent rather
         // than present at zero, which would read as a state layer that had emptied.
-        nestStateReadings.apply(pipelineId).forEach((namespace, reading) -> {
+        nestReadings.forEach((namespace, reading) -> {
             metrics.put(NEST_ENTRIES_PREFIX + namespace, reading.entries());
             metrics.put(NEST_ACCESSES_PREFIX + namespace, reading.accesses());
             metrics.put(NEST_BACKFILLS_PREFIX + namespace, reading.backfills());

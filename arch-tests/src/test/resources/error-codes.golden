@@ -91,6 +91,7 @@ nest.root-key-required
 nest.sibling-embeds-target-different-parent-keys
 nest.snapshot-passthrough-forbidden
 nest.state-paths-changed
+nest.state-served-from-cold-layer
 role.unsupported
 source.already-exists
 source.id-mismatch
