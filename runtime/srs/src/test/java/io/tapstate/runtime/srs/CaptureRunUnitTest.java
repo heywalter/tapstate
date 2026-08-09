@@ -318,6 +318,23 @@ class CaptureRunUnitTest {
     }
 
     @Test
+    void snapshot_passthrough_failure_rolls_back_a_chain_created_by_this_start() {
+        InMemoryMeta meta = new InMemoryMeta();
+        SrsCoordinator coordinator = new SrsCoordinator(meta);
+        FakeSource source = new FakeSource(List.of(row(1)), List.of());
+        CaptureRunSpec spec = spec(ReadMode.SNAPSHOT_AND_CDC, true, "chain-snapshot-failure");
+        MiningChainId chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
+        RuntimeException failure = new IllegalStateException("snapshot sink failed");
+        CaptureRunUnit unit = new CaptureRunUnit(source, coordinator, meta, hz);
+
+        assertThatThrownBy(() -> unit.start(spec, ignored -> { throw failure; }))
+                .isSameAs(failure);
+
+        assertThat(coordinator.isProvisioned(chainId)).isFalse();
+        assertThat(source.cdcStarted).isFalse();
+    }
+
+    @Test
     void theReadCursorPublisherResolvesToANoOpWhenNoStoreIsBoundOnTheMember() {
         hz.getUserContext().remove(CaptureRunUnit.SRS_META_USER_CONTEXT_KEY);
 
