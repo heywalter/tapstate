@@ -66,6 +66,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.lang.Nullable;
 
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
@@ -178,16 +179,22 @@ class ControlPlaneConfiguration {
     @Bean
     ApplyService applyService(
             ArtifactStore artifactStore, ConnectorCatalogView connectorCatalogView, AuditGate auditGate,
-            SchemaStore schemaStore, NestSettings nestSettings) {
+            SchemaStore schemaStore, @Nullable NestSettings nestSettings) {
         // The online apply validates against the live catalog view (the bundled snapshot union the
         // connectors registered so far), so a connector registered at runtime is honoured without a restart.
         // It also reads the schema store, which is what lets it judge a row expression against the columns
         // its sources were discovered to hold - the one check that cannot run offline.
         // The advisory pass sizes each nest against the budget a pipeline that writes none of its own
-        // would run on, which is this process's. Passing the running number rather than a copy is what
-        // keeps a deployment that changed it from being advised against the number it used to have.
+        // would run on. Passing the running number rather than a copy is what keeps a deployment that
+        // changed it from being advised against the number it used to have.
+        // The settings are nullable because the control plane is assembled on its own in deployments
+        // that run no engine, and the bean carrying them belongs to the engine's substrate. Sizing
+        // still happens there, against the built-in default - which is the number a nest would run on
+        // wherever it does run, absent a deployment saying otherwise. Requiring the bean instead would
+        // take the whole control plane down in exactly the shape that never nests anything locally.
+        NestSettings settings = nestSettings == null ? NestSettings.defaults() : nestSettings;
         return new ApplyService(connectorCatalogView::merged, artifactStore, auditGate, schemaStore,
-                new NestSizingAdvisories(nestSettings.entriesHeldInMemory()));
+                new NestSizingAdvisories(settings.entriesHeldInMemory()));
     }
 
     @Bean

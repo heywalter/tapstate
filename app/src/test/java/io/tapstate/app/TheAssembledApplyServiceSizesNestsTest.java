@@ -85,7 +85,10 @@ class TheAssembledApplyServiceSizesNestsTest {
 
     private final InMemorySchemaStore schemas = new InMemorySchemaStore();
 
-    /** The apply service exactly as the assembly builds it, over the budget {@code settings} carries. */
+    /**
+     * The apply service exactly as the assembly builds it, over the budget {@code settings} carries.
+     * A null stands for the deployment that runs no engine, where nothing defines those settings.
+     */
     private ApplyService assembled(NestSettings settings) {
         ConnectorCatalogView catalog = new ConnectorCatalogView(
                 TapstateCatalog.load(), new NoRegisteredConnectors(), specStore(), registry());
@@ -150,6 +153,23 @@ class TheAssembledApplyServiceSizesNestsTest {
         discovered(1_000L);
 
         assertThat(assembled(NestSettings.defaults()).validate(batch()).warnings()).isEmpty();
+    }
+
+    @Test
+    void aControlPlaneRunningNoEngineStillComesUpAndStillSizes() {
+        // The bean carrying nest settings belongs to the engine's substrate, and a deployment can run the
+        // control plane without one. Demanding it would take the whole control plane down in exactly the
+        // shape that never nests anything locally — an artifact endpoint refusing to start because of a
+        // rule that only advises. It sizes against the built-in default instead, which is the number a
+        // nest runs on wherever it does run, absent a deployment saying otherwise.
+        discovered(9_000_000L);
+
+        ArtifactValidationResult result = assembled(null).validate(batch());
+
+        assertThat(result.valid()).isTrue();
+        assertThat(sizingWarning(result)).as("still sized, on the built-in default").isNotNull();
+        assertThat(sizingWarning(result).params())
+                .containsEntry("budget", NestSettings.DEFAULT_ENTRIES_HELD_IN_MEMORY);
     }
 
     /** A catalog store with nothing registered, so the merged view is the bundled snapshot alone. */
