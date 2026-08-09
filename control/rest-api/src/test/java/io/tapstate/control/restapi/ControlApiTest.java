@@ -17,6 +17,7 @@ import io.tapstate.control.core.Operation;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
 import io.tapstate.control.core.StoredArtifact;
+import io.tapstate.control.core.ValidationDiagnostic;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.model.Resource;
@@ -181,6 +182,47 @@ class ControlApiTest {
                 .extracting("code").isEqualTo("dsl.unknown-field");
         assertThat(context.getBean(ArtifactStore.class).list()).isEmpty();
         assertThat(context.getBean(RecordingAuditStore.class).records).isEmpty();
+    }
+
+    @Test
+    void applyAndValidateCarryAWarningsArrayApartFromTheDiagnostics() {
+        // The advisory findings are their own column on the wire: a client must be able to tell "the batch
+        // applied, and here is something to know" from "the batch was refused" without reading a severity
+        // field. An empty run still carries the array, so an absent one is a broken contract, not a clean batch.
+        String applied = client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(Map.of("content", TGT_MY))))
+                .retrieve().body(String.class);
+        assertThat(applied).contains("\"warnings\":[]").contains("\"outcomes\":[");
+
+        String validated = client().post().uri("/api/artifacts:validate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(Map.of("content", TGT_MY))))
+                .retrieve().body(String.class);
+        assertThat(validated).contains("\"warnings\":[]").contains("\"diagnostics\":[]");
+    }
+
+    @Test
+    void anAdvisoryFindingReachesTheClientWithItsCodeAndParams() {
+        // The stub rule in TestApp reports on any artifact named `warned_*`, so this exercises the whole
+        // channel — rule -> plan -> result -> JSON — rather than only the shape of an empty column.
+        ApplyResult result = applyDrafts(WARNED_SRC);
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::id).containsExactly("warned_src");
+        assertThat(result.warnings()).singleElement().satisfies(warning -> {
+            assertThat(warning.code()).isEqualTo(STUB_ADVISORY_CODE);
+            assertThat(warning.params()).containsEntry("id", "warned_src");
+        });
+
+        ArtifactValidationResult validated = client().post().uri("/api/artifacts:validate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(Map.of("content", WARNED_SRC))))
+                .retrieve().toEntity(ArtifactValidationResult.class).getBody();
+
+        assertThat(validated.valid()).as("an advisory finding is not a refusal").isTrue();
+        assertThat(validated.diagnostics()).isEmpty();
+        assertThat(validated.warnings()).extracting(ValidationDiagnostic::code)
+                .containsExactly(STUB_ADVISORY_CODE);
     }
 
     @Test
@@ -413,7 +455,8 @@ class ControlApiTest {
 
         @Bean
         ApplyService applyService(ArtifactStore store, AuditGate auditGate) {
-            return new ApplyService(TapstateCatalog::load, store, auditGate, new EmptySchemaStore());
+            return new ApplyService(TapstateCatalog::load, store, auditGate, new EmptySchemaStore(),
+                    ControlApiTest::adviseOnWarnedArtifacts);
         }
 
         @Bean
@@ -566,6 +609,26 @@ class ControlApiTest {
             connector: mysql
             config: { host: 10.30.0.5, username: writer, password: My_2026 }
             """;
+
+    // The same source under an id the stub advisory rule reports on, so one batch exercises the channel.
+    private static final String WARNED_SRC = TGT_MY.replace("id: tgt_my", "id: warned_src");
+
+    private static final String STUB_ADVISORY_CODE = "nest.resident-demand-over-budget";
+
+    /**
+     * A stand-in advisory rule: it reports one finding per artifact named {@code warned_*}. A real rule
+     * judges capacity; what this one stands in for is the shape — a coded finding, with named params,
+     * over a batch that validated.
+     */
+    private static List<ValidationDiagnostic> adviseOnWarnedArtifacts(List<Resource> resources) {
+        List<ValidationDiagnostic> findings = new ArrayList<>();
+        for (Resource resource : resources) {
+            if (resource.id().startsWith("warned")) {
+                findings.add(new ValidationDiagnostic(STUB_ADVISORY_CODE, Map.of("id", resource.id())));
+            }
+        }
+        return findings;
+    }
 
     private static final String SRC_ORA = """
             version: tapstate/v1

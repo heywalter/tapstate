@@ -2177,6 +2177,71 @@ class ReplTest {
     }
 
     @Test
+    void applyRendersTheServerWarningsOnStderrAndStillSucceeds(@TempDir Path base) throws Exception {
+        // Any catalogued code serves as the stand-in: what is under test is that the CLI renders a
+        // server-sent code from its own bundled catalog, message and solution alike, and that the note
+        // lands on stderr so a piped stdout carries only the per-artifact outcome lines.
+        copyWorkspace("/ws-valid", base);
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.applyOutcome = new ApplyOutcome.Applied(
+                List.of(new ApplyOutcome.Item("src_kfk", "source", "CREATED")),
+                List.of(new ApplyOutcome.Warning("cli.artifact-exists", Map.of("path", "source/src_kfk.tap.yml"))));
+        SplitHarness h = onlineSplitStreamSession(base, client);
+
+        assertThat(h.repl().dispatch("apply")).isTrue();
+
+        assertThat(h.out().toString())
+                .as("stdout stays the machine-readable outcome lines")
+                .contains("created").contains("src_kfk")
+                .doesNotContain("warning:");
+        assertThat(h.err().toString())
+                .contains("warning:")
+                .contains("cli.artifact-exists")
+                .as("the params are substituted into the catalogued message, not printed raw")
+                .contains("An artifact already exists at source/src_kfk.tap.yml.")
+                .as("the catalogued next-step hint rides along")
+                .contains("Choose a different id or --out");
+        assertThat(h.repl().lastExitCode())
+                .as("a warning is a note about a batch that applied — it never changes the exit status")
+                .isEqualTo(Cli.EXIT_OK);
+    }
+
+    @Test
+    void applyRendersAWarningWhoseCodeTheCatalogDoesNotKnowAsItsBareCode(@TempDir Path base) throws Exception {
+        // A server one version ahead can send a code this CLI's catalog has never heard of. Rendering it
+        // as its bare code keeps the finding visible and machine-greppable; dropping it would turn a
+        // version skew into silence, which is the exact failure this channel exists to end.
+        copyWorkspace("/ws-valid", base);
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.applyOutcome = new ApplyOutcome.Applied(
+                List.of(new ApplyOutcome.Item("src_kfk", "source", "CREATED")),
+                List.of(new ApplyOutcome.Warning("nest.a-code-from-a-newer-server", Map.of())));
+        SplitHarness h = onlineSplitStreamSession(base, client);
+
+        assertThat(h.repl().dispatch("apply")).isTrue();
+
+        assertThat(h.err().toString()).contains("warning:").contains("nest.a-code-from-a-newer-server");
+        assertThat(h.out().toString()).contains("created").contains("src_kfk");
+    }
+
+    @Test
+    void applyWithNoWarningsPrintsNothingOnStderr(@TempDir Path base) throws Exception {
+        // The positive control for the two above: the same apply, minus the findings, leaves stderr
+        // untouched — so a "warning:" line can only have come from a server that sent one.
+        copyWorkspace("/ws-valid", base);
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.applyOutcome = new ApplyOutcome.Applied(
+                List.of(new ApplyOutcome.Item("src_kfk", "source", "CREATED")), List.of());
+        SplitHarness h = onlineSplitStreamSession(base, client);
+        int mark = h.err().toString().length();
+
+        assertThat(h.repl().dispatch("apply")).isTrue();
+
+        assertThat(h.err().toString().substring(mark)).isEmpty();
+        assertThat(h.out().toString()).contains("created").contains("src_kfk");
+    }
+
+    @Test
     void applySubstitutesReferencesFromTheEnvironmentBeforeSendingTheDrafts(@TempDir Path base) throws Exception {
         Files.createDirectory(base.resolve("source"));
         Files.writeString(base.resolve("source").resolve("tgt.tap.yml"),

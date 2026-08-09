@@ -11,6 +11,7 @@ import io.tapstate.adapters.pdk.PdkSchemaDiscoverer;
 import io.tapstate.adapters.pdk.RegistryConnectorProvisioner;
 import io.tapstate.adapters.pdk.SeedConnectorSweep;
 import io.tapstate.control.core.ApplyService;
+import io.tapstate.control.core.PlanAdvisories;
 import io.tapstate.control.core.ConnectorCatalogView;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
@@ -181,7 +182,11 @@ class ControlPlaneConfiguration {
         // connectors registered so far), so a connector registered at runtime is honoured without a restart.
         // It also reads the schema store, which is what lets it judge a row expression against the columns
         // its sources were discovered to hold - the one check that cannot run offline.
-        return new ApplyService(connectorCatalogView::merged, artifactStore, auditGate, schemaStore);
+        // No advisory rule is wired yet, so the assembly names the empty pass rather than leaving the
+        // channel unset: an apply reports no findings because there is nothing asking, not because
+        // something asked and stayed quiet.
+        return new ApplyService(connectorCatalogView::merged, artifactStore, auditGate, schemaStore,
+                PlanAdvisories.none());
     }
 
     @Bean

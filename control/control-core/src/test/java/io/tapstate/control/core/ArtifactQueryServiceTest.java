@@ -28,7 +28,8 @@ class ArtifactQueryServiceTest {
 
     private final InMemoryArtifactStore store = new InMemoryArtifactStore();
     private final ApplyService apply =
-            new ApplyService(TapstateCatalog::load, store, new AuditGate(record -> { }, Clock.systemUTC()), new EmptySchemaStore());
+            new ApplyService(TapstateCatalog::load, store, new AuditGate(record -> { }, Clock.systemUTC()),
+                    new EmptySchemaStore(), PlanAdvisories.none());
     private final ArtifactQueryService query = new ArtifactQueryService(store);
 
     private static ArtifactDraft draft(String content) {

@@ -196,7 +196,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             HttpResponse<String> response =
                     send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() == 200) {
-                return new ApplyOutcome.Applied(applyItems(response.body()));
+                return applied(response.body());
             }
             Rejection r = rejection(response.body(), "The server refused the apply.");
             return new ApplyOutcome.Rejected(r.code(), r.message());
@@ -998,10 +998,22 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         return JsonOut.write(body);
     }
 
+    /**
+     * A 200 apply body decoded into its two arrays: the per-artifact outcomes and the advisory warnings.
+     * The body is parsed once and each array read from the same map, so the two never disagree about
+     * which response they came from.
+     */
+    private static ApplyOutcome.Applied applied(String body) {
+        if (JsonReader.parse(body) instanceof Map<?, ?> map) {
+            return new ApplyOutcome.Applied(applyItems(map), applyWarnings(map));
+        }
+        return new ApplyOutcome.Applied(List.of(), List.of());
+    }
+
     /** The apply outcomes decoded from a 200 body's {@code outcomes} array; empty if the shape is unexpected. */
-    private static List<ApplyOutcome.Item> applyItems(String body) {
+    private static List<ApplyOutcome.Item> applyItems(Map<?, ?> map) {
         List<ApplyOutcome.Item> items = new ArrayList<>();
-        if (JsonReader.parse(body) instanceof Map<?, ?> map && map.get("outcomes") instanceof List<?> outcomes) {
+        if (map.get("outcomes") instanceof List<?> outcomes) {
             for (Object o : outcomes) {
                 if (o instanceof Map<?, ?> m
                         && m.get("id") instanceof String id
@@ -1012,6 +1024,34 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
             }
         }
         return items;
+    }
+
+    /**
+     * The advisory findings decoded from a 200 body's {@code warnings} array. A server that sends none —
+     * or one old enough not to send the array at all — decodes to no warnings rather than to a null the
+     * caller has to guard. An entry with no code is skipped on its own: it costs its own line, never the
+     * applied result, because the batch did land whatever the server said about it afterwards.
+     */
+    private static List<ApplyOutcome.Warning> applyWarnings(Map<?, ?> map) {
+        List<ApplyOutcome.Warning> warnings = new ArrayList<>();
+        if (map.get("warnings") instanceof List<?> entries) {
+            for (Object o : entries) {
+                if (o instanceof Map<?, ?> m && m.get("code") instanceof String code) {
+                    warnings.add(new ApplyOutcome.Warning(code, warningParams(m.get("params"))));
+                }
+            }
+        }
+        return warnings;
+    }
+
+    /** One warning's named params, keyed by name; anything but a JSON object reads as none. */
+    private static Map<String, Object> warningParams(Object params) {
+        if (!(params instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Object> named = new LinkedHashMap<>();
+        map.forEach((key, value) -> named.put(String.valueOf(key), value));
+        return named;
     }
 
     /** One stored artifact decoded from a 200 body, or {@code null} if the body is not a usable artifact. */
