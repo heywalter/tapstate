@@ -57,7 +57,7 @@ final class PdkSinkWriter implements SinkWriter {
         this.write = write;
         this.mode = mode;
         this.ddl = ddl;
-        this.targets = targets == null ? Map.of() : Map.copyOf(new LinkedHashMap<>(targets));
+        this.targets = targets == null ? Map.of() : Map.copyOf(targets);
     }
 
     @Override
@@ -81,6 +81,10 @@ final class PdkSinkWriter implements SinkWriter {
         }
         if (rowsByTable.isEmpty()) {
             return new WriteResult(0);
+        }
+        if (mode == WriteMode.APPEND && rowsByTable.size() > 1) {
+            throw writeFailed(connector.connectorId(), new IllegalStateException(
+                    "append mode cannot atomically write multiple source tables in one batch"));
         }
         try {
             return connector.underLoader(() -> {

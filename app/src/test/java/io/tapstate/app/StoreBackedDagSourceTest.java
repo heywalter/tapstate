@@ -148,6 +148,25 @@ class StoreBackedDagSourceTest {
     }
 
     @Test
+    void rejects_a_qualified_reference_to_a_table_not_selected_by_its_source() {
+        FakeStorePort store = new FakeStorePort();
+        store.artifacts().save(cdcSource("src_a", "orders"));
+        store.artifacts().save(connectionSupplier("dest"));
+        store.artifacts().save(new PipelineResource(
+                "missing", null, List.of("src_a"), null, null,
+                serve(FromRef.literal("src_a.customers"), sync("sync_1", "dest")), null, null));
+
+        assertThatThrownBy(() -> new StoreBackedDagSource(store).dagFor("missing"))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(thrown -> {
+                    TapstateException coded = (TapstateException) thrown;
+                    assertThat(coded.code().code()).isEqualTo("actuation.source-table-not-discovered");
+                    assertThat(coded.args()).containsEntry("source", "src_a");
+                    assertThat(coded.args()).containsEntry("table", "customers");
+                });
+    }
+
+    @Test
     void reports_a_coded_error_when_the_pipeline_artifact_is_absent() {
         FakeStorePort store = new FakeStorePort();
 

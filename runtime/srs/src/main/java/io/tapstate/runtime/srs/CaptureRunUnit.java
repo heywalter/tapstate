@@ -76,6 +76,9 @@ public final class CaptureRunUnit {
         MiningChainId chainId = null;
         boolean merged = false;
         List<String> tables = spec.config().streams();
+        if (tables == null || tables.isEmpty()) {
+            throw new IllegalArgumentException("capture config must select at least one stream");
+        }
         if (plan.sharedRing()) {
             chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
             merged = coordinator
@@ -148,7 +151,8 @@ public final class CaptureRunUnit {
      * sink-ack. It closes over only the chain, pipeline and table coordinates — never the store — so it
      * stays serializable; a member with no store bound resolves to a no-op sink.
      */
-    static SrsReadCursorPublisherFactory readCursorPublisher(String miningChainId, String pipelineId, String table) {
+    public static SrsReadCursorPublisherFactory readCursorPublisher(
+            String miningChainId, String pipelineId, String table) {
         return member -> {
             Object bound = member.getUserContext().get(SRS_META_USER_CONTEXT_KEY);
             if (!(bound instanceof SrsMetaStore memberMeta)) {

@@ -21,14 +21,12 @@ final class SourceTableSelection {
             requireDiscovery(source, discovered);
             List<String> allTables = discovered.tables().stream().map(SourceTable::name).toList();
             if (allTables.isEmpty()) {
-                throw new TapstateException(
-                        ActuationError.SOURCE_TABLE_SELECTION_EMPTY, Map.of("source", source.id()), null);
+                throw emptySelection(source);
             }
             return allTables;
         }
         if (selectors.isEmpty()) {
-            throw new TapstateException(
-                    ActuationError.SOURCE_TABLE_SELECTION_EMPTY, Map.of("source", source.id()), null);
+            throw emptySelection(source);
         }
 
         LinkedHashSet<String> selected = new LinkedHashSet<>();
@@ -40,14 +38,14 @@ final class SourceTableSelection {
             }
         }
         if (selected.isEmpty()) {
-            throw new TapstateException(
-                    ActuationError.SOURCE_TABLE_SELECTION_EMPTY, Map.of("source", source.id()), null);
+            throw emptySelection(source);
         }
         return List.copyOf(selected);
     }
 
     private static void addLiteral(
             SourceResource source, SourceModel discovered, LinkedHashSet<String> selected, String table) {
+        // Literal names are allowed before discovery so the legacy pre-discovery resolution path can start.
         if (discovered != null && discovered.tables().stream().noneMatch(candidate -> candidate.name().equals(table))) {
             throw new TapstateException(
                     ActuationError.SOURCE_TABLE_NOT_DISCOVERED,
@@ -55,6 +53,11 @@ final class SourceTableSelection {
                     null);
         }
         selected.add(table);
+    }
+
+    private static TapstateException emptySelection(SourceResource source) {
+        return new TapstateException(
+                ActuationError.SOURCE_TABLE_SELECTION_EMPTY, Map.of("source", source.id()), null);
     }
 
     private static void addRegex(

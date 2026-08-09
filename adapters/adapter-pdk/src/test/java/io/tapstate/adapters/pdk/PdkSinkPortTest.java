@@ -102,6 +102,22 @@ class PdkSinkPortTest {
     }
 
     @Test
+    void appendModeRejectsAMultiTableBatchBeforeAnyConnectorWrite(@TempDir Path dir) throws Exception {
+        Path jar = Synthetic.countingSink(dir);
+        PdkSinkPort port = new PdkSinkPort(provisioner(jar, "synthetic.CountingSink"));
+        try (SinkWriter writer = port.open(config(WriteMode.APPEND, DdlPolicy.IGNORE),
+                Map.of("t1", target(), "t2", new TargetTable("t2", List.of())))) {
+            assertThatThrownBy(() -> await(writer, List.of(
+                    Envelope.insert(1L, "t1", Map.of("id", 1), null),
+                    Envelope.insert(2L, "t2", Map.of("id", 2), null))))
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseInstanceOf(TapstateException.class)
+                    .satisfies(e -> assertThat(((TapstateException) e.getCause()).code())
+                            .isEqualTo(ConnectorError.WRITE_FAILED));
+        }
+    }
+
+    @Test
     void upsertModePassesRowEventsThroughUnchanged(@TempDir Path dir) throws Exception {
         // In upsert mode an update stays an update; the inserts-only sink rejects it, proving no reforge.
         Path jar = Synthetic.insertsOnlySink(dir);

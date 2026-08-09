@@ -1,11 +1,13 @@
 package io.tapstate.app;
 
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.ReadMode;
 import io.tapstate.core.model.Settings;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.runtime.srs.CaptureRun;
+import io.tapstate.runtime.srs.CaptureError;
 import io.tapstate.runtime.srs.CaptureRunSpec;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsCoordinator;
@@ -24,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -89,7 +92,10 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
                 recordSnapshot(attributed, sourceId, spec, run, observedSnapshotCounts);
             }
         } catch (RuntimeException | Error failure) {
-            closeRuns(runs, pipelineId);
+            RuntimeException cleanupFailure = closeRuns(runs, pipelineId);
+            if (cleanupFailure != null) {
+                failure.addSuppressed(cleanupFailure);
+            }
             throw failure;
         }
         runsByPipeline.put(pipelineId, runs);
@@ -159,21 +165,34 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         if (runs == null) {
             return;
         }
-        closeRuns(runs, pipelineId);
+        RuntimeException cleanupFailure = closeRuns(runs, pipelineId);
+        if (cleanupFailure != null) {
+            throw cleanupFailure;
+        }
     }
 
     /** Releases live runs after a stop, or after a later source prevents a multi-source start from completing. */
-    private void closeRuns(List<CaptureRun> runs, String pipelineId) {
+    private RuntimeException closeRuns(List<CaptureRun> runs, String pipelineId) {
+        RuntimeException firstFailure = null;
         for (CaptureRun run : runs) {
             // Close first: stops the capture daemon so no thread leaks. Then release this pipeline's consumer
             // membership and tear the source chain down -- a shared-ring run only; a run that opened no chain
             // has nothing to release.
-            run.close();
-            run.chainId().ifPresent(chainId -> {
-                srsCoordinator.detachConsumer(chainId, pipelineId);
-                srsCoordinator.teardownSource(chainId);
-            });
+            try {
+                run.close();
+                run.chainId().ifPresent(chainId -> {
+                    srsCoordinator.detachConsumer(chainId, pipelineId);
+                    srsCoordinator.teardownSource(chainId);
+                });
+            } catch (RuntimeException failure) {
+                if (firstFailure == null) {
+                    firstFailure = failure;
+                } else {
+                    firstFailure.addSuppressed(failure);
+                }
+            }
         }
+        return firstFailure;
     }
 
     /**
@@ -252,7 +271,12 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
      */
     private Consumer<Envelope> snapshotPassthrough(
             SourceCaptureResolution resolution, Map<String, Long> observedSnapshotCounts) {
+        Set<String> selectedTables = Set.copyOf(resolution.tables());
         return event -> {
+            if (!selectedTables.contains(event.src())) {
+                throw new TapstateException(
+                        CaptureError.EVENT_TABLE_NOT_SELECTED, Map.of("table", event.src()), null);
+            }
             observedSnapshotCounts.merge(event.src(), 1L, Long::sum);
             snapshotBuffer.append(resolution.ringName(event.src()), event);
         };

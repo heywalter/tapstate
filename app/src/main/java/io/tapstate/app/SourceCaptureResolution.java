@@ -37,11 +37,12 @@ record SourceCaptureResolution(
         return new SourceCaptureResolution(source.id(), config, tables, srsKey, MiningChainId.resolve(config, srsKey));
     }
 
+    /** Returns the first selected table; callers that need the full selection must use {@link #tables()}. */
     String table() {
         return tables.getFirst();
     }
 
-    /** The per-table change ring name both the capture writer and the source-vertex reader look the ring up by. */
+    /** Returns the ring for the first selected table; callers that need all rings must iterate {@link #tables()}. */
     String ringName() {
         return ringName(table());
     }

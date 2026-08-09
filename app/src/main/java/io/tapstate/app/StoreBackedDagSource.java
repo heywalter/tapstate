@@ -15,7 +15,7 @@ import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.DagBindings;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
 import io.tapstate.runtime.engine.SinkAckBinding;
-import io.tapstate.runtime.srs.SrsReadCursorPublisherFactory;
+import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SrsSourceProcessor;
 import io.tapstate.runtime.srs.StartFrom;
 import io.tapstate.spi.sink.DdlPolicy;
@@ -82,7 +82,8 @@ final class StoreBackedDagSource implements DagSource {
                 sinkAckBinding(pipeline, pipelineId));
     }
 
-    private record SourceVertex(String sourceId, String table, SourceCaptureResolution resolution) {
+    private record SourceVertex(
+            String pipelineId, String sourceId, String table, SourceCaptureResolution resolution) {
     }
 
     /**
@@ -98,7 +99,7 @@ final class StoreBackedDagSource implements DagSource {
             SourceCaptureResolution resolution = SourceCaptureResolution.of(source, discoveredModel(sourceId));
             for (String table : resolution.tables()) {
                 String key = resolution.tables().size() == 1 ? sourceId : sourceId + "." + table;
-                vertices.put(key, new SourceVertex(sourceId, table, resolution));
+                vertices.put(key, new SourceVertex(pipeline.id(), sourceId, table, resolution));
             }
         }
         return vertices;
@@ -182,7 +183,8 @@ final class StoreBackedDagSource implements DagSource {
         }
         return SrsSourceProcessor.metaSupplier(
                 vertex.resolution().ringName(vertex.table()), vertex.table(),
-                StartFrom.earliest(), SrsReadCursorPublisherFactory.NONE);
+                StartFrom.earliest(), CaptureRunUnit.readCursorPublisher(
+                        vertex.resolution().chainId().value(), vertex.pipelineId(), vertex.table()));
     }
 
     /**
@@ -261,9 +263,15 @@ final class StoreBackedDagSource implements DagSource {
                 String table = literal.ref().substring(dot + 1);
                 List<String> qualified = sourceKeysById.get(sourceId);
                 if (qualified != null) {
-                    return qualified.stream()
+                    List<String> matches = qualified.stream()
                             .filter(key -> sourceVertices.get(key).table().equals(table))
                             .toList();
+                    if (matches.isEmpty()) {
+                        throw new TapstateException(
+                                ActuationError.SOURCE_TABLE_NOT_DISCOVERED,
+                                Map.of("source", sourceId, "table", table), null);
+                    }
+                    return matches;
                 }
             }
             return List.of(sourceIdByTable.getOrDefault(literal.ref(), literal.ref()));

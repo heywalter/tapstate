@@ -30,10 +30,10 @@ actuation.source-table-ambiguous:
   message: "Table `{table}` is selected by more than one source: {sources}."
   solution: "Use a qualified source.table reference to choose the intended source."
 actuation.from-regex-invalid:
-  message: "The pipeline from regex `{regex}` is invalid."
+  message: "The pipeline `from` regex `{regex}` is invalid."
   solution: "Fix the regex syntax and apply the pipeline again."
 actuation.from-regex-empty:
-  message: "The pipeline from regex `{regex}` matches no upstream vertex."
+  message: "The pipeline `from` regex `{regex}` matches no upstream vertex."
   solution: "Use a regex matching a selected source table or an earlier transform step."
 boot.hazelcast-unavailable:
   message: "The embedded Hazelcast member could not start."

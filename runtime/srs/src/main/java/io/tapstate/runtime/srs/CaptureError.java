@@ -22,6 +22,7 @@ public enum CaptureError implements TapstateErrorCode {
      *  parseable ISO-8601 instant; {@code value} carries the offending token. */
     START_FROM_UNPARSABLE("capture.start-from-unparsable", Set.of("value")),
 
+    /** A connector emitted a table outside the selected capture streams; {@code table} is its name. */
     EVENT_TABLE_NOT_SELECTED("capture.event-table-not-selected", Set.of("table"));
 
     private final String code;

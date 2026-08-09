@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The capture run unit assembles the snapshot phase, cdc phase, the self-built Jet ring source and the
@@ -279,6 +280,41 @@ class CaptureRunUnitTest {
         } finally {
             hz.getUserContext().remove(CaptureRunUnit.SRS_META_USER_CONTEXT_KEY);
         }
+    }
+
+    @Test
+    void readCursorPublishersAdvanceIndependentTableCursors() {
+        InMemoryMeta meta = new InMemoryMeta();
+        meta.create("chain-pub", null);
+        hz.getUserContext().put(CaptureRunUnit.SRS_META_USER_CONTEXT_KEY, meta);
+        try {
+            CaptureRunUnit.readCursorPublisher("chain-pub", "pipe-7", "orders")
+                    .resolve(hz).accept(7L);
+            CaptureRunUnit.readCursorPublisher("chain-pub", "pipe-7", "customers")
+                    .resolve(hz).accept(11L);
+
+            ConsumerOffset offset = meta.read("chain-pub").orElseThrow().consumerOffsets().stream()
+                    .filter(c -> c.pipelineId().equals("pipe-7")).findFirst().orElseThrow();
+            assertThat(offset.perTableSeq()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                    "orders", 7L, "customers", 11L));
+        } finally {
+            hz.getUserContext().remove(CaptureRunUnit.SRS_META_USER_CONTEXT_KEY);
+        }
+    }
+
+    @Test
+    void rejects_an_empty_stream_selection_before_provisioning() {
+        InMemoryMeta meta = new InMemoryMeta();
+        CaptureRunSpec spec = new CaptureRunSpec(
+                new CaptureConfig("mysql", Map.of("host", "h"), List.of()),
+                ReadMode.CDC_ONLY, "chain-empty", true, "src-1", "pipe-1", StartFrom.earliest(),
+                new SourcePosition("cdc-start-0"), null, 0L, monotonicWatermark(), NUMERIC_ORDER);
+
+        assertThatThrownBy(() -> runUnit(new FakeSource(List.of(), List.of()), meta)
+                .start(spec, ignored -> { }))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least one stream");
+        assertThat(meta.created).isEmpty();
     }
 
     @Test

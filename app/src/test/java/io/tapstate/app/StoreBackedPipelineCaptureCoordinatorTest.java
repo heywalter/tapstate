@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 
 import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.model.ReadMode;
 import io.tapstate.core.model.ServeBlock;
 import io.tapstate.core.model.Settings;
@@ -200,6 +201,29 @@ class StoreBackedPipelineCaptureCoordinatorTest {
         SourceCaptureResolution resolution = SourceCaptureResolution.of(source);
         assertThat(buffer.drain(resolution.ringName("orders"))).extracting(e -> e.src()).containsExactly("orders");
         assertThat(buffer.drain(resolution.ringName("customers"))).extracting(e -> e.src()).containsExactly("customers");
+    }
+
+    @Test
+    void rejects_a_snapshot_row_from_a_table_outside_the_source_selection() {
+        InMemoryArtifactStore artifacts = new InMemoryArtifactStore();
+        SourceResource source = new SourceResource("selected_src", null, "mysql", Map.of("host", "h"),
+                SourceMode.CDC, List.of(TableRef.literal("orders")), null, null, null);
+        artifacts.save(source);
+        artifacts.save(pipelineWithReadMode("p", "selected_src", ReadMode.SNAPSHOT_ONLY));
+        CaptureStarter starter = (spec, passthrough) -> {
+            passthrough.accept(Envelope.read(1L, "customers", Map.of("id", 1L), Map.of()));
+            return new CaptureRun(Optional.empty(), false, 1L, Optional.empty(), Optional.empty(), new CaptureHealth());
+        };
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(artifacts), starter, new SrsCoordinator(new InMemorySrsMetaStore()),
+                new SnapshotBuffer());
+
+        assertThatThrownBy(() -> coordinator.startCapture("p"))
+                .isInstanceOfSatisfying(TapstateException.class, exception -> {
+                    assertThat(exception.code().code()).isEqualTo("capture.event-table-not-selected");
+                    assertThat(exception.args()).containsEntry("table", "customers");
+                });
+        assertThat(coordinator.isActive("p")).isFalse();
     }
 
     @Test
@@ -406,6 +430,47 @@ class StoreBackedPipelineCaptureCoordinatorTest {
         assertThat(firstSubscriptionClosed).isTrue();
         assertThat(srsCoordinator.isProvisioned(firstChain)).isFalse();
         assertThat(coordinator.isActive("p")).isFalse();
+    }
+
+    @Test
+    void startFailurePreservesTheOriginalErrorWhenRunCleanupFails() {
+        InMemoryArtifactStore artifacts = new InMemoryArtifactStore();
+        artifacts.save(cdcSource("src_a", "orders", null));
+        artifacts.save(cdcSource("src_b", "customers", null));
+        artifacts.save(new SourceResource("src_c", null, "mysql", Map.of("host", "h"),
+                SourceMode.CDC, null, null, null, null));
+        artifacts.save(new PipelineResource("p", null, List.of("src_a", "src_b", "src_c"), null, null,
+                new ServeBlock.Inline(null, FromRef.literal("src_a"),
+                        List.of(new SyncElement("sync_1", "src_a", null, null, null, null)), null, null),
+                new Settings(null, null, null, null, ReadMode.CDC_ONLY, "earliest"), null));
+        SrsCoordinator srsCoordinator = new SrsCoordinator(new InMemorySrsMetaStore());
+        AtomicBoolean secondClosed = new AtomicBoolean(false);
+        AtomicReference<CaptureRunSpec> firstSpec = new AtomicReference<>();
+        int[] starts = {0};
+        CaptureStarter starter = (spec, passthrough) -> {
+            starts[0]++;
+            MiningChainId chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
+            srsCoordinator.provisionSource(spec.sourceId(), chainId, spec.config().streams(), spec.retention());
+            srsCoordinator.attachConsumer(chainId, spec.pipelineId());
+            if (starts[0] == 1) {
+                firstSpec.set(spec);
+                return new CaptureRun(Optional.of(chainId), false, 0L, Optional.empty(),
+                        Optional.of(() -> { throw new IllegalStateException("close failed"); }), new CaptureHealth());
+            }
+            return new CaptureRun(Optional.of(chainId), false, 0L, Optional.empty(),
+                    Optional.of(() -> secondClosed.set(true)), new CaptureHealth());
+        };
+        StoreBackedPipelineCaptureCoordinator coordinator = new StoreBackedPipelineCaptureCoordinator(
+                artifactsOnly(artifacts), starter, srsCoordinator, new SnapshotBuffer());
+
+        assertThatThrownBy(() -> coordinator.startCapture("p"))
+                .isInstanceOfSatisfying(TapstateException.class, exception -> {
+                    assertThat(exception.code().code()).isEqualTo("actuation.source-schema-not-discovered");
+                    assertThat(exception.getSuppressed()).hasSize(1);
+                });
+        assertThat(secondClosed).isTrue();
+        assertThat(srsCoordinator.isProvisioned(MiningChainId.resolve(
+                firstSpec.get().config(), firstSpec.get().srsKey()))).isFalse();
     }
 
     // ---- fixtures --------------------------------------------------------------------------------

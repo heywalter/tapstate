@@ -68,9 +68,13 @@ public final class CdcPhase {
             CaptureConfig config,
             Map<String, TableRoute> routes,
             CaptureHealth health) {
+        Objects.requireNonNull(port, "port");
+        Objects.requireNonNull(config, "config");
         Objects.requireNonNull(routes, "routes");
+        Objects.requireNonNull(health, "health");
+        Map<String, TableRoute> routeSnapshot = Map.copyOf(routes);
         return port.cdc(config, health.recording(event -> {
-            TableRoute route = routes.get(event.src());
+            TableRoute route = routeSnapshot.get(event.src());
             if (route == null) {
                 throw new TapstateException(
                         CaptureError.EVENT_TABLE_NOT_SELECTED, Map.of("table", event.src()), null);

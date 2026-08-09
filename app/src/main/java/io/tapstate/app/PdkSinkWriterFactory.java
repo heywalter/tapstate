@@ -10,7 +10,6 @@ import io.tapstate.spi.sink.SinkConfig;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.TargetTable;
 import io.tapstate.spi.sink.WriteMode;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -45,11 +44,8 @@ final class PdkSinkWriterFactory implements SupplierEx<SinkWriter> {
 
     PdkSinkWriterFactory(
             String connectorId, Map<String, Object> settings, WriteMode writeMode, DdlPolicy ddl, TargetTable target) {
-        this.connectorId = connectorId;
-        this.settings = settings;
-        this.writeMode = writeMode;
-        this.ddl = ddl;
-        this.targets = target == null ? Map.of() : Map.of(target.name(), target);
+        this(connectorId, settings, writeMode, ddl,
+                target == null ? Map.<String, TargetTable>of() : Map.of(target.name(), target));
     }
 
     PdkSinkWriterFactory(
@@ -59,7 +55,7 @@ final class PdkSinkWriterFactory implements SupplierEx<SinkWriter> {
         this.settings = settings;
         this.writeMode = writeMode;
         this.ddl = ddl;
-        this.targets = targets == null ? Map.of() : Map.copyOf(new LinkedHashMap<>(targets));
+        this.targets = targets == null ? Map.of() : Map.copyOf(targets);
     }
 
     @Override
