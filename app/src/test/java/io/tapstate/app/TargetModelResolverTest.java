@@ -96,6 +96,19 @@ class TargetModelResolverTest {
         assertThat(target).isEqualTo(new TargetModelResolver.ResolvedTarget("orders", null));
     }
 
+    @Test
+    void ignores_a_discovered_model_from_a_different_connector() {
+        InMemoryStorePort store = new InMemoryStorePort();
+        store.artifacts().save(cdcSource("src_mysql", "orders"));
+        store.artifacts().save(pipeline("p", "src_mysql"));
+        store.schemas().save(discovered("src_mysql", "postgres", new SourceTable(
+                "orders", List.of(new SourceField("id", "BIGINT")), List.of("id"), List.of())));
+
+        TargetModelResolver.ResolvedTarget target = new TargetModelResolver(store).resolve("src_mysql");
+
+        assertThat(target).isEqualTo(new TargetModelResolver.ResolvedTarget("orders", null));
+    }
+
     // ---- fixtures ----------------------------------------------------------------------
 
     private static SourceResource cdcSource(String id, String table) {

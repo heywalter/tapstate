@@ -16,8 +16,6 @@ import io.tapstate.spi.capture.CapturePlan;
 import io.tapstate.spi.capture.SourcePosition;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.StorePort;
-import io.tapstate.spi.store.DiscoveredSourceModel;
-import io.tapstate.spi.store.SourceModel;
 import io.tapstate.core.lifecycle.TableSnapshot;
 
 import java.util.ArrayList;
@@ -84,7 +82,7 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         try {
             for (String sourceId : pipeline.sources()) {
                 SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
-                SourceCaptureResolution resolution = SourceCaptureResolution.of(source, discoveredModel(sourceId));
+                SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
                 CaptureRunSpec spec = deriveSpec(pipelineId, pipeline.settings(), source, resolution);
                 Map<String, Long> observedSnapshotCounts = new LinkedHashMap<>();
                 CaptureRun run = captureStarter.start(spec, snapshotPassthrough(resolution, observedSnapshotCounts));
@@ -282,7 +280,4 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         };
     }
 
-    private SourceModel discoveredModel(String sourceId) {
-        return storePort.schemas().get(sourceId).map(DiscoveredSourceModel::model).orElse(null);
-    }
 }

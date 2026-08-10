@@ -83,8 +83,10 @@ final class PdkSinkWriter implements SinkWriter {
             return new WriteResult(0);
         }
         if (mode == WriteMode.APPEND && rowsByTable.size() > 1) {
+            // APPEND has no rollback or idempotency contract. Reject before the first connector call so a
+            // retry cannot duplicate an earlier table after a later table fails.
             throw writeFailed(connector.connectorId(), new IllegalStateException(
-                    "append mode cannot atomically write multiple source tables in one batch"));
+                    "append mode rejects a multi-table batch before any connector write"));
         }
         try {
             return connector.underLoader(() -> {

@@ -103,8 +103,8 @@ class PdkSinkPortTest {
 
     @Test
     void appendModeRejectsAMultiTableBatchBeforeAnyConnectorWrite(@TempDir Path dir) throws Exception {
-        Path jar = Synthetic.countingSink(dir);
-        PdkSinkPort port = new PdkSinkPort(provisioner(jar, "synthetic.CountingSink"));
+        Path jar = Synthetic.throwingWriteSink(dir);
+        PdkSinkPort port = new PdkSinkPort(provisioner(jar, "synthetic.ThrowingWrite"));
         try (SinkWriter writer = port.open(config(WriteMode.APPEND, DdlPolicy.IGNORE),
                 Map.of("t1", target(), "t2", new TargetTable("t2", List.of())))) {
             assertThatThrownBy(() -> await(writer, List.of(
@@ -112,8 +112,11 @@ class PdkSinkPortTest {
                     Envelope.insert(2L, "t2", Map.of("id", 2), null))))
                     .isInstanceOf(ExecutionException.class)
                     .hasCauseInstanceOf(TapstateException.class)
-                    .satisfies(e -> assertThat(((TapstateException) e.getCause()).code())
-                            .isEqualTo(ConnectorError.WRITE_FAILED));
+                    .satisfies(e -> {
+                        TapstateException failure = (TapstateException) e.getCause();
+                        assertThat(failure.code()).isEqualTo(ConnectorError.WRITE_FAILED);
+                        assertThat(failure).hasMessageContaining("before any connector write");
+                    });
         }
     }
 

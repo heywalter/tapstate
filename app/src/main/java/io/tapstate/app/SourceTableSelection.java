@@ -5,6 +5,7 @@ import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.TableRef;
 import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -33,7 +34,7 @@ final class SourceTableSelection {
         for (TableRef selector : selectors) {
             switch (selector) {
                 case TableRef.Literal literal -> addLiteral(source, discovered, selected, literal.name());
-                case TableRef.Spec spec -> addLiteral(source, discovered, selected, spec.name());
+                case TableRef.Spec spec -> addSpec(source, discovered, selected, spec);
                 case TableRef.Regex regex -> addRegex(source, discovered, selected, regex.pattern());
             }
         }
@@ -53,6 +54,27 @@ final class SourceTableSelection {
                     null);
         }
         selected.add(table);
+    }
+
+    private static void addSpec(
+            SourceResource source, SourceModel discovered, LinkedHashSet<String> selected, TableRef.Spec spec) {
+        List<String> unsupported = new ArrayList<>(3);
+        if (spec.filter() != null) {
+            unsupported.add("filter");
+        }
+        if (spec.pk() != null && !spec.pk().isEmpty()) {
+            unsupported.add("pk");
+        }
+        if (spec.options() != null && !spec.options().isEmpty()) {
+            unsupported.add("options");
+        }
+        if (!unsupported.isEmpty()) {
+            throw new TapstateException(
+                    ActuationError.SOURCE_TABLE_SPEC_UNSUPPORTED,
+                    Map.of("source", source.id(), "table", spec.name(), "fields", String.join(", ", unsupported)),
+                    null);
+        }
+        addLiteral(source, discovered, selected, spec.name());
     }
 
     private static TapstateException emptySelection(SourceResource source) {

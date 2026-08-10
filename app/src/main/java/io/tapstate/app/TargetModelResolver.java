@@ -6,7 +6,6 @@ import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.TableRename;
 import io.tapstate.spi.sink.TargetField;
 import io.tapstate.spi.sink.TargetTable;
-import io.tapstate.spi.store.DiscoveredSourceModel;
 import io.tapstate.spi.store.SourceField;
 import io.tapstate.spi.store.SourceTable;
 import io.tapstate.spi.store.StorePort;
@@ -45,9 +44,9 @@ final class TargetModelResolver {
         Map<String, TargetTable> targets = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
             SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
-            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, discoveredModel(sourceId));
+            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
             for (String table : resolution.tables()) {
-                discoveredTable(sourceId, table).map(TargetModelResolver::toTargetTable)
+                discoveredTable(source, table).map(TargetModelResolver::toTargetTable)
                         .ifPresent(target -> targets.putIfAbsent(table, target));
             }
         }
@@ -58,9 +57,9 @@ final class TargetModelResolver {
     Map<String, TargetTable> resolveAll(String sourceId) {
         Map<String, TargetTable> targets = new LinkedHashMap<>();
         SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
-        SourceCaptureResolution resolution = SourceCaptureResolution.of(source, discoveredModel(sourceId));
+        SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
         for (String table : resolution.tables()) {
-            discoveredTable(sourceId, table).map(TargetModelResolver::toTargetTable)
+            discoveredTable(source, table).map(TargetModelResolver::toTargetTable)
                     .ifPresent(target -> targets.put(table, target));
         }
         return Collections.unmodifiableMap(targets);
@@ -69,7 +68,7 @@ final class TargetModelResolver {
     /** Resolves the first selected table for callers that still require a single target. */
     ResolvedTarget resolve(String sourceId) {
         SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
-        String table = SourceCaptureResolution.of(source, discoveredModel(sourceId)).table();
+        String table = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source)).table();
         return new ResolvedTarget(table, resolveAll(sourceId).get(table));
     }
 
@@ -78,14 +77,9 @@ final class TargetModelResolver {
     }
 
     /** The named table in the source's persisted discovery model, or empty when neither is present. */
-    private Optional<SourceTable> discoveredTable(String connectionId, String table) {
-        return storePort.schemas().get(connectionId)
-                .map(DiscoveredSourceModel::model)
+    private Optional<SourceTable> discoveredTable(SourceResource source, String table) {
+        return Optional.ofNullable(SourceDiscovery.model(storePort, source))
                 .flatMap(model -> model.tables().stream().filter(t -> t.name().equals(table)).findFirst());
-    }
-
-    private io.tapstate.spi.store.SourceModel discoveredModel(String sourceId) {
-        return storePort.schemas().get(sourceId).map(DiscoveredSourceModel::model).orElse(null);
     }
 
     /**

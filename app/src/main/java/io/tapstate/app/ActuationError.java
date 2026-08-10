@@ -41,6 +41,9 @@ enum ActuationError implements TapstateErrorCode {
     /** A bare table name is selected by several sources; {@code sources} lists the conflicting source ids. */
     SOURCE_TABLE_AMBIGUOUS("actuation.source-table-ambiguous", Set.of("table", "sources")),
 
+    /** A table object carries settings the current capture path does not implement; fields lists their names. */
+    SOURCE_TABLE_SPEC_UNSUPPORTED("actuation.source-table-spec-unsupported", Set.of("source", "table", "fields")),
+
     /** A serve.from regex is invalid; {@code regex} carries the expression. */
     FROM_REGEX_INVALID("actuation.from-regex-invalid", Set.of("regex")),
 

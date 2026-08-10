@@ -144,6 +144,18 @@ class SourceCaptureResolutionTest {
         assertThat(resolution.table()).isEqualTo("orders");
     }
 
+    @Test
+    void rejectsUnsupportedTableSpecSettingsBeforeCapture() {
+        SourceResource source = new SourceResource("orders_src", null, "mysql", Map.of("host", "h"),
+                SourceMode.CDC,
+                List.of(TableRef.spec("orders", "amount > 0", List.of("id"), Map.of("region", "eu"))),
+                null, null, null);
+
+        assertThatThrownBy(() -> SourceCaptureResolution.of(source))
+                .isInstanceOf(io.tapstate.core.common.TapstateException.class)
+                .hasMessageContaining("actuation.source-table-spec-unsupported");
+    }
+
     private static SourceModel discovered(String... names) {
         return new SourceModel(List.of(names).stream()
                 .map(name -> new SourceTable(name, List.of(), List.of(), List.of()))

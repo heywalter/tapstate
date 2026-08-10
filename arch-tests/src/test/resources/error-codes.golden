@@ -12,6 +12,7 @@ actuation.source-table-ambiguous
 actuation.source-table-not-discovered
 actuation.source-table-regex-invalid
 actuation.source-table-selection-empty
+actuation.source-table-spec-unsupported
 boot.hazelcast-unavailable
 capture.event-table-not-selected
 capture.start-from-unparsable

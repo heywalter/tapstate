@@ -100,7 +100,7 @@ final class StoreBackedDagSource implements DagSource {
         Map<String, SourceVertex> vertices = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
             SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
-            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, discoveredModel(sourceId));
+            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
             for (String table : resolution.tables()) {
                 String key = resolution.tables().size() == 1 ? sourceId : sourceId + "." + table;
                 vertices.put(key, new SourceVertex(pipeline.id(), sourceId, table, resolution));
@@ -155,7 +155,7 @@ final class StoreBackedDagSource implements DagSource {
         Map<String, String> chainIdByTable = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
             SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
-            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, discoveredModel(sourceId));
+            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
             for (String table : resolution.tables()) {
                 chainIdByTable.put(table, resolution.chainId().value());
             }
@@ -345,12 +345,6 @@ final class StoreBackedDagSource implements DagSource {
 
     private ArtifactStore artifacts() {
         return storePort.artifacts();
-    }
-
-    private io.tapstate.spi.store.SourceModel discoveredModel(String sourceId) {
-        return storePort.schemas().get(sourceId)
-                .map(io.tapstate.spi.store.DiscoveredSourceModel::model)
-                .orElse(null);
     }
 
     /**

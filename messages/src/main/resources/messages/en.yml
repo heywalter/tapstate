@@ -23,6 +23,9 @@ actuation.source-table-not-discovered:
 actuation.source-table-selection-empty:
   message: "Source `{source}` selects no tables."
   solution: "Use a table name or regex that matches at least one discovered table."
+actuation.source-table-spec-unsupported:
+  message: "Source `{source}` table `{table}` uses unsupported settings: {fields}."
+  solution: "Remove the unsupported table settings; this runtime currently supports only the object's `name` selector."
 actuation.source-table-regex-invalid:
   message: "Source `{source}` has an invalid table regex `{regex}`."
   solution: "Fix the regex syntax and apply the pipeline again."
