@@ -1,6 +1,5 @@
 package io.tapstate.app;
 
-import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.RenameCase;
 import io.tapstate.core.model.RenameSpec;
 import io.tapstate.core.model.SourceResource;
@@ -36,23 +35,24 @@ final class TargetModelResolver {
     }
 
     /**
-     * Resolves the write-side target table for a pipeline's sink from the discovered model of the source it
-     * reads: the selected source table looked up in its persisted model and mapped to a target table. The
-     * source table travels with the target model so sink-side rename rules use the same source that supplied
-     * the fields. Empty when no pipeline source has a matching discovered table.
+     * Resolves the write-side target model for the source a sink reads: that source's single table looked up
+     * in its persisted model and mapped to a target table. The caller names the source, because which source
+     * feeds a sink is a topology question - resolving it here from the pipeline's source list would bind a
+     * sink to whichever source merely happens to have been discovered first.
+     *
+     * <p>The source table travels back with the model whether or not one was discovered, since sink-side
+     * rename rules key off the table name alone. {@code target} is null when that source's schema was never
+     * discovered, or when the discovered model does not carry that table; the sink then falls back to a bare
+     * table id and leaves structure and keying to the connector.
      */
-    Optional<ResolvedTarget> resolve(PipelineResource pipeline) {
-        for (String sourceId : pipeline.sources()) {
-            SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
-            String table = SourceCaptureResolution.of(source).table();
-            Optional<SourceTable> discovered = discoveredTable(sourceId, table);
-            if (discovered.isPresent()) {
-                return Optional.of(new ResolvedTarget(table, toTargetTable(discovered.get())));
-            }
-        }
-        return Optional.empty();
+    ResolvedTarget resolve(String sourceId) {
+        SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
+        String table = SourceCaptureResolution.of(source).table();
+        return new ResolvedTarget(
+                table, discoveredTable(sourceId, table).map(TargetModelResolver::toTargetTable).orElse(null));
     }
 
+    /** One source's table paired with the target model discovered for it, or a null model when none was. */
     record ResolvedTarget(String sourceTable, TargetTable target) {
     }
 

@@ -149,7 +149,7 @@ class TargetModelResolverTest {
     }
 
     @Test
-    void resolves_the_target_from_the_discovered_model_of_the_pipelines_source() {
+    void resolves_the_target_from_the_discovered_model_of_the_named_source() {
         InMemoryStorePort store = new InMemoryStorePort();
         store.artifacts().save(cdcSource("src_mysql", "orders"));
         store.artifacts().save(pipeline("p", "src_mysql"));
@@ -159,24 +159,22 @@ class TargetModelResolverTest {
                 List.of("id"),
                 List.of())));
 
-        Optional<TargetModelResolver.ResolvedTarget> target =
-                new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
+        TargetModelResolver.ResolvedTarget target = new TargetModelResolver(store).resolve("src_mysql");
 
-        assertThat(target).contains(new TargetModelResolver.ResolvedTarget("orders", new TargetTable("orders", List.of(
+        assertThat(target).isEqualTo(new TargetModelResolver.ResolvedTarget("orders", new TargetTable("orders", List.of(
                 new TargetField("id", "INT", true),
                 new TargetField("amount", "DECIMAL", false)))));
     }
 
     @Test
-    void resolves_to_empty_when_the_source_schema_was_never_discovered() {
+    void resolves_the_table_with_no_model_when_the_source_schema_was_never_discovered() {
         InMemoryStorePort store = new InMemoryStorePort();
         store.artifacts().save(cdcSource("src_mysql", "orders"));
         store.artifacts().save(pipeline("p", "src_mysql"));
 
-        Optional<TargetModelResolver.ResolvedTarget> target =
-                new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
+        TargetModelResolver.ResolvedTarget target = new TargetModelResolver(store).resolve("src_mysql");
 
-        assertThat(target).isEmpty();
+        assertThat(target).isEqualTo(new TargetModelResolver.ResolvedTarget("orders", null));
     }
 
     // ---- fixtures ----------------------------------------------------------------------

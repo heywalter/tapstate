@@ -3,6 +3,7 @@ package io.tapstate.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.hazelcast.function.SupplierEx;
+import io.tapstate.core.model.FromClause;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.RenameCase;
@@ -10,8 +11,10 @@ import io.tapstate.core.model.RenameSpec;
 import io.tapstate.core.model.ServeBlock;
 import io.tapstate.core.model.SourceMode;
 import io.tapstate.core.model.SourceResource;
+import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TableRef;
+import io.tapstate.core.model.TransformBody;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.TargetField;
 import io.tapstate.spi.sink.TargetTable;
@@ -90,8 +93,8 @@ class StoreBackedDagSourceTargetModelTest {
     }
 
     @Test
-    void renames_with_the_table_whose_discovered_model_binds_the_sink() {
-        InMemoryStorePort store = seededMultiSourcePipeline();
+    void renames_with_the_table_of_the_source_the_serve_block_reads() {
+        InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("address_src"));
         store.schemas().save(discovered("address_src", "mysql", new SourceTable(
                 "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of())));
         List<TargetTable> bound = new ArrayList<>();
@@ -100,6 +103,43 @@ class StoreBackedDagSourceTargetModelTest {
 
         assertThat(bound).containsExactly(new TargetTable(
                 "player_address", List.of(new TargetField("id", "INT", true))));
+    }
+
+    @Test
+    void binds_the_model_of_the_source_the_serve_block_reads_not_the_first_discovered_one() {
+        InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("address_src"));
+        store.schemas().save(discovered("orders_src", "mysql", new SourceTable(
+                "orders", List.of(new SourceField("total", "DECIMAL")), List.of("total"), List.of())));
+        store.schemas().save(discovered("address_src", "mysql", new SourceTable(
+                "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of())));
+        List<TargetTable> bound = new ArrayList<>();
+
+        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+
+        assertThat(bound).containsExactly(new TargetTable(
+                "player_address", List.of(new TargetField("id", "INT", true))));
+    }
+
+    @Test
+    void renames_with_the_table_a_serve_block_reaches_through_a_transform_chain() {
+        InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("keep_recent"),
+                Step.inline("keep_recent", FromClause.list(FromRef.literal("address_src")),
+                        new TransformBody.Filter("true"), null, null));
+        List<TargetTable> bound = new ArrayList<>();
+
+        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+
+        assertThat(bound).containsExactly(new TargetTable("player_address", List.of()));
+    }
+
+    @Test
+    void renames_with_the_table_a_serve_block_names_directly() {
+        InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("PlayerAddress"));
+        List<TargetTable> bound = new ArrayList<>();
+
+        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+
+        assertThat(bound).containsExactly(new TargetTable("player_address", List.of()));
     }
 
     // ---- fixtures ----------------------------------------------------------------------
@@ -121,7 +161,11 @@ class StoreBackedDagSourceTargetModelTest {
         return store;
     }
 
-    private static InMemoryStorePort seededMultiSourcePipeline() {
+    /**
+     * A two-source pipeline whose sink renames {@code PlayerAddress}, so which source the serve block is
+     * pointed at decides the bound target: only {@code address_src} carries that table.
+     */
+    private static InMemoryStorePort seededMultiSourcePipeline(FromRef serveFrom, Step... transforms) {
         InMemoryStorePort store = new InMemoryStorePort();
         store.artifacts().save(new SourceResource("orders_src", null, "mysql", Map.of("host", "h"),
                 SourceMode.CDC, List.of(TableRef.literal("orders")), null, null, null));
@@ -129,8 +173,9 @@ class StoreBackedDagSourceTargetModelTest {
                 SourceMode.CDC, List.of(TableRef.literal("PlayerAddress")), null, null, null));
         store.artifacts().save(new SourceResource("orders_dest", null, "mongodb", Map.of("uri", "u"),
                 null, null, null, null, null));
-        store.artifacts().save(new PipelineResource("p", null, List.of("orders_src", "address_src"), null, null,
-                new ServeBlock.Inline(null, FromRef.literal("orders_src"), List.of(new SyncElement(
+        store.artifacts().save(new PipelineResource("p", null, List.of("orders_src", "address_src"),
+                transforms.length == 0 ? null : List.of(transforms), null,
+                new ServeBlock.Inline(null, serveFrom, List.of(new SyncElement(
                         "sync_1", "orders_dest", null,
                         new RenameSpec(Map.of("PlayerAddress", "player_address"), null, null, null), null, null)),
                         null, null),
