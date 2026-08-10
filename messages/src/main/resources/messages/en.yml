@@ -317,6 +317,9 @@ nest.migration-parking-limit-exceeded:
 nest.pending-limit-exceeded:
   message: "Key {key} of nest state {namespace} holds {pending} changes waiting for something that has not arrived, past the limit of {limit}."
   solution: "Check whether the parent rows are simply late or are never coming - a load reading children before their parents fills these queues and empties them again, where a broken reference fills them for good. Raise the limit if the wait is real and this deep."
+nest.tombstone-limit-exceeded:
+  message: "Document {key} of nest state {namespace} keeps {tombstones} records of deleted elements that cannot be dropped yet, past the limit of {limit}."
+  solution: "A record of a deletion is kept only until a restart could no longer replay the deletion, so this many means the durable position is not advancing - find what is holding the frontier back rather than raising the limit, which only buys time."
 nest.pending-protection-expired:
   message: "An event of chain {chain} waiting in {bucket} since {order} was released after {heldFor}: {verdict}."
   solution: "parent-absent is a dangling reference in the source and is normal; wall-clock-backstop means a slow parent may have been given up on, and is worth investigating."

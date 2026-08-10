@@ -95,6 +95,7 @@ nest.snapshot-passthrough-forbidden
 nest.state-far-exceeds-memory-budget
 nest.state-paths-changed
 nest.state-served-from-cold-layer
+nest.tombstone-limit-exceeded
 role.unsupported
 source.already-exists
 source.id-mismatch

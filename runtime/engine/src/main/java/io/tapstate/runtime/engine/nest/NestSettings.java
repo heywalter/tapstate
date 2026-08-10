@@ -82,26 +82,45 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_PENDING_LIMIT = 100_000L;
 
+    /**
+     * How many records of deleted elements one document may keep when nothing says otherwise. The third count
+     * that fails a run rather than being absorbed by the layer behind the map, and the only one whose size is
+     * not a property of the data: a record of a deletion is kept until a restart could no longer replay the
+     * deletion, so how many pile up follows how far behind the durable frontier is.
+     *
+     * <p>Reached only by a document whose deletions cannot be dropped, since what may be dropped is dropped
+     * before this is weighed. So it is set for the case it really reports - a frontier that has stopped
+     * moving - rather than for how much deleting a workload does: high enough that heavy deletion against a
+     * healthy frontier never approaches it, low enough that a frontier stuck for hours is answered by a
+     * failed job rather than by a member running out of memory.
+     *
+     * <p>Provisional, and provisional for the same missing measurement as the counts above: this is a count
+     * of records and what has to fit is bytes.
+     */
+    public static final long DEFAULT_TOMBSTONE_LIMIT = 100_000L;
+
     private final Map<String, Long> elementLimits;
     private final Map<String, Long> pendingLimits;
+    private final Map<String, Long> tombstoneLimits;
     private final long entriesHeldInMemory;
 
     private NestSettings(Map<String, Long> elementLimits, Map<String, Long> pendingLimits,
-            long entriesHeldInMemory) {
+            Map<String, Long> tombstoneLimits, long entriesHeldInMemory) {
         this.elementLimits = Map.copyOf(elementLimits);
         this.pendingLimits = Map.copyOf(pendingLimits);
+        this.tombstoneLimits = Map.copyOf(tombstoneLimits);
         this.entriesHeldInMemory = entriesHeldInMemory;
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of(), Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
+        return new NestSettings(Map.of(), Map.of(), Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
     }
 
     /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
     public NestSettings withElementLimit(String namespace, long limit) {
         return new NestSettings(with(elementLimits, namespace, limit, "elements"), pendingLimits,
-                entriesHeldInMemory);
+                tombstoneLimits, entriesHeldInMemory);
     }
 
     /**
@@ -110,7 +129,16 @@ public final class NestSettings implements Serializable {
      */
     public NestSettings withPendingLimit(String namespace, long limit) {
         return new NestSettings(elementLimits, with(pendingLimits, namespace, limit, "pending changes"),
-                entriesHeldInMemory);
+                tombstoneLimits, entriesHeldInMemory);
+    }
+
+    /**
+     * These settings, with each document of {@code namespace} allowed to keep {@code limit} records of
+     * deleted elements that cannot be dropped yet.
+     */
+    public NestSettings withTombstoneLimit(String namespace, long limit) {
+        return new NestSettings(elementLimits, pendingLimits,
+                with(tombstoneLimits, namespace, limit, "records of deletion"), entriesHeldInMemory);
     }
 
     /**
@@ -132,7 +160,7 @@ public final class NestSettings implements Serializable {
                     Map.of("entries", entries,
                             "partitions", (long) NestMaps.SMALLEST_MEANINGFUL_MEMORY_BUDGET), null);
         }
-        return new NestSettings(elementLimits, pendingLimits, entries);
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, entries);
     }
 
     /** How many entries each namespace keeps in memory before the rest is left to the layer behind it. */
@@ -151,6 +179,14 @@ public final class NestSettings implements Serializable {
      */
     public long pendingAllowedIn(String namespace) {
         return pendingLimits.getOrDefault(namespace, DEFAULT_PENDING_LIMIT);
+    }
+
+    /**
+     * How many records of deleted elements one document of {@code namespace} may keep, once everything that
+     * could be dropped has been, before the job is failed.
+     */
+    public long tombstonesAllowedIn(String namespace) {
+        return tombstoneLimits.getOrDefault(namespace, DEFAULT_TOMBSTONE_LIMIT);
     }
 
     private static Map<String, Long> with(Map<String, Long> limits, String namespace, long limit,

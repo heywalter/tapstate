@@ -105,6 +105,29 @@ public final class AssemblerProcessor extends AbstractProcessor {
     /** How many changes one document here may hold for a root, or an ancestor, that has not arrived. */
     private final long pendingLimit;
 
+    /** How many records of deleted elements one document here may keep once what may go has gone. */
+    private final long tombstoneLimit;
+
+    /**
+     * Keys keeping the record of a deletion, which is where the sweep that drops them has to look. Kept for
+     * the same reason as {@link #holding}: the store cannot be asked which of its keys hold anything.
+     *
+     * <p>A restart starts it empty, and unlike {@link #holding} the keys do not all come back on their own —
+     * a record whose deletion the frontier has already passed is not replayed, so nothing re-files it until
+     * that key is touched again. What is left behind that way is bounded and idle: a key nothing touches
+     * again is a key that has stopped growing, and one that is touched is filed here again on the spot.
+     */
+    private final Set<Object> keeping = new LinkedHashSet<>();
+
+    /** When the records of deletion were last swept, or null before the first sweep. */
+    private Long forgottenAt;
+
+    /**
+     * What the sweeps here measure their own interval against — the clock a wait is timed by where there is
+     * one, so a test driving that clock drives these too, and the system clock where there is not.
+     */
+    private final NestClock clock;
+
     /**
      * Roots whose deletion has gone downstream and whose record is still kept, against what that deletion
      * covered. They are remembered as they happen rather than looked for later, because a store is not
@@ -184,6 +207,8 @@ public final class AssemblerProcessor extends AbstractProcessor {
         this.elementLimit =
                 Objects.requireNonNull(settings, "settings").elementsAllowedIn(vertex.mapName());
         this.pendingLimit = settings.pendingAllowedIn(vertex.mapName());
+        this.tombstoneLimit = settings.tombstonesAllowedIn(vertex.mapName());
+        this.clock = watch == null ? NestClock.SYSTEM : watch.clock();
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -217,7 +242,44 @@ public final class AssemblerProcessor extends AbstractProcessor {
             }
         }
         stopHoldingWhereNothingIsComing();
+        forgetDeletionsReplayCannotReach();
         return true;
+    }
+
+    /**
+     * Drops the records of deletion whose deletions a restart could no longer replay. Here rather than where
+     * a change is applied because it reads the durable plane, and because dropping one later than possible
+     * costs an entry while dropping it earlier costs a deleted row coming back.
+     *
+     * <p>Held to the same interval as the sweep above, for the reason that one is: a vertex with nothing
+     * arriving is asked to make progress over and over, and each pass reads back every document keeping a
+     * record. A document whose records are not droppable yet stays a candidate, so without an interval those
+     * reads would repeat as fast as the idle loop turns.
+     */
+    private void forgetDeletionsReplayCannotReach() {
+        if (keeping.isEmpty()) {
+            return;
+        }
+        long now = clock.millis();
+        if (forgottenAt != null && now - forgottenAt < SWEEP_INTERVAL_MILLIS) {
+            return;
+        }
+        forgottenAt = now;
+        Iterator<Object> keys = keeping.iterator();
+        while (keys.hasNext()) {
+            Object key = keys.next();
+            RootAssembly assembly = store.load(key);
+            if (assembly == null) {
+                keys.remove();
+                continue;
+            }
+            if (assembly.forgetDeletionsBelow(floor) > 0) {
+                store.save(key, assembly);
+            }
+            if (assembly.tombstones() == 0) {
+                keys.remove();
+            }
+        }
     }
 
     /**
@@ -466,6 +528,11 @@ public final class AssemblerProcessor extends AbstractProcessor {
             store.save(key, document.assembly);
             refuseToLetOneDocumentGrowPastItsWidth(key, document.assembly);
             NestLimits.refuse(vertex, key, document.assembly.pending(), pendingLimit);
+            if (refuseToKeepMoreDeletionsThanAllowed(key, document.assembly) > 0) {
+                keeping.add(key);
+            } else {
+                keeping.remove(key);
+            }
             if (bounds != null) {
                 held.holding(key, document.assembly.lowestHeldByChain());
             }
@@ -492,6 +559,35 @@ public final class AssemblerProcessor extends AbstractProcessor {
                     Map.of("rootKey", String.valueOf(keyRow(key)), "elements", elements,
                             "limit", elementLimit), null);
         }
+    }
+
+    /**
+     * Stops the job once one document keeps more records of deleted elements than it is allowed to, and
+     * answers with how many it is left keeping.
+     *
+     * <p><b>What may be dropped is dropped before the count is weighed</b>, which is what makes this limit
+     * mean something an operator can act on. The sweep that drops them runs when nothing is arriving, so a
+     * vertex that never goes idle would otherwise fail for being busy — and a limit that fires on load says
+     * nothing about the frontier, which is the one thing reaching it is supposed to report.
+     *
+     * <p>That crossing to the durable plane is paid only by a document already at its limit, never by every
+     * document on every drain: below the limit this reads a count and returns.
+     */
+    private long refuseToKeepMoreDeletionsThanAllowed(Object key, RootAssembly assembly) {
+        long kept = assembly.tombstones();
+        if (kept <= tombstoneLimit) {
+            return kept;
+        }
+        if (assembly.forgetDeletionsBelow(floor) > 0) {
+            store.save(key, assembly);
+            kept = assembly.tombstones();
+        }
+        if (kept > tombstoneLimit) {
+            throw new TapstateException(NestError.TOMBSTONE_LIMIT_EXCEEDED,
+                    Map.of("namespace", vertex.mapName(), "key", String.valueOf(key),
+                            "tombstones", kept, "limit", tombstoneLimit), null);
+        }
+        return kept;
     }
 
     /** The key of a document that is gone, as the row a sink needs to find and remove it. */

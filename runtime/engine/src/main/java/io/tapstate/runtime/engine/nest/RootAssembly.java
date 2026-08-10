@@ -2,11 +2,13 @@ package io.tapstate.runtime.engine.nest;
 
 import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.SourceOrder;
+import io.tapstate.runtime.engine.ReplayFloor;
 
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -283,7 +285,7 @@ public final class RootAssembly implements Serializable {
             return false;
         }
         slot.remove(from.elementKey());
-        moved.set(change.fields(), order);
+        moved.set(change.fields(), order, change.positions());
         absorbed(change, UNTIMED);
         Map<String, Map<List<Object>, ElementNode>> target = containerFor(to);
         if (target == null) {
@@ -392,11 +394,11 @@ public final class RootAssembly implements Serializable {
             if (!wins(order, held.order())) {
                 return false;
             }
-            held.set(fields, order);
+            held.set(fields, order, change.positions());
             absorbed(change, heldSince);
             return true;
         }
-        ElementNode element = new ElementNode(fields, order);
+        ElementNode element = new ElementNode(fields, order, change.positions());
         slot.put(ref.elementKey(), element);
         absorbed(change, heldSince);
         if (ref.identity() != null) {
@@ -421,6 +423,113 @@ public final class RootAssembly implements Serializable {
      */
     public long elements() {
         return countIn(children);
+    }
+
+    /**
+     * How many deleted elements this document is keeping the record of, at every depth. It is the quantity a
+     * limit on records of deletion is about, and neither of the other two counts reaches it: what is deleted
+     * renders as nothing, so {@link #elements()} does not count it, and it waits for nothing, so {@link
+     * #pending()} does not either. A document can hold a million of these while both of those read small.
+     *
+     * <p>What makes it worth counting at all is that it does not follow the shape of the data. A record of
+     * deletion is kept until a replay can no longer undo it, so how many there are follows how far behind the
+     * durable frontier is — and a frontier that has stopped moving is a document that grows without bound.
+     */
+    public long tombstones() {
+        return deletionsIn(children);
+    }
+
+    /**
+     * Drops the records of deletion that no replay can reach any more, and says how many went. A record is
+     * kept until every position the deletion covered sits strictly below where its chain would resume: at the
+     * floor is delivered again, and below it never is.
+     *
+     * <p>Every way of not knowing keeps the record. A chain whose floor cannot be read, and a deletion that
+     * arrived carrying no position at all, both leave nothing to weigh — and being wrong in this direction
+     * costs one entry until the next sweep, while being wrong in the other is a row the source deleted coming
+     * back at the next restart with nothing anywhere reporting it.
+     *
+     * <p><b>A record still holding a subtree is kept whatever the floor says</b>, and the sweep works upwards
+     * so that a subtree of deletions collapses from the bottom. What hangs beneath a deleted element is kept
+     * on purpose — nothing will ever resend those rows — so dropping the element they hang from would take
+     * them with it. This is also the whole of "nothing is waiting on it": a child arriving under a deleted
+     * parent is filed beneath it rather than parked anywhere else, so anything that could be waiting is
+     * already part of the subtree this refuses to drop.
+     */
+    public long forgetDeletionsBelow(ReplayFloor floor) {
+        Objects.requireNonNull(floor, "floor");
+        long forgotten = forgetIn(children, List.of(), floor);
+        byIdentity.values().removeIf(Map::isEmpty);
+        return forgotten;
+    }
+
+    /**
+     * Sweeps one embed's elements and everything beneath them, dropping what may go. Children are swept
+     * before the element holding them is weighed, which is what lets a whole subtree of deletions go in one
+     * pass rather than one level per sweep.
+     */
+    private long forgetIn(Map<String, Map<List<Object>, ElementNode>> nodes, List<String> path,
+            ReplayFloor floor) {
+        long forgotten = 0;
+        for (Map.Entry<String, Map<List<Object>, ElementNode>> embed : nodes.entrySet()) {
+            List<String> pathId = deeper(path, embed.getKey());
+            Map<Object, ElementNode> named = byIdentity.get(pathId);
+            Iterator<ElementNode> elements = embed.getValue().values().iterator();
+            while (elements.hasNext()) {
+                ElementNode element = elements.next();
+                forgotten += forgetIn(element.children(), pathId, floor);
+                if (forgettable(element, floor)) {
+                    elements.remove();
+                    // Out of everything that names it, not just out of the embed it was rendered from. Left
+                    // behind, the name would go on answering, and the next child to arrive would be filed
+                    // under a row that is no longer part of this document: rendered by nothing, waiting for
+                    // nothing, reported by nobody.
+                    if (named != null) {
+                        named.values().remove(element);
+                    }
+                    forgotten++;
+                }
+            }
+        }
+        nodes.values().removeIf(Map::isEmpty);
+        return forgotten;
+    }
+
+    /** Whether this element is a record of a deletion that nothing can undo any longer — see above. */
+    private static boolean forgettable(ElementNode element, ReplayFloor floor) {
+        if (!element.deleted() || !element.children().isEmpty()) {
+            return false;
+        }
+        Map<String, SourceOrder> covered = element.deletedAt();
+        if (covered.isEmpty()) {
+            return false;
+        }
+        for (Map.Entry<String, SourceOrder> position : covered.entrySet()) {
+            Optional<SourceOrder> resumesAt = floor.of(position.getKey());
+            if (resumesAt.isEmpty() || position.getValue().compareTo(resumesAt.get()) >= 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static List<String> deeper(List<String> path, String field) {
+        List<String> below = new ArrayList<>(path);
+        below.add(field);
+        return List.copyOf(below);
+    }
+
+    private static long deletionsIn(Map<String, Map<List<Object>, ElementNode>> nodes) {
+        long kept = 0;
+        for (Map<List<Object>, ElementNode> slot : nodes.values()) {
+            for (ElementNode element : slot.values()) {
+                if (element.deleted()) {
+                    kept++;
+                }
+                kept += deletionsIn(element.children());
+            }
+        }
+        return kept;
     }
 
     private static long countIn(Map<String, Map<List<Object>, ElementNode>> nodes) {
@@ -590,16 +699,42 @@ public final class RootAssembly implements Serializable {
 
         private Map<String, Object> fields;
         private SourceOrder order;
+
+        /**
+         * Where the deletion that emptied this element came from, empty while it holds a row. It is what the
+         * record of a deletion is weighed against before being dropped, and it is kept here rather than
+         * worked out later because by then the change it came on is long gone.
+         *
+         * <p>The order alone and not the token that travelled with it: a token is what a frontier is written
+         * down with, and nothing writes a frontier down from a record of a deletion. Keeping it would be a
+         * second copy of every chain token in the document, held for as long as the deletions are.
+         */
+        private Map<String, SourceOrder> deletedAt = Map.of();
+
         private final Map<String, Map<List<Object>, ElementNode>> children = new LinkedHashMap<>();
 
-        private ElementNode(Map<String, Object> fields, SourceOrder order) {
-            this.fields = fields;
-            this.order = order;
+        private ElementNode(Map<String, Object> fields, SourceOrder order,
+                Map<String, ChainPosition> positions) {
+            set(fields, order, positions);
         }
 
-        private void set(Map<String, Object> newFields, SourceOrder newOrder) {
+        private void set(Map<String, Object> newFields, SourceOrder newOrder,
+                Map<String, ChainPosition> positions) {
             fields = newFields;
             order = newOrder;
+            // An element brought back is no longer a record of a deletion, so what the deletion covered goes
+            // with it: weighed against a floor later it would drop a row that is live.
+            deletedAt = newFields == null ? ordersOf(positions) : Map.of();
+        }
+
+        private Map<String, SourceOrder> deletedAt() {
+            return deletedAt;
+        }
+
+        private static Map<String, SourceOrder> ordersOf(Map<String, ChainPosition> positions) {
+            Map<String, SourceOrder> orders = new LinkedHashMap<>();
+            positions.forEach((chain, position) -> orders.put(chain, position.order()));
+            return orders;
         }
 
         private Map<String, Object> fields() {

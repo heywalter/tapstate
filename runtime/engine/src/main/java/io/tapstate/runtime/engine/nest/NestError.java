@@ -112,6 +112,19 @@ public enum NestError implements TapstateErrorCode {
     PENDING_LIMIT_EXCEEDED("nest.pending-limit-exceeded",
             Set.of("namespace", "key", "pending", "limit")),
 
+    /**
+     * Running: one document is keeping the record of more deleted elements than it is allowed to, and they
+     * cannot be dropped yet. The third limit bounding what lives inside one entry, and the one whose count
+     * does not follow the shape of the data: a record of a deletion is kept until a replay can no longer undo
+     * it, so what governs how many there are is how far behind the durable frontier is.
+     *
+     * <p>Reported only once what may be dropped has been, so reaching it says the frontier is not moving
+     * rather than that the work is heavy. Failed rather than dropped: a record dropped early is a row the
+     * source deleted coming back at the next restart, which no assertion about the document would catch.
+     */
+    TOMBSTONE_LIMIT_EXCEEDED("nest.tombstone-limit-exceeded",
+            Set.of("namespace", "key", "tombstones", "limit")),
+
     /** Running: a subtree being moved to another document has parked more than the limit allows. */
     MIGRATION_PARKING_LIMIT_EXCEEDED(
             "nest.migration-parking-limit-exceeded", Set.of("newRootKey", "bytes", "limit")),
