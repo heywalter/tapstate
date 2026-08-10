@@ -73,6 +73,12 @@ class NestDagRunTest {
     /** What a level stopped holding for a root that was not coming. Static for the same reason. */
     private static final List<ReleasedChild> RELEASED = Collections.synchronizedList(new ArrayList<>());
 
+    /** How long a change may be held here before the backstop ends the wait. */
+    private static final Duration PROTECTION = Duration.ofSeconds(2);
+
+    /** How long the root row is held back from the source that carries it, well inside {@link #PROTECTION}. */
+    private static final Duration LATE_ROOT = Duration.ofMillis(500);
+
     private HazelcastInstance member;
 
     @BeforeEach
@@ -151,6 +157,12 @@ class NestDagRunTest {
         // are never idle: letting go of what is held is done when nothing is arriving, and a tasklet whose
         // inputs are all finished goes straight to completing. A real pipeline is never in that state, and
         // a finite one here would witness the mechanism only by never reaching it.
+        //
+        // The one root here arrives late on purpose, and that is what makes the two items tell the rule
+        // apart. Both are held on arrival; the sweep then runs while both are held; and only then does the
+        // root turn one of them into part of a document, leaving the other still waiting for one that is
+        // not coming. A root arriving in the same breath as its child is never waited for at all, and a
+        // rule that gave up on everything it found held would pass this case more often than not.
         DAG dag = ordersWithItems(List.of(row("order_id", 1, "code", "A")),
                 List.of(row("item_id", 10, "order_id", 1, "sku", "s10"),
                         row("item_id", 99, "order_id", 999, "sku", "stray")),
@@ -173,7 +185,11 @@ class NestDagRunTest {
         });
     }
 
-    /** Waits for the assembler's idle sweep to reach the stray item, which takes one turn of an idle vertex. */
+    /**
+     * Waits for the stray item to be let go of, which takes as long as it may be held plus however long
+     * until the next sweep of an idle vertex. Far longer than that here, so a machine that stalls costs
+     * seconds rather than a failure.
+     */
     private static void awaitReleased() throws InterruptedException {
         for (int attempt = 0; attempt < 200 && RELEASED.isEmpty(); attempt++) {
             Thread.sleep(50);
@@ -187,7 +203,10 @@ class NestDagRunTest {
         return ordersWithItems(orders, items, false);
     }
 
-    /** The same, with {@code endless} keeping the sources alive after their rows so the vertices go idle. */
+    /**
+     * The same, with {@code endless} keeping the sources alive after their rows so the vertices go idle —
+     * and, for the same case, holding the root row back so that a child is waiting for it when they do.
+     */
     private static DAG ordersWithItems(List<Map<String, Object>> orders, List<Map<String, Object>> items,
             boolean endless) {
         Embed item = new Embed("item", Map.of("order_id", "order_id"), EmbedAs.ARRAY, "items",
@@ -208,8 +227,8 @@ class NestDagRunTest {
                 null, null);
 
         Map<String, ProcessorMetaSupplier> sources = new LinkedHashMap<>();
-        sources.put("orders", rowsSource("orders", orders, endless));
-        sources.put("order_items", rowsSource("order_items", items, endless));
+        sources.put("orders", rowsSource("orders", orders, endless, endless ? LATE_ROOT : Duration.ZERO));
+        sources.put("order_items", rowsSource("order_items", items, endless, Duration.ZERO));
 
         Map<String, NestTable> tables = new LinkedHashMap<>();
         tables.put("order", new NestTable("orders", List.of("order_id")));
@@ -223,10 +242,14 @@ class NestDagRunTest {
                 new NestBinding(tables::get, NestBinding.onHeap(),
                         (from, released) -> RELEASED.add(released), new CountingFloors(),
                         NestStateLedger.NONE, NestSettings.defaults(),
-                        // A backstop of nothing at all, so what would be given up on after six hours is
-                        // given up on inside a job that lasts a second. It is the wait that is shortened
-                        // here and nothing else: what decides the wait is over is the same rule.
-                        new PendingWatch(new PendingProtection(Duration.ZERO), NestStreamFacts.UNKNOWN,
+                        // A backstop of seconds rather than hours, so what would be given up on after a
+                        // working morning is given up on inside a job that lasts a moment. It is the wait
+                        // that is shortened here and nothing else: what decides the wait is over is the
+                        // same rule. Not nothing at all, which is what this was: a backstop of zero ends
+                        // the wait for every change a sweep finds held, one whose root is on its way
+                        // included, and then the two are told apart only by which of them the sweep
+                        // happens to land between.
+                        new PendingWatch(new PendingProtection(PROTECTION), NestStreamFacts.UNKNOWN,
                                 NestClock.SYSTEM)));
 
         return PipelineDagBuilder.build(pipeline, bindings);
@@ -282,9 +305,9 @@ class NestDagRunTest {
      * leaves it null tests nothing.
      */
     private static ProcessorMetaSupplier rowsSource(String src, List<Map<String, Object>> rows,
-            boolean endless) {
-        return ProcessorMetaSupplier.forceTotalParallelismOne(
-                ProcessorSupplier.of((SupplierEx<Processor>) () -> new RowsSource(src, rows, endless)));
+            boolean endless, Duration startAfter) {
+        return ProcessorMetaSupplier.forceTotalParallelismOne(ProcessorSupplier.of(
+                (SupplierEx<Processor>) () -> new RowsSource(src, rows, endless, startAfter)));
     }
 
     private static final class RowsSource extends AbstractProcessor {
@@ -292,16 +315,22 @@ class NestDagRunTest {
         private final String src;
         private final List<Map<String, Object>> rows;
         private final boolean endless;
+        private final long startAfterMillis;
+        private long dueAt = -1;
         private int next;
 
-        RowsSource(String src, List<Map<String, Object>> rows, boolean endless) {
+        RowsSource(String src, List<Map<String, Object>> rows, boolean endless, Duration startAfter) {
             this.src = src;
             this.rows = rows;
             this.endless = endless;
+            this.startAfterMillis = startAfter.toMillis();
         }
 
         @Override
         public boolean complete() {
+            if (!due()) {
+                return false;
+            }
             while (next < rows.size()) {
                 Envelope event = Envelope.insert(next + 1L, src, rows.get(next), null)
                         .withOrder(new SourceOrder(1, next));
@@ -311,6 +340,22 @@ class NestDagRunTest {
                 next++;
             }
             return !endless;
+        }
+
+        /**
+         * Whether this source's rows are due, counted from the first time it was asked. A source told to
+         * start late yields until they are rather than sleeping: the thread it runs on is shared with every
+         * other cooperative vertex here, and one that sleeps on it stops them too.
+         */
+        private boolean due() {
+            if (startAfterMillis == 0) {
+                return true;
+            }
+            long now = System.currentTimeMillis();
+            if (dueAt < 0) {
+                dueAt = now + startAfterMillis;
+            }
+            return now >= dueAt;
         }
     }
 
