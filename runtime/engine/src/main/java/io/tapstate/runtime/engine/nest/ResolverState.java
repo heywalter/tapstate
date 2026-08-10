@@ -47,6 +47,16 @@ import java.util.Optional;
  */
 public final class ResolverState implements Serializable {
 
+    /**
+     * Said rather than derived, so this state's identity does not move when its fields do. Derived, it
+     * changes with every field added or dropped, and every mapping already written becomes unreadable on
+     * the first key that has to come back from the cold layer - an upgrade that looked clean until the
+     * first miss. Held still, bytes written before a field existed still load, and that field reads back
+     * at its zero. Bump this deliberately when that is the wrong answer and the old bytes should be
+     * refused outright instead.
+     */
+    private static final long serialVersionUID = 1L;
+
     private Object parentKey;
     private SourceOrder order;
     private boolean deleted;

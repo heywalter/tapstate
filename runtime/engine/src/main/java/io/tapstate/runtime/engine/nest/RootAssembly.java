@@ -77,6 +77,16 @@ import java.util.Optional;
 public final class RootAssembly implements Serializable {
 
     /**
+     * Said rather than derived, so this state's identity does not move when its fields do. Derived, it
+     * changes with every field added or dropped, and every document already written becomes unreadable on
+     * the first key that has to come back from the cold layer - an upgrade that looked clean until the
+     * first miss. Held still, bytes written before a field existed still load, and that field reads back
+     * at its zero. Bump this deliberately when that is the wrong answer and the old bytes should be
+     * refused outright instead.
+     */
+    private static final long serialVersionUID = 1L;
+
+    /**
      * A change taken in without saying when it happened or when this document took it in. It holds the
      * frontier back like any other and is never let go of: with neither time, nothing here can tell a root
      * that is merely late from one that is absent, and ending a wait on no evidence is the one outcome that
@@ -597,6 +607,9 @@ public final class RootAssembly implements Serializable {
      */
     private static final class Absorbed implements Serializable {
 
+        /** Said rather than derived, for the reason the assembly holding this gives. */
+        private static final long serialVersionUID = 1L;
+
         private final Map<String, ChainPosition> lowest = new LinkedHashMap<>();
         private final Map<String, ChainPosition> highest = new LinkedHashMap<>();
 
@@ -696,6 +709,9 @@ public final class RootAssembly implements Serializable {
 
     /** One element as last applied: its row, or null once deleted, the order that put it there, and its own embeds. */
     private static final class ElementNode implements Serializable {
+
+        /** Said rather than derived, for the reason the assembly holding this gives. */
+        private static final long serialVersionUID = 1L;
 
         private Map<String, Object> fields;
         private SourceOrder order;

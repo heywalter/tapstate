@@ -1,0 +1,63 @@
+# The shape of the state a nest vertex stores, and the identity each type is read back under.
+#
+# This file changing means bytes already written no longer describe the types that will read them.
+# A field added here is absent from every entry stored before it, and reads back as null, 0 or false
+# with nothing thrown and nothing logged. Updating this file is the moment to decide which case it is:
+#
+#   - the absent value is safe for every field added, or
+#   - the serialVersionUID is bumped, so old bytes are refused outright instead of quietly misread.
+#
+# Records are listed too. Their identity does not move when their components change, so this file is
+# the only thing that notices when one of them gains a field.
+
+io.tapstate.core.event.ChainPosition :: field :: order :: io.tapstate.core.event.SourceOrder
+io.tapstate.core.event.ChainPosition :: field :: token :: java.lang.String
+io.tapstate.core.event.ChainPosition :: record :: uid=0
+io.tapstate.core.event.SourceOrder :: field :: epoch :: long
+io.tapstate.core.event.SourceOrder :: field :: seq :: long
+io.tapstate.core.event.SourceOrder :: record :: uid=0
+io.tapstate.runtime.engine.nest.ElementRef :: field :: elementKey :: java.util.List<java.lang.Object>
+io.tapstate.runtime.engine.nest.ElementRef :: field :: identity :: java.lang.Object
+io.tapstate.runtime.engine.nest.ElementRef :: field :: parentIdentity :: java.lang.Object
+io.tapstate.runtime.engine.nest.ElementRef :: field :: pathId :: java.util.List<java.lang.String>
+io.tapstate.runtime.engine.nest.ElementRef :: record :: uid=0
+io.tapstate.runtime.engine.nest.NestElement :: field :: eventTime :: long
+io.tapstate.runtime.engine.nest.NestElement :: field :: fields :: java.util.Map<java.lang.String, java.lang.Object>
+io.tapstate.runtime.engine.nest.NestElement :: field :: order :: io.tapstate.core.event.SourceOrder
+io.tapstate.runtime.engine.nest.NestElement :: field :: positions :: java.util.Map<java.lang.String, io.tapstate.core.event.ChainPosition>
+io.tapstate.runtime.engine.nest.NestElement :: field :: ref :: io.tapstate.runtime.engine.nest.ElementRef
+io.tapstate.runtime.engine.nest.NestElement :: record :: uid=0
+io.tapstate.runtime.engine.nest.ResolverState :: class :: uid=1
+io.tapstate.runtime.engine.nest.ResolverState :: field :: deleted :: boolean
+io.tapstate.runtime.engine.nest.ResolverState :: field :: order :: io.tapstate.core.event.SourceOrder
+io.tapstate.runtime.engine.nest.ResolverState :: field :: parentKey :: java.lang.Object
+io.tapstate.runtime.engine.nest.ResolverState :: field :: waiting :: java.util.List<io.tapstate.runtime.engine.nest.ResolverState$Waiting>
+io.tapstate.runtime.engine.nest.ResolverState$Waiting :: field :: arrivedAt :: long
+io.tapstate.runtime.engine.nest.ResolverState$Waiting :: field :: child :: io.tapstate.runtime.engine.nest.NestElement
+io.tapstate.runtime.engine.nest.ResolverState$Waiting :: record :: uid=0
+io.tapstate.runtime.engine.nest.RootAssembly :: class :: uid=1
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: byIdentity :: java.util.Map<java.util.List<java.lang.String>, java.util.Map<java.lang.Object, io.tapstate.runtime.engine.nest.RootAssembly$ElementNode>>
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: children :: java.util.Map<java.lang.String, java.util.Map<java.util.List<java.lang.Object>, io.tapstate.runtime.engine.nest.RootAssembly$ElementNode>>
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: fromRoot :: io.tapstate.runtime.engine.nest.RootAssembly$Absorbed
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: heldElements :: java.util.List<io.tapstate.runtime.engine.nest.RootAssembly$Held>
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: rootFields :: java.util.Map<java.lang.String, java.lang.Object>
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: rootOrder :: io.tapstate.core.event.SourceOrder
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: rootPresent :: boolean
+io.tapstate.runtime.engine.nest.RootAssembly :: field :: waiting :: java.util.Map<io.tapstate.runtime.engine.nest.RootAssembly$WaitingOn, java.util.List<io.tapstate.runtime.engine.nest.RootAssembly$Pending>>
+io.tapstate.runtime.engine.nest.RootAssembly$Absorbed :: class :: uid=1
+io.tapstate.runtime.engine.nest.RootAssembly$Absorbed :: field :: highest :: java.util.Map<java.lang.String, io.tapstate.core.event.ChainPosition>
+io.tapstate.runtime.engine.nest.RootAssembly$Absorbed :: field :: lowest :: java.util.Map<java.lang.String, io.tapstate.core.event.ChainPosition>
+io.tapstate.runtime.engine.nest.RootAssembly$ElementNode :: class :: uid=1
+io.tapstate.runtime.engine.nest.RootAssembly$ElementNode :: field :: children :: java.util.Map<java.lang.String, java.util.Map<java.util.List<java.lang.Object>, io.tapstate.runtime.engine.nest.RootAssembly$ElementNode>>
+io.tapstate.runtime.engine.nest.RootAssembly$ElementNode :: field :: deletedAt :: java.util.Map<java.lang.String, io.tapstate.core.event.SourceOrder>
+io.tapstate.runtime.engine.nest.RootAssembly$ElementNode :: field :: fields :: java.util.Map<java.lang.String, java.lang.Object>
+io.tapstate.runtime.engine.nest.RootAssembly$ElementNode :: field :: order :: io.tapstate.core.event.SourceOrder
+io.tapstate.runtime.engine.nest.RootAssembly$Held :: field :: change :: io.tapstate.runtime.engine.nest.NestElement
+io.tapstate.runtime.engine.nest.RootAssembly$Held :: field :: heldSince :: long
+io.tapstate.runtime.engine.nest.RootAssembly$Held :: record :: uid=0
+io.tapstate.runtime.engine.nest.RootAssembly$Pending :: field :: held :: io.tapstate.runtime.engine.nest.RootAssembly$Held
+io.tapstate.runtime.engine.nest.RootAssembly$Pending :: field :: node :: io.tapstate.runtime.engine.nest.RootAssembly$ElementNode
+io.tapstate.runtime.engine.nest.RootAssembly$Pending :: record :: uid=0
+io.tapstate.runtime.engine.nest.RootAssembly$WaitingOn :: field :: identity :: java.lang.Object
+io.tapstate.runtime.engine.nest.RootAssembly$WaitingOn :: field :: pathId :: java.util.List<java.lang.String>
+io.tapstate.runtime.engine.nest.RootAssembly$WaitingOn :: record :: uid=0
