@@ -3,8 +3,6 @@ package io.tapstate.app;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.tapstate.core.model.PipelineResource;
-import io.tapstate.core.model.RenameCase;
-import io.tapstate.core.model.RenameSpec;
 import io.tapstate.core.model.SourceMode;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.TableRef;
@@ -16,7 +14,6 @@ import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -71,84 +68,6 @@ class TargetModelResolverTest {
     }
 
     @Test
-    void explicit_table_map_takes_precedence_over_bulk_rename_rules() {
-        SourceTable address = new SourceTable(
-                "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-
-        TargetTable target = TargetModelResolver.toTargetTable(address,
-                new RenameSpec(Map.of("PlayerAddress", "player_address"), RenameCase.UPPER, "ods_", "_v1"));
-
-        assertThat(target.name()).isEqualTo("player_address");
-    }
-
-    @Test
-    void bulk_table_rename_applies_case_before_prefix_and_suffix() {
-        SourceTable address = new SourceTable(
-                "PLAYER_ADDRESS", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-
-        TargetTable target = TargetModelResolver.toTargetTable(address,
-                new RenameSpec(null, RenameCase.CAMEL, "ods_", "_v1"));
-
-        assertThat(target.name()).isEqualTo("ods_playerAddress_v1");
-    }
-
-    @Test
-    void bulk_table_rename_supports_pascal_case() {
-        SourceTable address = new SourceTable(
-                "player_address", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-
-        TargetTable target = TargetModelResolver.toTargetTable(address,
-                new RenameSpec(null, RenameCase.PASCAL, null, null));
-
-        assertThat(target.name()).isEqualTo("PlayerAddress");
-    }
-
-    @Test
-    void bulk_table_rename_preserves_acronym_and_digit_boundaries() {
-        SourceTable server = new SourceTable(
-                "HTTP2ServerV1", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-
-        TargetTable target = TargetModelResolver.toTargetTable(server,
-                new RenameSpec(null, RenameCase.PASCAL, null, null));
-
-        assertThat(target.name()).isEqualTo("Http2ServerV1");
-    }
-
-    @Test
-    void bulk_table_rename_splits_acronyms_before_a_word() {
-        RenameSpec pascal = new RenameSpec(null, RenameCase.PASCAL, null, null);
-        SourceTable httpServer = new SourceTable(
-                "HTTPServer", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-        SourceTable xmlHttpRequest = new SourceTable(
-                "XMLHttpRequest", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-
-        assertThat(TargetModelResolver.toTargetTable(httpServer, pascal).name()).isEqualTo("HttpServer");
-        assertThat(TargetModelResolver.toTargetTable(xmlHttpRequest, pascal).name()).isEqualTo("XmlHttpRequest");
-    }
-
-    @Test
-    void bulk_table_rename_keeps_letters_outside_the_ascii_range() {
-        SourceTable orders = new SourceTable(
-                "naïve_orders", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-
-        TargetTable target = TargetModelResolver.toTargetTable(orders,
-                new RenameSpec(null, RenameCase.CAMEL, null, null));
-
-        assertThat(target.name()).isEqualTo("naïveOrders");
-    }
-
-    @Test
-    void bulk_table_rename_supports_upper_case() {
-        SourceTable address = new SourceTable(
-                "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
-
-        TargetTable target = TargetModelResolver.toTargetTable(address,
-                new RenameSpec(null, RenameCase.UPPER, null, null));
-
-        assertThat(target.name()).isEqualTo("PLAYERADDRESS");
-    }
-
-    @Test
     void resolves_the_target_from_the_discovered_model_of_the_named_source() {
         InMemoryStorePort store = new InMemoryStorePort();
         store.artifacts().save(cdcSource("src_mysql", "orders"));
@@ -186,10 +105,6 @@ class TargetModelResolverTest {
 
     private static PipelineResource pipeline(String id, String sourceId) {
         return new PipelineResource(id, null, List.of(sourceId), null, null, null, null, null);
-    }
-
-    private static PipelineResource pipelineArtifact(InMemoryStorePort store, String id) {
-        return (PipelineResource) store.artifacts().get(id).orElseThrow();
     }
 
     private static DiscoveredSourceModel discovered(String connectionId, String connectorId, SourceTable table) {

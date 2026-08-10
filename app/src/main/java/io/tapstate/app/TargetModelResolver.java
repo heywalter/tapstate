@@ -18,11 +18,11 @@ import java.util.Optional;
  * Resolves a sink's write-side target model from the source model discovery persisted for a connection. The
  * table structure a sink creates and the key an upsert matches on come from the upstream source's discovered
  * model, not from the events flowing through - so a target table is built by reading the persisted model for
- * the pipeline's source and mapping the discovered {@link SourceTable} onto a {@link TargetTable}.
+ * the source the sink reads and mapping the discovered {@link SourceTable} onto a {@link TargetTable}.
  *
- * <p>L1 shape: a pipeline reads a single source of a single table, so the resolved target is that table. When
- * the source's schema has never been discovered the target is absent, and the sink falls back to a bare table
- * id and lets the connector infer structure and keying.
+ * <p>L1 shape: a source reads a single table, so the resolved target is that table. When the source's schema
+ * has never been discovered the target model is absent, and the sink falls back to a bare table id and lets
+ * the connector infer structure and keying.
  */
 final class TargetModelResolver {
 
@@ -82,10 +82,11 @@ final class TargetModelResolver {
         return new TargetTable(source.name(), fields);
     }
 
-    static TargetTable toTargetTable(SourceTable source, RenameSpec rename) {
-        return rename(toTargetTable(source), source.name(), rename);
-    }
-
+    /**
+     * The target table one sync element writes: the resolved model under the name its rename gives the source
+     * table. A rename with no model behind it still names a table, so the sink is pointed at the renamed one
+     * rather than at whatever table id the first row happens to carry.
+     */
     static TargetTable rename(TargetTable target, String sourceName, RenameSpec rename) {
         if (rename == null) {
             return target;

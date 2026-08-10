@@ -89,7 +89,7 @@ final class StoreBackedDagSource implements DagSource {
      * merging several, a token naming neither a source nor a step - falls back to the pipeline's first
      * source, which is the whole of it at the single-source L1 shape.
      */
-    private static String servedSourceId(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
+    static String servedSourceId(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
         String served = pipeline.serve() instanceof ServeBlock.Inline serve
                 ? sourceBehind(serve.from(), pipeline, sourceIdByTable, new HashSet<>())
                 : null;

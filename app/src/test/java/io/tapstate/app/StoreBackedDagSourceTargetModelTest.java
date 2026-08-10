@@ -142,6 +142,42 @@ class StoreBackedDagSourceTargetModelTest {
         assertThat(bound).containsExactly(new TargetTable("player_address", List.of()));
     }
 
+    @Test
+    void falls_back_to_the_first_source_when_a_step_merges_several_upstreams() {
+        InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("merged"),
+                Step.inline("merged", FromClause.list(FromRef.literal("orders"), FromRef.literal("PlayerAddress")),
+                        new TransformBody.Union(), null, null));
+        List<TargetTable> bound = new ArrayList<>();
+
+        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+
+        // orders_src leads the source list and its table is not in the rename map, so the name stays put.
+        assertThat(bound).containsExactly(new TargetTable("orders", List.of()));
+    }
+
+    /**
+     * The remaining shapes that name no single source. Each is asked of the decision directly rather than
+     * through a built DAG: the linear L1 builder refuses a regex reference and an unresolved token outright,
+     * so no pipeline carrying one ever reaches a sink binding to assert on.
+     */
+    @Test
+    void names_no_source_for_a_reference_that_does_not_narrow_to_one() {
+        PipelineResource merging = pipelineOf(FromRef.literal("merged"),
+                Step.inline("merged", FromClause.list(FromRef.literal("orders"), FromRef.literal("PlayerAddress")),
+                        new TransformBody.Union(), null, null));
+        Map<String, String> byTable = Map.of("orders", "orders_src", "PlayerAddress", "address_src");
+
+        assertThat(StoreBackedDagSource.servedSourceId(pipelineOf(FromRef.regex(".*")), byTable))
+                .as("a regex spans the universe").isEqualTo("orders_src");
+        assertThat(StoreBackedDagSource.servedSourceId(pipelineOf(FromRef.literal("nowhere")), byTable))
+                .as("a token naming neither a source nor a step, with no transforms to search").isEqualTo("orders_src");
+        assertThat(StoreBackedDagSource.servedSourceId(merging, byTable))
+                .as("a union merges several upstreams").isEqualTo("orders_src");
+        assertThat(StoreBackedDagSource.servedSourceId(
+                pipelineOf(FromRef.literal("nowhere"), (Step) merging.transforms().getFirst()), byTable))
+                .as("a token matching none of the steps searched").isEqualTo("orders_src");
+    }
+
     // ---- fixtures ----------------------------------------------------------------------
 
     private static InMemoryStorePort seededPipeline() {
@@ -173,14 +209,19 @@ class StoreBackedDagSourceTargetModelTest {
                 SourceMode.CDC, List.of(TableRef.literal("PlayerAddress")), null, null, null));
         store.artifacts().save(new SourceResource("orders_dest", null, "mongodb", Map.of("uri", "u"),
                 null, null, null, null, null));
-        store.artifacts().save(new PipelineResource("p", null, List.of("orders_src", "address_src"),
+        store.artifacts().save(pipelineOf(serveFrom, transforms));
+        return store;
+    }
+
+    /** That pipeline on its own: two sources, and one sink renaming {@code PlayerAddress}. */
+    private static PipelineResource pipelineOf(FromRef serveFrom, Step... transforms) {
+        return new PipelineResource("p", null, List.of("orders_src", "address_src"),
                 transforms.length == 0 ? null : List.of(transforms), null,
                 new ServeBlock.Inline(null, serveFrom, List.of(new SyncElement(
                         "sync_1", "orders_dest", null,
                         new RenameSpec(Map.of("PlayerAddress", "player_address"), null, null, null), null, null)),
                         null, null),
-                null, null));
-        return store;
+                null, null);
     }
 
     /** A binder that records the target it is handed and returns a sink supplier the build never opens. */
