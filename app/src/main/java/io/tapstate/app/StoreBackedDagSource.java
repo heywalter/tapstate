@@ -6,7 +6,6 @@ import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import io.tapstate.adapters.transform.MapSpec;
 import io.tapstate.adapters.transform.StatelessTransforms;
 import io.tapstate.core.common.TapstateException;
-import io.tapstate.core.model.FromClause;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.ServeBlock;
@@ -27,7 +26,6 @@ import io.tapstate.spi.sink.WriteMode;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.StorePort;
 import io.tapstate.spi.transform.TransformPort;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -77,10 +75,10 @@ final class StoreBackedDagSource implements DagSource {
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
         Map<String, SourceVertex> sourceVertices = sourceVertices(pipeline);
         Map<String, String> sourceKeyByTable = sourceKeyByTable(sourceVertices);
-        Map<String, String> sourceIdByTable = sourceIdByTable(sourceVertices);
-        String servedSourceId = servedSourceId(pipeline, sourceIdByTable);
-        Map<String, TargetTable> targets = targetModelResolver.resolveAll(servedSourceId);
-        Set<String> servedTables = sourceTables(sourceVertices, servedSourceId);
+        // The linear builder does not expose a per-sink upstream table set. Binding every selected table keeps
+        // a non-first source table from losing its discovered model or rename when it reaches a serve sink.
+        Map<String, TargetTable> targets = targetModelResolver.resolveAll(pipeline);
+        Set<String> servedTables = sourceTables(sourceVertices);
         Map<String, List<String>> sourceKeysById = sourceKeysById(sourceVertices);
         return PipelineDagBuilder.build(
                 pipeline,
@@ -90,54 +88,6 @@ final class StoreBackedDagSource implements DagSource {
 
     private record SourceVertex(
             String pipelineId, String sourceId, String table, SourceCaptureResolution resolution) {
-    }
-
-    /**
-     * The source whose rows reach the serve sinks: the serve block's {@code from:} walked back through the
-     * transform chain to the source feeding it. A sink's target model and its rename rules key off that
-     * source's table, so what a sink is bound to is the model of the rows that actually arrive there.
-     *
-     * <p>A reference that does not narrow to exactly one source - a regex spanning the universe, a union
-     * merging several, a token naming neither a source nor a step - falls back to the pipeline's first
-     * source, which is the whole of it at the single-source L1 shape.
-     */
-    static String servedSourceId(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
-        String served = pipeline.serve() instanceof ServeBlock.Inline serve
-                ? sourceBehind(serve.from(), pipeline, sourceIdByTable, new HashSet<>())
-                : null;
-        return served != null ? served : pipeline.sources().getFirst();
-    }
-
-    /** The single source a reference reaches, or null when it names several or none. */
-    private static String sourceBehind(FromRef ref, PipelineResource pipeline,
-            Map<String, String> sourceIdByTable, Set<String> visited) {
-        if (!(ref instanceof FromRef.Literal literal)) {
-            return null;
-        }
-        String key = sourceIdByTable.getOrDefault(literal.ref(), literal.ref());
-        if (pipeline.sources().contains(key)) {
-            return key;
-        }
-        // Not a source, so it is a step id to follow upstream; `visited` stops a malformed cycle here
-        // rather than in a stack overflow, since the reference graph is validated before a pipeline is stored.
-        if (!visited.add(key) || pipeline.transforms() == null) {
-            return null;
-        }
-        for (Step step : pipeline.transforms()) {
-            if (step.id().equals(key)) {
-                return sourceBehind(step.from(), pipeline, sourceIdByTable, visited);
-            }
-        }
-        return null;
-    }
-
-    /** The single source a step's upstream wiring reaches; an alias map or a merge of several reaches none. */
-    private static String sourceBehind(FromClause from, PipelineResource pipeline,
-            Map<String, String> sourceIdByTable, Set<String> visited) {
-        if (!(from instanceof FromClause.Flow flow) || flow.refs().size() != 1) {
-            return null;
-        }
-        return sourceBehind(flow.refs().getFirst(), pipeline, sourceIdByTable, visited);
     }
 
     /**
@@ -177,20 +127,10 @@ final class StoreBackedDagSource implements DagSource {
         return byTable;
     }
 
-    private static Map<String, String> sourceIdByTable(Map<String, SourceVertex> sourceVertices) {
-        Map<String, String> byTable = new LinkedHashMap<>();
-        for (SourceVertex vertex : sourceVertices.values()) {
-            byTable.putIfAbsent(vertex.table(), vertex.sourceId());
-        }
-        return byTable;
-    }
-
-    private static Set<String> sourceTables(Map<String, SourceVertex> sourceVertices, String sourceId) {
+    private static Set<String> sourceTables(Map<String, SourceVertex> sourceVertices) {
         Set<String> tables = new LinkedHashSet<>();
         for (SourceVertex vertex : sourceVertices.values()) {
-            if (vertex.sourceId().equals(sourceId)) {
-                tables.add(vertex.table());
-            }
+            tables.add(vertex.table());
         }
         return tables;
     }
