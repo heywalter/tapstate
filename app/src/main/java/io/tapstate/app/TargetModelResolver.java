@@ -118,18 +118,18 @@ final class TargetModelResolver {
         StringBuilder word = new StringBuilder();
         for (int index = 0; index < name.length(); index++) {
             char current = name.charAt(index);
-            if (!isAsciiAlphaNumeric(current)) {
+            if (!Character.isLetterOrDigit(current)) {
                 appendWord(result, word, capitalizeFirst);
                 continue;
             }
             boolean lowerOrDigitFollowedByUpper = index > 0
-                    && isAsciiLowerOrDigit(name.charAt(index - 1))
-                    && isAsciiUpper(current);
+                    && isLowerOrDigit(name.charAt(index - 1))
+                    && Character.isUpperCase(current);
             boolean acronymFollowedByWord = index > 0
                     && index + 1 < name.length()
-                    && isAsciiUpper(name.charAt(index - 1))
-                    && isAsciiUpper(current)
-                    && isAsciiLower(name.charAt(index + 1));
+                    && Character.isUpperCase(name.charAt(index - 1))
+                    && Character.isUpperCase(current)
+                    && Character.isLowerCase(name.charAt(index + 1));
             if (lowerOrDigitFollowedByUpper || acronymFollowedByWord) {
                 appendWord(result, word, capitalizeFirst);
             }
@@ -153,20 +153,8 @@ final class TargetModelResolver {
         word.setLength(0);
     }
 
-    private static boolean isAsciiAlphaNumeric(char value) {
-        return isAsciiUpper(value) || isAsciiLower(value) || value >= '0' && value <= '9';
-    }
-
-    private static boolean isAsciiUpper(char value) {
-        return value >= 'A' && value <= 'Z';
-    }
-
-    private static boolean isAsciiLower(char value) {
-        return value >= 'a' && value <= 'z';
-    }
-
-    private static boolean isAsciiLowerOrDigit(char value) {
-        return isAsciiLower(value) || value >= '0' && value <= '9';
+    private static boolean isLowerOrDigit(char value) {
+        return Character.isLowerCase(value) || Character.isDigit(value);
     }
 
     /** The discovered field a key column names; a key naming no discovered field is a broken source model. */

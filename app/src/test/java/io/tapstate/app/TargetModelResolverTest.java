@@ -127,6 +127,17 @@ class TargetModelResolverTest {
     }
 
     @Test
+    void bulk_table_rename_keeps_letters_outside_the_ascii_range() {
+        SourceTable orders = new SourceTable(
+                "naïve_orders", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
+
+        TargetTable target = TargetModelResolver.toTargetTable(orders,
+                new RenameSpec(null, RenameCase.CAMEL, null, null));
+
+        assertThat(target.name()).isEqualTo("naïveOrders");
+    }
+
+    @Test
     void bulk_table_rename_supports_upper_case() {
         SourceTable address = new SourceTable(
                 "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of());
