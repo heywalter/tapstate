@@ -161,13 +161,23 @@ class StoreBackedDagSourceTargetModelTest {
         InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("merged"),
                 Step.inline("merged", FromClause.list(FromRef.literal("orders"), FromRef.literal("PlayerAddress")),
                         new TransformBody.Union(), null, null));
+        store.schemas().save(discovered("orders_src", "mysql", new SourceTable(
+                "orders", List.of(new SourceField("id", "INT"), new SourceField("total", "DECIMAL")),
+                List.of("id"), List.of())));
+        store.schemas().save(discovered("address_src", "mysql", new SourceTable(
+                "PlayerAddress", List.of(new SourceField("id", "INT"), new SourceField("street", "VARCHAR")),
+                List.of("id"), List.of())));
         Map<String, TargetTable> bound = new LinkedHashMap<>();
 
         new StoreBackedDagSource(store, capturingMapBinder(bound)).dagFor("p");
 
         assertThat(bound)
-                .containsEntry("orders", new TargetTable("orders", List.of()))
-                .containsEntry("PlayerAddress", new TargetTable("player_address", List.of()));
+                .containsEntry("orders", new TargetTable("orders", List.of(
+                        new TargetField("id", "INT", true),
+                        new TargetField("total", "DECIMAL", false))))
+                .containsEntry("PlayerAddress", new TargetTable("player_address", List.of(
+                        new TargetField("id", "INT", true),
+                        new TargetField("street", "VARCHAR", false))));
     }
 
     // ---- fixtures ----------------------------------------------------------------------
