@@ -9,6 +9,7 @@ import io.tapstate.adapters.transform.StatelessTransforms;
 import io.tapstate.core.model.FromClause;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.ServeBlock;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
@@ -38,6 +39,7 @@ import io.tapstate.spi.store.SourceTable;
 import io.tapstate.spi.store.SrsMeta;
 import io.tapstate.spi.store.StorePort;
 import io.tapstate.spi.transform.TransformPort;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -94,9 +96,12 @@ final class StoreBackedDagSource implements DagSource {
     @Override
     public DAG dagFor(String pipelineId) {
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
-        TargetTable target = targetModelResolver.resolve(pipeline).orElse(null);
+        Map<String, String> sourceIdByTable = sourceIdByTable(pipeline);
+        TargetModelResolver.ResolvedTarget resolved =
+                targetModelResolver.resolve(servedSourceId(pipeline, sourceIdByTable));
         FrontierBinding frontier = frontierBinding(pipeline);
-        return PipelineDagBuilder.build(pipeline, bindings(pipeline, sourceIdByTable(pipeline), target, frontier),
+        return PipelineDagBuilder.build(pipeline,
+                bindings(pipeline, sourceIdByTable, resolved.target(), resolved.sourceTable(), frontier),
                 sinkAckFactory(pipeline, pipelineId), frontier);
     }
 
@@ -138,6 +143,59 @@ final class StoreBackedDagSource implements DagSource {
                     SourceCaptureResolution.of(StoredArtifacts.requireSource(artifacts(), sourceId)).table());
         }
         return new FrontierBinding(chainBySource);
+    }
+
+    /**
+     * The source whose rows reach the serve sinks: the serve block's {@code from:} walked back through the
+     * transform chain to the source feeding it. A sink's target model and its rename rules key off that
+     * source's table, so what a sink is bound to is the model of the rows that actually arrive there.
+     *
+     * <p>A reference that does not narrow to exactly one source - a regex spanning the universe, a union
+     * merging several, a token naming neither a source nor a step - falls back to the pipeline's first
+     * source, which is the whole of it at the single-source L1 shape.
+     *
+     * <p>A step that reads several streams under aliases is one of those: the rows leaving it are assembled
+     * from all of them, so no single source's model describes what a sink downstream of it receives. Such a
+     * pipeline takes the fallback, and what its sink is bound to is the first source's model rather than
+     * anything derived from the assembled shape.
+     */
+    static String servedSourceId(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
+        String served = pipeline.serve() instanceof ServeBlock.Inline serve
+                ? sourceBehind(serve.from(), pipeline, sourceIdByTable, new HashSet<>())
+                : null;
+        return served != null ? served : pipeline.sources().getFirst();
+    }
+
+    /** The single source a reference reaches, or null when it names several or none. */
+    private static String sourceBehind(FromRef ref, PipelineResource pipeline,
+            Map<String, String> sourceIdByTable, Set<String> visited) {
+        if (!(ref instanceof FromRef.Literal literal)) {
+            return null;
+        }
+        String key = sourceIdByTable.getOrDefault(literal.ref(), literal.ref());
+        if (pipeline.sources().contains(key)) {
+            return key;
+        }
+        // Not a source, so it is a step id to follow upstream; `visited` stops a malformed cycle here
+        // rather than in a stack overflow, since the reference graph is validated before a pipeline is stored.
+        if (!visited.add(key) || pipeline.transforms() == null) {
+            return null;
+        }
+        for (Step step : pipeline.transforms()) {
+            if (step.id().equals(key)) {
+                return sourceBehind(step.from(), pipeline, sourceIdByTable, visited);
+            }
+        }
+        return null;
+    }
+
+    /** The single source a step's upstream wiring reaches; an alias map or a merge of several reaches none. */
+    private static String sourceBehind(FromClause from, PipelineResource pipeline,
+            Map<String, String> sourceIdByTable, Set<String> visited) {
+        if (!(from instanceof FromClause.Flow flow) || flow.refs().size() != 1) {
+            return null;
+        }
+        return sourceBehind(flow.refs().getFirst(), pipeline, sourceIdByTable, visited);
     }
 
     /**
@@ -188,13 +246,13 @@ final class StoreBackedDagSource implements DagSource {
      * builder walks the topology; only the vertex suppliers they return travel onto the DAG, so they may
      * reach the store freely while what they produce stays serializable.
      */
-    private DagBindings bindings(PipelineResource pipeline, Map<String, String> sourceIdByTable, TargetTable target,
-            FrontierBinding frontier) {
+    private DagBindings bindings(PipelineResource pipeline, Map<String, String> sourceIdByTable,
+            TargetTable target, String sourceTable, FrontierBinding frontier) {
         ChainAxes axes = frontier.axes();
         return new DagBindings(
                 sourceId -> sourceVertex(sourceId, axes),
                 StoreBackedDagSource::transformPort,
-                element -> sinkWriter(element, target),
+                element -> sinkWriter(element, TargetModelResolver.rename(target, sourceTable, element.rename())),
                 ref -> upstreams(ref, sourceIdByTable),
                 nestBinding(pipeline, sourceIdByTable));
     }

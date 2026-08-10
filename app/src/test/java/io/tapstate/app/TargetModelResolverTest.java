@@ -14,7 +14,6 @@ import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -69,7 +68,7 @@ class TargetModelResolverTest {
     }
 
     @Test
-    void resolves_the_target_from_the_discovered_model_of_the_pipelines_source() {
+    void resolves_the_target_from_the_discovered_model_of_the_named_source() {
         InMemoryStorePort store = new InMemoryStorePort();
         store.artifacts().save(cdcSource("src_mysql", "orders"));
         store.artifacts().save(pipeline("p", "src_mysql"));
@@ -79,22 +78,22 @@ class TargetModelResolverTest {
                 List.of("id"),
                 List.of())));
 
-        Optional<TargetTable> target = new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
+        TargetModelResolver.ResolvedTarget target = new TargetModelResolver(store).resolve("src_mysql");
 
-        assertThat(target).contains(new TargetTable("orders", List.of(
+        assertThat(target).isEqualTo(new TargetModelResolver.ResolvedTarget("orders", new TargetTable("orders", List.of(
                 new TargetField("id", "INT", true),
-                new TargetField("amount", "DECIMAL", false))));
+                new TargetField("amount", "DECIMAL", false)))));
     }
 
     @Test
-    void resolves_to_empty_when_the_source_schema_was_never_discovered() {
+    void resolves_the_table_with_no_model_when_the_source_schema_was_never_discovered() {
         InMemoryStorePort store = new InMemoryStorePort();
         store.artifacts().save(cdcSource("src_mysql", "orders"));
         store.artifacts().save(pipeline("p", "src_mysql"));
 
-        Optional<TargetTable> target = new TargetModelResolver(store).resolve(pipelineArtifact(store, "p"));
+        TargetModelResolver.ResolvedTarget target = new TargetModelResolver(store).resolve("src_mysql");
 
-        assertThat(target).isEmpty();
+        assertThat(target).isEqualTo(new TargetModelResolver.ResolvedTarget("orders", null));
     }
 
     // ---- fixtures ----------------------------------------------------------------------
@@ -106,10 +105,6 @@ class TargetModelResolverTest {
 
     private static PipelineResource pipeline(String id, String sourceId) {
         return new PipelineResource(id, null, List.of(sourceId), null, null, null, null, null);
-    }
-
-    private static PipelineResource pipelineArtifact(InMemoryStorePort store, String id) {
-        return (PipelineResource) store.artifacts().get(id).orElseThrow();
     }
 
     private static DiscoveredSourceModel discovered(String connectionId, String connectorId, SourceTable table) {
