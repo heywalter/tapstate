@@ -22,10 +22,11 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * The third of the three quantities a nest is limited by, and the only one that is per document rather
- * than per namespace: how much one document has absorbed. It is the one true bound on memory of the three
- * - a document is assembled whole, so however wide it has grown is what has to fit at once - where the
- * other two are bounds on how much is kept and how much is stored.
+ * How much one document has absorbed, which is one of the two quantities that bound what is inside an entry
+ * rather than how many entries there are - a document is assembled whole, so however wide it has grown is
+ * what has to fit at once, and no eviction reaches inside one. The quantities beside it bound how much is
+ * kept and how much is stored; the one that resembles it counts what a key holds for something that has not
+ * arrived.
  *
  * <p>What is counted is what the document holds, at every depth: an element hanging three levels down
  * occupies the assembly exactly as one hanging off the root does, and counting only the top would let a

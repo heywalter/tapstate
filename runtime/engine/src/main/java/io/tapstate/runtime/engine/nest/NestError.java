@@ -90,12 +90,27 @@ public enum NestError implements TapstateErrorCode {
     STATE_PATHS_CHANGED("nest.state-paths-changed", Set.of("stepId", "recorded", "compiled")),
 
     /**
-     * Running: one document has grown past the elements a single document may hold. The one limit on what
-     * a level holds that is a limit at all: a document is rendered whole, so however much it has absorbed
-     * has to be in memory at once and no eviction reaches inside one. How many documents there are, and how
-     * many keys a level below holds, are bounded by what stays in memory rather than by a count.
+     * Running: one document has grown past the elements a single document may hold. One of the two counts
+     * that bound what is inside an entry rather than how many there are: a document is rendered whole, so
+     * however much it has absorbed has to be in memory at once and no eviction reaches inside one. How many
+     * documents there are, and how many keys a level below holds, are bounded by what stays in memory rather
+     * than by a count.
      */
     ROOT_FANOUT_LIMIT_EXCEEDED("nest.root-fanout-limit-exceeded", Set.of("rootKey", "elements", "limit")),
+
+    /**
+     * Running: one key is holding more changes for something that has not arrived than it is allowed to.
+     * The second limit that bounds memory, and the one no other reaches: what waits lives inside a single
+     * entry, so a budget counting entries is met however long one key's queue has grown, and a limit on the
+     * width of a document counts elements where this counts every change held against them.
+     *
+     * <p>Failed rather than let go of. Reaching this says only that much arrived before the parent did,
+     * never that the parent is absent, so releasing on it would drop rows that were going to be part of a
+     * document - which is what the wait's own three-layer judgement exists to avoid deciding without
+     * evidence.
+     */
+    PENDING_LIMIT_EXCEEDED("nest.pending-limit-exceeded",
+            Set.of("namespace", "key", "pending", "limit")),
 
     /** Running: a subtree being moved to another document has parked more than the limit allows. */
     MIGRATION_PARKING_LIMIT_EXCEEDED(

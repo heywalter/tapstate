@@ -24,11 +24,12 @@ import java.util.Objects;
  * the store is there for. What a deployment sets is how much stays in memory; what is beyond it is on
  * disk, and how much of that there may be is a question for the disk.
  *
- * <p>The one exception is per document, and is here for a reason the others are not: a document is
- * rendered whole, so a document that has absorbed more than fits is not something a store behind the map
- * can help with. That one is per namespace, since one tree's documents differ in width by orders of
- * magnitude and a single number covering all of them catches nothing. A namespace nobody configured takes
- * the default.
+ * <p>Two exceptions are here for a reason the rest are not: what they bound lives inside a single entry,
+ * which a budget counting entries never reaches. A document is rendered whole, so one that has absorbed
+ * more than fits is not something a store behind the map can help with; and what one key holds for a parent
+ * that has not arrived travels to the store inside the entry it lives in, so any budget is met however long
+ * that queue has grown. Both are per namespace, since one tree's levels differ by orders of magnitude and a
+ * single number covering all of them catches nothing. A namespace nobody configured takes the default.
  *
  * <p>This is carried to the member that runs each vertex, because that is where a limit is enforced while
  * here is where it is chosen. Anything added to it has to survive that trip: a knob that stayed behind
@@ -41,7 +42,7 @@ public final class NestSettings implements Serializable {
     /**
      * How many elements one document may hold when nothing says otherwise.
      *
-     * <p>Per document rather than per namespace, and the only count that fails a run rather than being
+     * <p>Per document rather than per namespace, and one of the two counts that fail a run rather than being
      * absorbed by the layer behind it: a document is assembled whole, so however wide it has grown is what
      * has to be in memory at once, and no eviction reaches inside one.
      *
@@ -65,22 +66,51 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_ENTRIES_HELD_IN_MEMORY = 100_000L;
 
+    /**
+     * How many changes one key may hold waiting for something that has not arrived, when nothing says
+     * otherwise. The second count that fails a run rather than being absorbed: what waits lives inside one
+     * entry, so the layer behind the map takes the entry whole and the waiting with it - a bound on how many
+     * entries are held in memory never reaches inside one, however low it is set.
+     *
+     * <p>Per key rather than per namespace, and by change rather than by row: one row rewritten while its
+     * parent is missing is one row and as many held changes as it was written.
+     *
+     * <p>Provisional, and provisional for the same missing measurement as the two above: what one held change
+     * costs in memory is what turns this count into the bytes it is really about. High enough that a load
+     * read in an unlucky order - every child before the parent it hangs from - finishes rather than failing
+     * partway, low enough to be reached while there is still memory to report it with.
+     */
+    public static final long DEFAULT_PENDING_LIMIT = 100_000L;
+
     private final Map<String, Long> elementLimits;
+    private final Map<String, Long> pendingLimits;
     private final long entriesHeldInMemory;
 
-    private NestSettings(Map<String, Long> elementLimits, long entriesHeldInMemory) {
+    private NestSettings(Map<String, Long> elementLimits, Map<String, Long> pendingLimits,
+            long entriesHeldInMemory) {
         this.elementLimits = Map.copyOf(elementLimits);
+        this.pendingLimits = Map.copyOf(pendingLimits);
         this.entriesHeldInMemory = entriesHeldInMemory;
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
+        return new NestSettings(Map.of(), Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
     }
 
     /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
     public NestSettings withElementLimit(String namespace, long limit) {
-        return new NestSettings(with(elementLimits, namespace, limit, "elements"), entriesHeldInMemory);
+        return new NestSettings(with(elementLimits, namespace, limit, "elements"), pendingLimits,
+                entriesHeldInMemory);
+    }
+
+    /**
+     * These settings, with each key of {@code namespace} allowed to hold {@code limit} changes for something
+     * that has not arrived.
+     */
+    public NestSettings withPendingLimit(String namespace, long limit) {
+        return new NestSettings(elementLimits, with(pendingLimits, namespace, limit, "pending changes"),
+                entriesHeldInMemory);
     }
 
     /**
@@ -102,7 +132,7 @@ public final class NestSettings implements Serializable {
                     Map.of("entries", entries,
                             "partitions", (long) NestMaps.SMALLEST_MEANINGFUL_MEMORY_BUDGET), null);
         }
-        return new NestSettings(elementLimits, entries);
+        return new NestSettings(elementLimits, pendingLimits, entries);
     }
 
     /** How many entries each namespace keeps in memory before the rest is left to the layer behind it. */
@@ -113,6 +143,14 @@ public final class NestSettings implements Serializable {
     /** How many elements one document of {@code namespace} may hold before the job is failed. */
     public long elementsAllowedIn(String namespace) {
         return elementLimits.getOrDefault(namespace, DEFAULT_ELEMENT_LIMIT);
+    }
+
+    /**
+     * How many changes one key of {@code namespace} may hold for something that has not arrived, before the
+     * job is failed.
+     */
+    public long pendingAllowedIn(String namespace) {
+        return pendingLimits.getOrDefault(namespace, DEFAULT_PENDING_LIMIT);
     }
 
     private static Map<String, Long> with(Map<String, Long> limits, String namespace, long limit,

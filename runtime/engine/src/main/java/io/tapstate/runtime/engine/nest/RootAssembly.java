@@ -235,6 +235,24 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
+     * How many changes this document has taken in and not passed on, wherever each of them is waiting: the
+     * ones absorbed into the tree while the root is absent, and the ones parked for an ancestor that has not
+     * arrived. Both are a change consumed and shown to nobody, which is the quantity a pending limit is
+     * about; what ends each wait differs, what it costs to wait does not.
+     *
+     * <p>Counted by change rather than by element, unlike {@link #elements()}. One element written a
+     * thousand times under an absent root is one element and a thousand changes held against it, and this is
+     * the count that says so.
+     */
+    public long pending() {
+        long parked = 0L;
+        for (List<Pending> bucket : waiting.values()) {
+            parked += bucket.size();
+        }
+        return heldElements.size() + parked;
+    }
+
+    /**
      * Moves one element from the parent {@code from} names to the parent {@code to} names, within this
      * root. **The whole node travels, children and all** — moving only the row would strand the subtree
      * beneath it, and nothing will ever resend those descendants. Returns whether the assembly changed.
@@ -399,7 +417,7 @@ public final class RootAssembly implements Serializable {
      * something whoever set a limit can see.
      *
      * <p>Nor is what is waiting on a parent that has not arrived: it is not in the document, it is not
-     * rendered, and it is already accounted for where things wait.
+     * rendered, and it is counted by {@link #pending()} instead, which is what the limit on waiting reads.
      */
     public long elements() {
         return countIn(children);

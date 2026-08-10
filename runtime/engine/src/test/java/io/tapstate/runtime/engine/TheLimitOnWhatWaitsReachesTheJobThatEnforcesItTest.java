@@ -28,11 +28,11 @@ import io.tapstate.runtime.engine.nest.NestBinding;
 import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.runtime.engine.nest.NestTopology;
+import io.tapstate.runtime.engine.nest.NestVertex;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.WriteResult;
 import io.tapstate.spi.transform.TransformPort;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,39 +43,34 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * A limit is chosen where the job is assembled and enforced on the member running the vertex it is about,
- * and between those two points there is a seam that nothing else covers. Every other test of the limit
- * hands it to a vertex directly; this one hands it to the job and asks the job.
+ * The same seam as the limit on a document's width, for the other limit that fails a run - and for the
+ * level the other one never reaches. How much may wait is enforced on every level that holds anything,
+ * including the ones between the root and the leaves, and those are supplied by a different line of the
+ * graph builder than the level that assembles documents.
  *
- * <p>What fails here if the seam is not connected is nothing at all: the nest keeps the default limit,
- * runs, and assembles correct documents, while the configuration that was meant to bound it reads as set
- * everywhere it is looked at. That is why the assertion is a job that stops rather than a value read back.
+ * <p>What fails here if that line is not connected is nothing at all. The level keeps the default limit,
+ * holds whatever arrives before its parents, assembles perfectly correct documents out of everything that
+ * did resolve, and reports nothing anywhere - while the configuration meant to bound it reads as set from
+ * every side. That shape has caught this repository out before, which is why the assertion is a job that
+ * stops rather than a value read back.
  *
- * <p>How wide one document may grow is one of the two limits left that fail a run. How many documents there
- * are and how many keys a level holds grow past memory into the layer behind it instead, so neither has a
- * number to carry here; a document does, because it is rendered whole and nothing behind the map assembles
- * half of one. The other is how much may wait inside one entry, and its own trip is covered next door.
- *
- * <p>The document is driven to one element past its limit and no further, so what stops the job can only
- * be its width. The vertex is pinned to a single instance because the state under test is per-instance
- * while it is kept on a heap.
+ * <p>The claims here name a policy that is never read, so what stops the job can only be the queue they
+ * wait in: nothing is ever assembled from them, no document grows, and every other limit is left at its
+ * default. The vertex is pinned to a single instance because the state under test is per-instance while it
+ * is kept on a heap.
  */
-class TheLimitOnADocumentReachesTheJobThatEnforcesItTest {
-
-    /** What the sink was handed. Static because the writer is built on the member. */
-    private static final List<Envelope> WRITTEN = Collections.synchronizedList(new ArrayList<>());
+class TheLimitOnWhatWaitsReachesTheJobThatEnforcesItTest {
 
     private static final String PIPELINE = "p";
     private static final String NODE = "customer_doc";
 
-    /** Two policies fit in the document; the third is what the job must stop on. */
-    private static final long LIMIT = 2L;
+    /** One orphan claim may wait under a policy; the second is what the job must stop on. */
+    private static final long LIMIT = 1L;
 
     private HazelcastInstance member;
 
     @BeforeEach
     void startMember() {
-        WRITTEN.clear();
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(2);
         config.setProperty("hazelcast.phone.home.enabled", "false");
@@ -96,17 +91,17 @@ class TheLimitOnADocumentReachesTheJobThatEnforcesItTest {
     }
 
     @Test
-    void aDocumentDrivenPastTheLimitItWasGivenStopsTheJobSayingSo() {
+    void aLevelHoldingPastTheLimitItWasGivenStopsTheJobSayingSo() {
         DAG dag = customersWithPoliciesAndClaims(LIMIT + 1);
 
         assertThatThrownBy(() -> member.getJet().newJob(dag).join())
-                .hasStackTraceContaining("nest.root-fanout-limit-exceeded")
-                .hasStackTraceContaining("elements=" + (LIMIT + 1))
+                .hasStackTraceContaining("nest.pending-limit-exceeded")
+                .hasStackTraceContaining("pending=" + (LIMIT + 1))
                 .hasStackTraceContaining("limit=" + LIMIT);
     }
 
     @Test
-    void aDocumentInsideTheLimitItWasGivenRunsToCompletion() {
+    void aLevelHoldingInsideTheLimitItWasGivenRunsToCompletion() {
         DAG dag = customersWithPoliciesAndClaims(LIMIT);
 
         member.getJet().newJob(dag).join();
@@ -114,14 +109,12 @@ class TheLimitOnADocumentReachesTheJobThatEnforcesItTest {
 
     // ---- the pipeline under test ------------------------------------------------------
 
-    /** customers, with policies embedded beneath and claims beneath those, so policies is a resolver. */
-    private static DAG customersWithPoliciesAndClaims(long policies) {
-        Embed claim = new Embed("claim", Map.of("policy_id", "policy_id"), EmbedAs.ARRAY, "claims",
-                List.of("claim_id"), null, null, null);
-        Embed policy = new Embed("policy", Map.of("customer_id", "customer_id"), EmbedAs.ARRAY, "policies",
-                List.of("policy_no"), null, null, List.of(claim));
-        TransformBody.Nest body = new TransformBody.Nest(null, null,
-                new NestRoot("customer", List.of("customer_id"), null, null, List.of(policy)));
+    /**
+     * customers, with policies embedded beneath and claims beneath those, so policies is a resolver - and
+     * {@code orphans} claims naming a policy no read ever produces, which is what that resolver holds.
+     */
+    private static DAG customersWithPoliciesAndClaims(long orphans) {
+        TransformBody.Nest body = tree();
 
         Map<String, FromRef> aliases = new LinkedHashMap<>();
         aliases.put("customer", FromRef.literal("customers"));
@@ -136,43 +129,49 @@ class TheLimitOnADocumentReachesTheJobThatEnforcesItTest {
                         List.of(new SyncElement("sync_1", "dest", null, null, null, null)), null, null),
                 null, null);
 
-        List<Map<String, Object>> policyRows = new ArrayList<>();
-        for (int i = 0; i < policies; i++) {
-            policyRows.add(row("policy_id", "pid" + i, "customer_id", 1, "policy_no", "no" + i));
+        List<Map<String, Object>> claimRows = new ArrayList<>();
+        for (int i = 0; i < orphans; i++) {
+            claimRows.add(row("claim_id", "cid" + i, "policy_id", "never_read"));
         }
 
         Map<String, ProcessorMetaSupplier> sources = new LinkedHashMap<>();
         sources.put("customers", rowsSource("customers", List.of(row("customer_id", 1, "name", "n"))));
-        sources.put("policies", rowsSource("policies", policyRows));
-        sources.put("claims", rowsSource("claims", List.of()));
-
-        Map<String, NestTable> tables = new LinkedHashMap<>();
-        tables.put("customer", new NestTable("customers", List.of("customer_id")));
-        tables.put("policy", new NestTable("policies", List.of("policy_id")));
-        tables.put("claim", new NestTable("claims", List.of("claim_id")));
+        sources.put("policies", rowsSource("policies", List.of()));
+        sources.put("claims", rowsSource("claims", claimRows));
 
         DagBindings bindings = new DagBindings(
                 sources::get,
                 s -> (SupplierEx<TransformPort>) () -> event -> List.of(event),
                 syncElement -> (SupplierEx<SinkWriter>) CollectingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onHeap(), (from, released) -> { },
-                        NestSettings.defaults().withElementLimit(documentNamespace(body), LIMIT)));
+                new NestBinding(tables()::get, NestBinding.onHeap(), (from, released) -> { },
+                        NestSettings.defaults().withPendingLimit(policyLevel(body).mapName(), LIMIT)));
 
         DAG dag = PipelineDagBuilder.build(pipeline, bindings);
-        dag.getVertex("nest:" + NODE).localParallelism(1);
+        dag.getVertex(policyLevel(body).name()).localParallelism(1);
         return dag;
     }
 
-    /** The name the compiler gives the document level, asked of the compiler rather than spelled out. */
-    private static String documentNamespace(TransformBody.Nest body) {
+    private static TransformBody.Nest tree() {
+        Embed claim = new Embed("claim", Map.of("policy_id", "policy_id"), EmbedAs.ARRAY, "claims",
+                List.of("claim_id"), null, null, null);
+        Embed policy = new Embed("policy", Map.of("customer_id", "customer_id"), EmbedAs.ARRAY, "policies",
+                List.of("policy_no"), null, null, List.of(claim));
+        return new TransformBody.Nest(null, null,
+                new NestRoot("customer", List.of("customer_id"), null, null, List.of(policy)));
+    }
+
+    /** The level that holds claims, asked of the compiler rather than spelled out. */
+    private static NestVertex policyLevel(TransformBody.Nest body) {
+        return NestTopology.compile(PIPELINE, NODE, body, tables()::get).vertexAt(List.of("policies"));
+    }
+
+    private static Map<String, NestTable> tables() {
         Map<String, NestTable> tables = new LinkedHashMap<>();
         tables.put("customer", new NestTable("customers", List.of("customer_id")));
         tables.put("policy", new NestTable("policies", List.of("policy_id")));
         tables.put("claim", new NestTable("claims", List.of("claim_id")));
-        return NestTopology.compile(PIPELINE, NODE, body, tables::get)
-                .assembler()
-                .mapName();
+        return tables;
     }
 
     // ---- doubles ----------------------------------------------------------------------
@@ -219,7 +218,6 @@ class TheLimitOnADocumentReachesTheJobThatEnforcesItTest {
 
         @Override
         public CompletionStage<WriteResult> write(List<Envelope> records) {
-            WRITTEN.addAll(records);
             return CompletableFuture.completedFuture(new WriteResult(records.size()));
         }
 

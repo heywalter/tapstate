@@ -102,6 +102,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     private final long elementLimit;
 
+    /** How many changes one document here may hold for a root, or an ancestor, that has not arrived. */
+    private final long pendingLimit;
+
     /**
      * Roots whose deletion has gone downstream and whose record is still kept, against what that deletion
      * covered. They are remembered as they happen rather than looked for later, because a store is not
@@ -180,6 +183,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         this.floor = Objects.requireNonNull(floor, "floor");
         this.elementLimit =
                 Objects.requireNonNull(settings, "settings").elementsAllowedIn(vertex.mapName());
+        this.pendingLimit = settings.pendingAllowedIn(vertex.mapName());
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -461,6 +465,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
                     });
             store.save(key, document.assembly);
             refuseToLetOneDocumentGrowPastItsWidth(key, document.assembly);
+            NestLimits.refuse(vertex, key, document.assembly.pending(), pendingLimit);
             if (bounds != null) {
                 held.holding(key, document.assembly.lowestHeldByChain());
             }
@@ -477,8 +482,8 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * document rather than across the nest: how wide one has grown says nothing about the others, and a
      * limit spent by whichever document happened to be assembled first would fail the rest for its width.
      *
-     * <p>This is the one of the three limits that bounds memory. A document is rendered whole, so however
-     * much it holds is what has to be there at once, and no eviction reaches inside one.
+     * <p>This bounds memory where a count of entries cannot. A document is rendered whole, so however much
+     * it holds is what has to be there at once, and no eviction reaches inside one.
      */
     private void refuseToLetOneDocumentGrowPastItsWidth(Object key, RootAssembly assembly) {
         long elements = assembly.elements();

@@ -51,14 +51,45 @@ class ACapacityLimitIsSetPerNamespaceAndTravelsWithTheJobTest {
     }
 
     @Test
+    void aNamespaceNobodyConfiguredHoldsTheDefaultPending() {
+        NestSettings settings = NestSettings.defaults();
+
+        assertThat(settings.pendingAllowedIn(CUSTOMERS)).isEqualTo(NestSettings.DEFAULT_PENDING_LIMIT);
+    }
+
+    @Test
+    void aNamespaceGivenAPendingLimitOfItsOwnTakesThatOne() {
+        NestSettings settings = NestSettings.defaults().withPendingLimit(CUSTOMERS, 56L);
+
+        assertThat(settings.pendingAllowedIn(CUSTOMERS)).isEqualTo(56L);
+    }
+
+    /**
+     * The two limits are separate numbers about separate quantities - how wide a document has grown, and
+     * how much is stuck waiting for something that has not arrived - so setting either has to leave the
+     * other where it was.
+     */
+    @Test
+    void howMuchMayWaitAndHowWideADocumentMayGrowAreSetApart() {
+        NestSettings settings = NestSettings.defaults().withElementLimit(CUSTOMERS, 12L);
+
+        assertThat(settings.pendingAllowedIn(CUSTOMERS)).isEqualTo(NestSettings.DEFAULT_PENDING_LIMIT);
+        assertThat(NestSettings.defaults().withPendingLimit(CUSTOMERS, 56L).elementsAllowedIn(CUSTOMERS))
+                .isEqualTo(NestSettings.DEFAULT_ELEMENT_LIMIT);
+    }
+
+    @Test
     void everyLimitReachesTheMemberThatWillEnforceIt() throws Exception {
-        NestSettings settings =
-                NestSettings.defaults().withElementLimit(CUSTOMERS, 12L).withElementLimit(ORDERS, 34L);
+        NestSettings settings = NestSettings.defaults()
+                .withElementLimit(CUSTOMERS, 12L).withElementLimit(ORDERS, 34L)
+                .withPendingLimit(CUSTOMERS, 56L).withPendingLimit(ORDERS, 78L);
 
         NestSettings arrived = roundTripped(settings);
 
         assertThat(arrived.elementsAllowedIn(CUSTOMERS)).isEqualTo(12L);
         assertThat(arrived.elementsAllowedIn(ORDERS)).isEqualTo(34L);
+        assertThat(arrived.pendingAllowedIn(CUSTOMERS)).isEqualTo(56L);
+        assertThat(arrived.pendingAllowedIn(ORDERS)).isEqualTo(78L);
     }
 
     /** What the job submission does to anything the vertices are configured with, and nothing more. */

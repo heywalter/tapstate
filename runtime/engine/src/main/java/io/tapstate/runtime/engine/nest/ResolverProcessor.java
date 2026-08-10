@@ -103,9 +103,18 @@ public final class ResolverProcessor extends AbstractProcessor {
 
     private final PendingWatch watch;
 
+    /** How many changes one key here may hold for a parent that has not arrived. */
+    private final long pendingLimit;
+
     /** A resolver in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter) {
         this(vertex, store, deadLetter, null, null, ReplayFloor.NONE);
+    }
+
+    /** A resolver held to what {@code settings} allows one of its keys to hold. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            NestSettings settings) {
+        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE, PendingWatch.defaults(), settings);
     }
 
     /** A resolver that forgets a tombstone once {@code floor} says its deletion cannot come back. */
@@ -140,6 +149,15 @@ public final class ResolverProcessor extends AbstractProcessor {
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
             PendingWatch watch) {
+        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, watch, NestSettings.defaults());
+    }
+
+    /** The whole of it, held to both of what it may wait: how long for one change, and how many at once. */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
+            PendingWatch watch, NestSettings settings) {
+        this.pendingLimit =
+                Objects.requireNonNull(settings, "settings").pendingAllowedIn(vertex.mapName());
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.store = Objects.requireNonNull(store, "store");
         this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
@@ -272,6 +290,19 @@ public final class ResolverProcessor extends AbstractProcessor {
         return !covered.isEmpty();
     }
 
+    /**
+     * Stops the job once one key is holding more than it may for a parent that has not arrived. Checked per
+     * key rather than across the level: how much one key has waiting says nothing about the others, and a
+     * limit spent by whichever key filled up first would fail the rest for its queue.
+     *
+     * <p>Failed rather than released. Nothing here says the parent is absent - only that this much arrived
+     * before it did - and letting go on that would drop rows that were going to reach a document, which is
+     * the whole reason a wait is ended by evidence about the parent's own stream instead.
+     */
+    private void refuseToLetOneKeyHoldMoreThanItMay(Object key, long pending) {
+        NestLimits.refuse(vertex, key, pending, pendingLimit);
+    }
+
     @Override
     public boolean isCooperative() {
         return false;
@@ -310,6 +341,7 @@ public final class ResolverProcessor extends AbstractProcessor {
     private void settle(Map<Object, ResolverState> touched) {
         touched.forEach((key, state) -> {
             store.save(key, state);
+            refuseToLetOneKeyHoldMoreThanItMay(key, state.pending());
             if (bounds != null) {
                 held.holding(key, state.lowestHeldByChain());
             }

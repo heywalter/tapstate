@@ -85,6 +85,7 @@ nest.key-change-tracking-requires-before-image
 nest.memory-budget-below-partition-count
 nest.memory-budget-changed-while-running
 nest.migration-parking-limit-exceeded
+nest.pending-limit-exceeded
 nest.pending-protection-expired
 nest.resolver-vertex-limit-exceeded
 nest.root-fanout-limit-exceeded

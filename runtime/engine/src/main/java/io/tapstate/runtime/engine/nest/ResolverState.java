@@ -80,6 +80,11 @@ public final class ResolverState implements Serializable {
         return !waiting.isEmpty();
     }
 
+    /** How many changes are held here for a parent that has not arrived. */
+    public int pending() {
+        return waiting.size();
+    }
+
     /**
      * Whether this entry now says nothing: no mapping, no tombstone, nothing waiting. Such an entry is
      * indistinguishable from one that was never written, so keeping it costs a key and answers nothing.
