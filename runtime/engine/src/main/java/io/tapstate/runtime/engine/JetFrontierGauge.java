@@ -25,20 +25,43 @@ final class JetFrontierGauge implements FrontierGauge {
      */
     static final String METRIC_PREFIX = "frontierGap.";
 
-    private final Map<String, Metric> byChain = new HashMap<>();
+    /**
+     * What a per-chain pinned-for reading is named. Milliseconds are in the name because a run's
+     * statistics are bare numbers: a duration whose unit lives only in a document somewhere is a duration
+     * that gets read in seconds by whoever wires the first threshold against it.
+     */
+    static final String STALL_PREFIX = "frontierStalledMillis.";
+
+    private final Map<String, Metric> gaugesByChain = new HashMap<>();
+    private final Map<String, Metric> stallsByChain = new HashMap<>();
 
     @Override
     public void trailing(Map<String, Long> gapsByChain) {
         gapsByChain.forEach((chain, gap) ->
-                byChain.computeIfAbsent(chain, JetFrontierGauge::metricFor).set(gap));
+                gaugesByChain.computeIfAbsent(chain, JetFrontierGauge::gapMetricFor).set(gap));
     }
 
-    /** The chain a reading named {@code metric} concerns, or {@code null} when it is not one of these. */
+    @Override
+    public void pinned(Map<String, Long> millisByChain) {
+        millisByChain.forEach((chain, millis) ->
+                stallsByChain.computeIfAbsent(chain, JetFrontierGauge::stallMetricFor).set(millis));
+    }
+
+    /** The chain a distance named {@code metric} concerns, or {@code null} when it is not one of these. */
     static String chainOf(String metric) {
         return metric.startsWith(METRIC_PREFIX) ? metric.substring(METRIC_PREFIX.length()) : null;
     }
 
-    private static Metric metricFor(String chain) {
+    /** The chain a pinned-for reading named {@code metric} concerns, or {@code null} when it is not one. */
+    static String stalledChainOf(String metric) {
+        return metric.startsWith(STALL_PREFIX) ? metric.substring(STALL_PREFIX.length()) : null;
+    }
+
+    private static Metric gapMetricFor(String chain) {
         return Metrics.metric(METRIC_PREFIX + chain);
+    }
+
+    private static Metric stallMetricFor(String chain) {
+        return Metrics.metric(STALL_PREFIX + chain);
     }
 }

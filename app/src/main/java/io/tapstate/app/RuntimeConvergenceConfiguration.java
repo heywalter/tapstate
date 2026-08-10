@@ -1,7 +1,9 @@
 package io.tapstate.app;
 
+import io.tapstate.core.lifecycle.FrontierStallPressure;
 import io.tapstate.core.lifecycle.NestColdLayerPressure;
 import io.tapstate.runtime.engine.Engine;
+import io.tapstate.runtime.scheduler.FrontierStallWatch;
 import io.tapstate.runtime.scheduler.LifecycleActuator;
 import io.tapstate.runtime.scheduler.NestColdLayerWatch;
 import io.tapstate.runtime.scheduler.ObservationPublisher;
@@ -49,7 +51,9 @@ class RuntimeConvergenceConfiguration {
         return new ObservationPublisher(storePort.state(), storePort.observations(),
                 engine::recordCount, new StoreBackedSinkPositions(storePort),
                 captureCoordinator::snapshotProgress, engine::frontierGaps, engine::nestStateReadings,
-                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, new LoggingNestColdLayerAlert()));
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, new LoggingNestColdLayerAlert()),
+                engine::frontierStalls,
+                new FrontierStallWatch(FrontierStallPressure.DEFAULT, new LoggingFrontierStallAlert()));
     }
 
     @Bean

@@ -60,4 +60,17 @@ interface SinkFrontier {
      * to advance to, and only supplying them shortens it. Without the number the two are one symptom.
      */
     Map<String, Long> gaps();
+
+    /**
+     * How long each chain's durable position has been pinned where it is, in milliseconds, keyed by chain;
+     * absent for a chain that is not pinned.
+     *
+     * <p>This says a frontier has stopped, which {@link #gaps()} cannot: a chain held back by pending
+     * changes upstream reports a distance of zero, and so does one keeping up perfectly. Read together
+     * they are a diagnosis — this one says something is pinned and for how long, the distance says which
+     * of the two pins it is. Neither alone is actionable, and the duration is the one that decides
+     * urgency: what a pinned durable position is racing is the source's retention window, which is kept
+     * in time and not in positions.
+     */
+    Map<String, Long> stalls();
 }

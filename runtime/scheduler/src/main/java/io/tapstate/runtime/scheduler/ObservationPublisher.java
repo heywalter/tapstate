@@ -1,5 +1,6 @@
 package io.tapstate.runtime.scheduler;
 
+import io.tapstate.core.lifecycle.FrontierStallPressure;
 import io.tapstate.core.lifecycle.NestColdLayerPressure;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
@@ -47,6 +48,18 @@ public final class ObservationPublisher {
     private static final String FRONTIER_GAP_PREFIX = "frontierGap.";
 
     /**
+     * What a per-chain pinned-for reading is named, with the chain's own name appended. Milliseconds are
+     * in the name because the metrics map carries bare numbers: a duration whose unit is written down
+     * anywhere but here is a duration somebody thresholds in seconds.
+     *
+     * <p>Published beside the distance rather than instead of it. The distance cannot say a frontier has
+     * stopped — it reads zero for a chain held back by pending changes upstream and zero again for one
+     * keeping up — and this cannot say which of the two stalls it is. What raises an alarm is this one:
+     * a pinned durable position is racing the source's retention window, which is kept in time.
+     */
+    private static final String FRONTIER_STALLED_PREFIX = "frontierStalledMillis.";
+
+    /**
      * What a per-namespace nest state reading is named, with the namespace appended. Four numbers rather
      * than the hit ratio they imply: a ratio published here would be an average over the whole run, which
      * is the one window in which a state layer that fell off its cliff a minute ago still reads as healthy.
@@ -72,6 +85,8 @@ public final class ObservationPublisher {
     private final Function<String, Map<String, TableSnapshot>> snapshots;
     private final Function<String, Map<String, Long>> frontierGaps;
     private final Function<String, Map<String, NestStateReading>> nestStateReadings;
+    private final Function<String, Map<String, Long>> frontierStalls;
+    private final FrontierStallWatch frontierStall;
     private final NestColdLayerWatch coldLayer;
 
     /**
@@ -141,6 +156,46 @@ public final class ObservationPublisher {
             Function<String, Map<String, Long>> frontierGaps,
             Function<String, Map<String, NestStateReading>> nestStateReadings,
             NestColdLayerWatch coldLayer) {
+        this(state, observations, recordCounts, positions, snapshots, frontierGaps, nestStateReadings,
+                coldLayer, id -> Map.of());
+    }
+
+    /**
+     * A publisher also wired to how long each chain has had its durable position pinned:
+     * {@code frontierStalls} yields that, in milliseconds, for the chains of a pipeline's live run that
+     * are pinned (empty when none is). A sixth port for the same reason as the others.
+     *
+     * <p>It is a separate port from {@code frontierGaps} despite carrying the same shape, because the two
+     * describe different sets: a chain that caught up reports a distance and is not pinned, and a chain
+     * that never advanced at all is pinned and has no distance to report. Folding them into one map would
+     * need a sentinel for each absence, and both sentinels would be zero — the healthy end of both scales.
+     */
+    public ObservationPublisher(StateStore state, ObservationStore observations,
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
+            Function<String, Map<String, TableSnapshot>> snapshots,
+            Function<String, Map<String, Long>> frontierGaps,
+            Function<String, Map<String, NestStateReading>> nestStateReadings,
+            NestColdLayerWatch coldLayer,
+            Function<String, Map<String, Long>> frontierStalls) {
+        this(state, observations, recordCounts, positions, snapshots, frontierGaps, nestStateReadings,
+                coldLayer, frontierStalls,
+                new FrontierStallWatch(FrontierStallPressure.DEFAULT, FrontierStallAlert.NONE));
+    }
+
+    /**
+     * A publisher that also hands each pass's frontier readings to {@code frontierStall}, which reports a
+     * chain whose durable position has stopped moving for too long. Fed from here for the same reason the
+     * cold-layer watch is: the readings already exist on this pass, and taking them again would both pay
+     * for a second collection and let the alarm and the read face describe different moments.
+     */
+    public ObservationPublisher(StateStore state, ObservationStore observations,
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
+            Function<String, Map<String, TableSnapshot>> snapshots,
+            Function<String, Map<String, Long>> frontierGaps,
+            Function<String, Map<String, NestStateReading>> nestStateReadings,
+            NestColdLayerWatch coldLayer,
+            Function<String, Map<String, Long>> frontierStalls,
+            FrontierStallWatch frontierStall) {
         this.state = Objects.requireNonNull(state, "state");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.recordCounts = Objects.requireNonNull(recordCounts, "recordCounts");
@@ -149,6 +204,8 @@ public final class ObservationPublisher {
         this.frontierGaps = Objects.requireNonNull(frontierGaps, "frontierGaps");
         this.nestStateReadings = Objects.requireNonNull(nestStateReadings, "nestStateReadings");
         this.coldLayer = Objects.requireNonNull(coldLayer, "coldLayer");
+        this.frontierStalls = Objects.requireNonNull(frontierStalls, "frontierStalls");
+        this.frontierStall = Objects.requireNonNull(frontierStall, "frontierStall");
     }
 
     /** Publishes the pipeline's latest observation from its actual state; a no-op if it has no checkpoint. */
@@ -174,12 +231,20 @@ public final class ObservationPublisher {
                 carried = observations.read(pipelineId).map(Observation::failure).orElse(null);
             }
             Map<String, NestStateReading> readings = nestStateReadings.apply(pipelineId);
-            observations.save(new Observation(pipelineId, actual, metrics(pipelineId, actual, readings),
+            // Both frontier readings are taken once and used twice - published as metrics and judged by
+            // the watch. Asking each source again for the watch would pay for a second collection of the
+            // run's statistics per pass, and would let the two answers disagree: what an operator reads
+            // and what raised the alarm they are reading would then be different passes of the same run.
+            Map<String, Long> gaps = frontierGaps.apply(pipelineId);
+            Map<String, Long> pinned = frontierStalls.apply(pipelineId);
+            observations.save(new Observation(pipelineId, actual,
+                    metrics(pipelineId, actual, readings, gaps, pinned),
                     snapshots.apply(pipelineId), positions.apply(pipelineId), carried));
             // Fed after the observation is written and never before. The observation is the contract and
             // the alert is a courtesy on top of it, so a fault in the alerting path must not be able to
             // cost a pipeline the read face that says it is alive at all.
             coldLayer.saw(pipelineId, readings);
+            frontierStall.saw(pipelineId, pinned, gaps);
         });
     }
 
@@ -208,14 +273,18 @@ public final class ObservationPublisher {
      * when a live job reports one, so its absence reads as "not wired" rather than a zero count.
      */
     private Map<String, Long> metrics(String pipelineId, PipelineState actual,
-            Map<String, NestStateReading> nestReadings) {
+            Map<String, NestStateReading> nestReadings, Map<String, Long> gaps, Map<String, Long> pinned) {
         Map<String, Long> metrics = new HashMap<>();
         metrics.put("errorCount", actual == PipelineState.FAILED ? 1L : 0L);
         recordCounts.apply(pipelineId).ifPresent(count -> metrics.put("recordCount", count));
         // One entry per chain that reported a reading, so a chain keeping up and a chain that has stalled
         // stay distinguishable; a chain that reported none is absent rather than zero, which would read as
         // the healthy end of the same scale.
-        frontierGaps.apply(pipelineId).forEach((chain, gap) -> metrics.put(FRONTIER_GAP_PREFIX + chain, gap));
+        gaps.forEach((chain, gap) -> metrics.put(FRONTIER_GAP_PREFIX + chain, gap));
+        // One entry per chain that is pinned, and none for a chain that is not. The two readings do not
+        // cover the same chains and neither is the other's default: a chain that caught up has a distance
+        // and no pin, and a chain that never advanced has a pin and no distance.
+        pinned.forEach((chain, millis) -> metrics.put(FRONTIER_STALLED_PREFIX + chain, millis));
         // One set per namespace that reported, so a resolver thrashing against its cold layer stays
         // distinguishable from an assembler that is not; a namespace reporting nothing is absent rather
         // than present at zero, which would read as a state layer that had emptied.

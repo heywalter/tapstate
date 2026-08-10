@@ -128,6 +128,44 @@ class ObservationPublisherTest {
     }
 
     @Test
+    void publishWiresHowLongEachChainHasBeenPinnedIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("orders", 0L, "order_items", 480L),
+                id -> Map.of(),
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, NestColdLayerAlert.NONE),
+                id -> Map.of("orders", 96_000L));
+
+        wired.publish("orders");
+
+        // The two readings are carried side by side and are not interchangeable, which is why the values
+        // here differ and both are asserted by name: orders is pinned for a minute and a half at a
+        // distance of zero, and reading either number under the other's name would describe a pipeline
+        // that is not this one. order_items has a distance and is not pinned, so it has no entry here -
+        // a zero would say it is pinned and has just advanced, which is the healthy end of this scale.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L),
+                        entry("frontierGap.orders", 0L), entry("frontierGap.order_items", 480L),
+                        entry("frontierStalledMillis.orders", 96_000L));
+    }
+
+    @Test
+    void theTimePinnedIsAbsentFromTheMetricsWhenNoChainIsPinned() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("orders", 0L));
+
+        wired.publish("orders");
+
+        // A pipeline whose chains all keep up publishes no duration at all. A zero here would be a chain
+        // reporting that it is pinned and just advanced, which is a reading rather than the absence of one.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L), entry("frontierGap.orders", 0L));
+    }
+
+    @Test
     void theFrontierGapIsAbsentFromTheMetricsWhenNoSinkReportsOne() {
         state.seed("orders", PipelineState.RUNNING);
         ObservationPublisher wired = new ObservationPublisher(

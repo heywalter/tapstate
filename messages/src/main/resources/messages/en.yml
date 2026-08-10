@@ -239,6 +239,9 @@ engine.no-such-job:
 engine.frontier-order-not-encodable:
   message: "Chain {chain} reached generation {epoch} position {seq}, past what the engine encodes an ordering value in."
   solution: "Report this with the pipeline: the range is a build-time width, and no configuration widens it."
+engine.frontier-pinned:
+  message: "Chain {chain} has not advanced its durable position for {minutes} minutes ({cause}; the bound combined for it has run {gap} ahead)."
+  solution: "The source keeps its log from that position onwards, so act before the log's retention passes it: if the chain is waiting on changes still pending upstream, find what is holding them; if it is starved of positions, the sink has nothing to advance to and the source must supply them."
 monitor.no-observation:
   message: "No observation is available for pipeline {pipeline}."
   solution: "Check the pipeline id for typos; a freshly started pipeline may take a moment to publish its first observation."

@@ -16,7 +16,6 @@ import java.util.Map;
  * distance measured from it is a property of the run and belongs with the run's statistics, not in the store
  * that holds what a restart resumes from.
  */
-@FunctionalInterface
 interface FrontierGauge {
 
     /**
@@ -27,11 +26,32 @@ interface FrontierGauge {
     void trailing(Map<String, Long> gapsByChain);
 
     /**
+     * Takes the other reading: for each chain that is pinned, how long its durable position has been where
+     * it is, in milliseconds. Chains that are not pinned are absent.
+     *
+     * <p>Reported alongside the distance rather than folded into it because the two are different
+     * questions and each is useless without the other. The distance cannot say a frontier has stopped - it
+     * reads zero both for a chain held back by pending changes and for one keeping up - and the duration
+     * cannot say which of the two stalls is happening. Only one of them is in the unit the consequence is
+     * measured in: what a pinned position races is a retention window, kept in time.
+     */
+    void pinned(Map<String, Long> millisByChain);
+
+    /**
      * A gauge nothing reads. This is for a sink whose readings have nowhere to go - one driven outside a
      * running job - and never a way to opt a real sink out: a reading no one takes is the state this whole
      * seam exists to end.
      */
     static FrontierGauge none() {
-        return gapsByChain -> { };
+        return new FrontierGauge() {
+
+            @Override
+            public void trailing(Map<String, Long> gapsByChain) {
+            }
+
+            @Override
+            public void pinned(Map<String, Long> millisByChain) {
+            }
+        };
     }
 }

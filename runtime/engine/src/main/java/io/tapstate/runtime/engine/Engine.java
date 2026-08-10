@@ -28,6 +28,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
 
 /**
  * The data-plane execution engine: the lifecycle actuator that maps a pipeline's lifecycle to Jet
@@ -229,22 +230,49 @@ public final class Engine {
      * frontier-lag alarm's blind spot rather than its quiet state.
      */
     public Map<String, Long> frontierGaps(String pipelineId) {
+        return byChain(pipelineId, JetFrontierGauge::chainOf);
+    }
+
+    /**
+     * How long each chain of the pipeline has had its durable position pinned where it is, in
+     * milliseconds, keyed by chain; empty when it has no live job and for a job whose chains are not
+     * pinned.
+     *
+     * <p>This is what says a frontier has stopped at all. The distance beside it reads zero for a chain
+     * held back by pending changes upstream and zero again for one keeping up, so on its own it cannot
+     * raise anything; read together they say a chain is pinned, for how long, and which of the two pins
+     * it is. The duration is also the one in the unit the consequence is measured in — a pinned position
+     * is racing the source's retention window, and that window is kept in time, not in positions.
+     *
+     * <p>A chain reported by more than one sink is kept at its longest reading, for the same reason a
+     * distance is kept at its widest: the pipeline is only as unpinned as its most stuck sink.
+     */
+    public Map<String, Long> frontierStalls(String pipelineId) {
+        return byChain(pipelineId, JetFrontierGauge::stalledChainOf);
+    }
+
+    /**
+     * The pipeline's per-chain readings whose metric names {@code chainOf} recognises, each kept at its
+     * highest across every sink that reported it. A metric name it does not recognise is skipped, so the
+     * two readings that share this shape stay separate despite riding the same collection.
+     */
+    private Map<String, Long> byChain(String pipelineId, Function<String, String> chainOf) {
         Job job = liveJob(pipelineId);
         if (job == null) {
             return Map.of();
         }
         JobMetrics collected = job.getMetrics();
-        Map<String, Long> widest = new HashMap<>();
+        Map<String, Long> highest = new HashMap<>();
         for (String metric : collected.metrics()) {
-            String chain = JetFrontierGauge.chainOf(metric);
+            String chain = chainOf.apply(metric);
             if (chain == null) {
                 continue;
             }
             for (Measurement measurement : collected.get(metric)) {
-                widest.merge(chain, measurement.value(), Math::max);
+                highest.merge(chain, measurement.value(), Math::max);
             }
         }
-        return widest;
+        return highest;
     }
 
     /**

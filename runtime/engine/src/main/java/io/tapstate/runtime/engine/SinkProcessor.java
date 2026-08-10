@@ -255,6 +255,7 @@ public final class SinkProcessor extends AbstractProcessor {
      */
     private void reportTrailing() {
         gauge.trailing(frontier.gaps());
+        gauge.pinned(frontier.stalls());
     }
 
     /** What this batch contributes to the frontier, empty when no frontier is tracked. */

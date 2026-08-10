@@ -8,7 +8,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.Objects;
 import java.util.TreeMap;
+import java.util.function.LongSupplier;
 
 /**
  * The frontier of a sink fed by an assembly of several chains: per chain, the highest position it has
@@ -50,6 +52,12 @@ final class SettledFloor implements SinkFrontier {
     // Per chain: the newest bound the engine combined across every queue, and the last position acked.
     private final Map<String, Long> boundByChain = new HashMap<>();
     private final Map<String, Long> ackedByChain = new HashMap<>();
+    // Per chain: when its durable position last moved, or when the chain was first seen where it never
+    // has. Wall clock, because what is measured against it is a log retention, which is kept in the same
+    // time - and because a chain that is pinned is pinned precisely when nothing is happening to it, so a
+    // measure drawn from the events themselves would stop moving exactly when it needed to move.
+    private final Map<String, Long> sinceByChain = new HashMap<>();
+    private final LongSupplier clock;
 
     /**
      * A frontier over the chains {@code axes} numbers. A null numbering means the graph was built without
@@ -58,6 +66,15 @@ final class SettledFloor implements SinkFrontier {
      * would ack positions whose changes are still in flight.
      */
     SettledFloor(ChainAxes axes, int maxEntriesPerChain) {
+        this(axes, maxEntriesPerChain, System::currentTimeMillis);
+    }
+
+    /**
+     * The same frontier reading {@code clock} for how long a chain has been pinned. The clock is only ever
+     * another one in a test: this is built on the member that runs the vertex, so nothing here travels on
+     * the graph and the supplier does not have to survive being serialized with it.
+     */
+    SettledFloor(ChainAxes axes, int maxEntriesPerChain, LongSupplier clock) {
         if (maxEntriesPerChain < 2) {
             throw new IllegalArgumentException(
                     "a chain must be able to hold its lowest and its highest position, got "
@@ -65,6 +82,7 @@ final class SettledFloor implements SinkFrontier {
         }
         this.axes = axes;
         this.maxEntriesPerChain = maxEntriesPerChain;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -102,6 +120,7 @@ final class SettledFloor implements SinkFrontier {
             if (entries.size() > maxEntriesPerChain) {
                 thin(entries);
             }
+            firstSeen(entry.chain());
             advance(entry.chain(), ack);
         }
     }
@@ -113,6 +132,7 @@ final class SettledFloor implements SinkFrontier {
         }
         String chain = axes.chainOn(bound.key());
         boundByChain.put(chain, bound.timestamp());
+        firstSeen(chain);
         advance(chain, ack);
     }
 
@@ -136,6 +156,61 @@ final class SettledFloor implements SinkFrontier {
             }
         });
         return gaps;
+    }
+
+    /**
+     * How long each chain's durable position has been pinned where it is, in milliseconds, for the chains
+     * that are pinned; the rest are absent.
+     *
+     * <p>This is the reading that says a frontier has stopped at all, and it is needed because the
+     * distance does not say so: a chain held back by changes still pending upstream sits exactly on its
+     * bound and reports a distance of zero, which is the same thing a chain keeping up reports. Together
+     * the two are a diagnosis - how long says something is pinned, the distance says which of the two
+     * pins it is and therefore which end to work on.
+     *
+     * <p>A chain is pinned when it is holding something it cannot ack: either positions settled above a
+     * bound that has stopped climbing, or a bound that climbed over positions it was never given. A chain
+     * holding neither is absent rather than zero, and that is the whole of what keeps this from firing on
+     * every quiet pipeline - a chain that acked everything it had is not pinned by having then gone quiet,
+     * and the age of its last advance says nothing about a retention window.
+     *
+     * <p>A chain that has never advanced is measured from when it was first seen. It has no advance to
+     * measure from and it is the worst case rather than an edge one: a durable position that never left
+     * where the run started is what burns a whole retention window, and it is what a pipeline whose parent
+     * rows never arrive looks like from here.
+     */
+    @Override
+    public Map<String, Long> stalls() {
+        long now = clock.getAsLong();
+        Map<String, Long> stalls = new HashMap<>();
+        sinceByChain.forEach((chain, since) -> {
+            if (pinned(chain)) {
+                stalls.put(chain, now - since);
+            }
+        });
+        return stalls;
+    }
+
+    /**
+     * Whether the chain is holding something its durable position cannot yet cover. The two ways it can be
+     * are read separately because they are separate conditions, not two views of one: entries settled above
+     * the bound are what a chain held back by pending changes accumulates, while a bound above what was
+     * acked is what a chain starved of positions accumulates, and a chain in the second state holds no
+     * entries at all - they were acked and cleared before its bound ran on past them.
+     */
+    private boolean pinned(String chain) {
+        NavigableMap<Long, ChainPosition> entries = settledByChain.get(chain);
+        if (entries != null && !entries.isEmpty()) {
+            return true;
+        }
+        Long bound = boundByChain.get(chain);
+        Long acked = ackedByChain.get(chain);
+        return bound != null && acked != null && bound > acked;
+    }
+
+    /** Starts the clock on a chain the first time anything is heard of it, and never restarts it. */
+    private void firstSeen(String chain) {
+        sinceByChain.putIfAbsent(chain, clock.getAsLong());
     }
 
     /** How many settled entries this chain still holds - the capacity line the thinning keeps. */
@@ -166,6 +241,11 @@ final class SettledFloor implements SinkFrontier {
             return;
         }
         ackedByChain.put(chain, reached.getKey());
+        // The durable position moved, so however long it had been where it was is over. Measured from
+        // here rather than from the first sight of the chain: a chain advancing steadily under load has
+        // had something outstanding since its first batch, and a measure that never restarted would climb
+        // straight through any threshold while nothing at all was wrong with it.
+        sinceByChain.put(chain, clock.getAsLong());
         ack.advance(chain, reached.getValue());
         entries.headMap(reached.getKey(), true).clear();
     }

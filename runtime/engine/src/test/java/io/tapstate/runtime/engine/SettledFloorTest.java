@@ -8,6 +8,7 @@ import io.tapstate.runtime.engine.SinkFrontier.ChainEntry;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -300,6 +301,136 @@ class SettledFloorTest {
         assertThat(floor.gaps()).containsOnly(entry("orders", 0L), entry("lines", 7L));
     }
 
+    @Test
+    void reports_how_long_a_chain_has_been_held_short_of_its_bound() {
+        RecordingAck acked = new RecordingAck();
+        Ticking clock = new Ticking(1_000);
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN, clock);
+
+        floor.settled(entries("orders", 1, 2, 3), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        clock.advance(30_000);
+
+        // Two entries sit settled above a bound that has stopped climbing, and the durable position has
+        // been pinned there for half a minute. The distance says nothing about this - it reads zero for a
+        // frontier its bound is holding back, the same as for one keeping up - so how long it has been
+        // held is the only reading that says the pin is happening at all.
+        assertThat(floor.stalls()).containsExactly(entry("orders", 30_000L));
+    }
+
+    @Test
+    void reports_nothing_for_a_chain_that_has_caught_up_with_its_bound() {
+        RecordingAck acked = new RecordingAck();
+        Ticking clock = new Ticking(1_000);
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN, clock);
+
+        floor.settled(entries("orders", 1, 2, 3), acked);
+        floor.bound(boundAt("orders", 3), acked);
+        clock.advance(86_400_000);
+
+        // The chain acked everything it had and holds nothing its bound is keeping from it. A quiet day
+        // that follows is a quiet day, not a pin: nothing is being kept from the durable position, so
+        // there is nothing whose age could matter. Measuring from the last advance regardless would put
+        // every idle pipeline over any threshold worth setting, which is the alarm meaning nothing.
+        assertThat(floor.stalls()).isEmpty();
+    }
+
+    @Test
+    void measures_from_the_last_advance_rather_than_from_the_beginning() {
+        RecordingAck acked = new RecordingAck();
+        Ticking clock = new Ticking(1_000);
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN, clock);
+
+        floor.settled(entries("orders", 1, 2, 3), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        clock.advance(50_000);
+        floor.bound(boundAt("orders", 2), acked);
+        clock.advance(7_000);
+
+        // The frontier did advance, to 2, and what is being asked is how long it has been stuck since -
+        // not how long this chain has had something outstanding, which has been true from the first
+        // batch. A measure taken from the beginning would answer 57 seconds here and would go on climbing
+        // through every advance, so a chain advancing steadily under load would cross any threshold.
+        assertThat(floor.stalls()).containsExactly(entry("orders", 7_000L));
+    }
+
+    @Test
+    void does_not_restart_the_measure_when_traffic_arrives_that_changes_nothing() {
+        RecordingAck acked = new RecordingAck();
+        Ticking clock = new Ticking(1_000);
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN, clock);
+
+        floor.settled(entries("orders", 1, 2, 3), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        clock.advance(40_000);
+        floor.settled(entries("orders", 4), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        clock.advance(20_000);
+
+        // Changes and bounds go on arriving all through a stall - that is what being held back by pending
+        // changes looks like from here, not silence - and none of them moved the durable position. Only an
+        // advance restarts this, so anything that restarted it on arrival instead would report a minute of
+        // pinning as twenty seconds, and would reset again on the next batch, forever.
+        assertThat(floor.stalls()).containsExactly(entry("orders", 60_000L));
+    }
+
+    @Test
+    void measures_a_chain_that_has_never_advanced_from_when_it_was_first_seen() {
+        RecordingAck acked = new RecordingAck();
+        Ticking clock = new Ticking(1_000);
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN, clock);
+
+        floor.settled(entries("orders", 5, 6), acked);
+        clock.advance(20_000);
+
+        // No bound ever arrived, so this chain has acked nothing and there is no advance to measure from.
+        // It is also the worst case rather than an edge one - a chain pinned at the position it started
+        // from burns the whole retention window, and it is exactly what a pipeline whose parent rows never
+        // arrive looks like. Measuring only from an advance would report nothing at all here.
+        assertThat(floor.stalls()).containsExactly(entry("orders", 20_000L));
+    }
+
+    @Test
+    void reports_a_chain_starved_of_positions_as_held_too() {
+        RecordingAck acked = new RecordingAck();
+        Ticking clock = new Ticking(1_000);
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN, clock);
+
+        floor.settled(entries("orders", 1), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        floor.bound(boundAt("orders", 40), acked);
+        clock.advance(12_000);
+
+        // Nothing is settled above the bound here - the entry was acked and cleared - and the pin is real
+        // all the same: the bound climbed over positions the sink was never given, so the durable position
+        // sits at 1 while the chain is covered to 40. Reading only what is held above the bound would call
+        // this chain caught up, and it is the other of the two stalls, worked on from the opposite end.
+        assertThat(floor.stalls()).containsExactly(entry("orders", 12_000L));
+    }
+
+    @Test
+    void measures_each_chain_from_its_own_last_advance() {
+        RecordingAck acked = new RecordingAck();
+        Ticking clock = new Ticking(1_000);
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN, clock);
+
+        floor.settled(entries("orders", 1, 2), acked);
+        floor.settled(entries("lines", 1, 2, 3), acked);
+        floor.bound(boundAt("orders", 1), acked);
+        floor.bound(boundAt("lines", 1), acked);
+        clock.advance(9_000);
+        // Both chains are still holding something above their bound after this - lines advanced to 2 and
+        // still holds 3. A chain left with nothing above its bound would be caught up rather than pinned
+        // and would report nothing, which is a different case and is covered on its own.
+        floor.bound(boundAt("lines", 2), acked);
+        clock.advance(4_000);
+
+        // One chain pinned for thirteen seconds while another advanced four seconds ago. A single measure
+        // over the two would be neither, and it is the pinned one that decides whether a retention window
+        // is being burned - an average with a healthy chain is how it stays invisible.
+        assertThat(floor.stalls()).containsOnly(entry("orders", 13_000L), entry("lines", 4_000L));
+    }
+
     /** The entries a batch of changes on {@code chain} contributes, one per ring sequence. */
     private static List<ChainEntry> entries(String chain, int... seqs) {
         List<ChainEntry> entries = new ArrayList<>();
@@ -319,6 +450,30 @@ class SettledFloorTest {
     /** The bound the engine combined across every input queue for {@code chain}, at ring sequence {@code seq}. */
     private static Watermark boundAt(String chain, int seq) {
         return new Watermark(FrontierOrders.pack(chain, new SourceOrder(1, seq)), AXES.axisOf(chain));
+    }
+
+    /**
+     * A clock the test moves itself. Wall-clock time is what a pin is measured in - it is racing a log
+     * retention, which is measured in the same time - so a durable position's age cannot be asserted
+     * against a real clock without the test either sleeping or reading whatever the machine happened to
+     * take.
+     */
+    private static final class Ticking implements LongSupplier {
+
+        private long millis;
+
+        private Ticking(long millis) {
+            this.millis = millis;
+        }
+
+        private void advance(long by) {
+            millis += by;
+        }
+
+        @Override
+        public long getAsLong() {
+            return millis;
+        }
     }
 
     /** Records what was acked, as {@code chain=token}. */

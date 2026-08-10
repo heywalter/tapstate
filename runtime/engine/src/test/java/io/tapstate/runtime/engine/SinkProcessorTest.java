@@ -472,6 +472,45 @@ class SinkProcessorTest {
         assertThat(gauge.reported).isNotEmpty().allMatch(Map::isEmpty);
     }
 
+    @Test
+    void reports_a_pinned_chain_alongside_the_distance_it_is_pinned_at() throws Exception {
+        RecordingGauge gauge = new RecordingGauge();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+        SinkProcessor processor =
+                init(new SinkProcessor(new RecordingWriter(), new RecordingAck(), floor, 1, 1, gauge));
+
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2"), at("orders", "p3")));
+        pump(processor, inbox);
+        processor.tryProcessWatermark(boundAt("orders", 1));
+
+        // Both readings are taken on the same passes, and this is the case that shows why both are needed:
+        // the chain is held back by a bound that stopped climbing, so its distance is zero - the same
+        // number a chain keeping up reports - while it is pinned all the same. Taking only the distance
+        // here reports a healthy sink.
+        // Which chain is named is the claim; how many milliseconds it has been pinned is a real clock's
+        // answer here and belongs to the frontier's own tests, where the clock is the test's to move.
+        assertThat(gauge.reported).last().isEqualTo(Map.of("orders", 0L));
+        assertThat(gauge.pinned.get(gauge.pinned.size() - 1)).containsOnlyKeys("orders");
+    }
+
+    @Test
+    void reports_no_chain_as_pinned_for_a_sink_fed_by_one_chain_in_its_own_order() throws Exception {
+        RecordingGauge gauge = new RecordingGauge();
+        SinkProcessor processor = init(new SinkProcessor(
+                new RecordingWriter(), new RecordingAck(), new ContiguousPrefix(), 1, 1, gauge));
+
+        TestInbox inbox = new TestInbox();
+        inbox.addAll(List.of(at("orders", "p1"), at("orders", "p2")));
+        pump(processor, inbox);
+        processor.tryProcessWatermark(boundAt("orders", 2));
+
+        // That frontier holds back one position and never accumulates, so nothing there can age into a
+        // retention window. Readings were taken and every one was empty, which is the claim - not that
+        // this sink was never asked.
+        assertThat(gauge.pinned).isNotEmpty().allMatch(Map::isEmpty);
+    }
+
     /** The bound the engine combined across every input queue for {@code chain}, at ring sequence {@code seq}. */
     private static Watermark boundAt(String chain, int seq) {
         return new Watermark(FrontierOrders.pack(chain, new SourceOrder(1, seq)), AXES.axisOf(chain));
@@ -568,10 +607,16 @@ class SinkProcessorTest {
     /** Records every reading of how far each chain's frontier trails its bound, in the order taken. */
     private static final class RecordingGauge implements FrontierGauge {
         private final List<Map<String, Long>> reported = new ArrayList<>();
+        private final List<Map<String, Long>> pinned = new ArrayList<>();
 
         @Override
         public void trailing(Map<String, Long> gapsByChain) {
             reported.add(Map.copyOf(gapsByChain));
+        }
+
+        @Override
+        public void pinned(Map<String, Long> millisByChain) {
+            pinned.add(Map.copyOf(millisByChain));
         }
     }
 

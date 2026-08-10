@@ -81,4 +81,21 @@ final class ContiguousPrefix implements SinkFrontier {
     public Map<String, Long> gaps() {
         return Map.of();
     }
+
+    /**
+     * Reports no chain as pinned. What this frontier holds back is one position and never more: a position
+     * is acked as soon as a strictly higher one settles, so the durable position trails the newest change
+     * by exactly one however long a run lasts. Nothing accumulates here, so there is no pin whose age could
+     * grow into a retention window - which is the same structural reason there is no distance to report.
+     *
+     * <p>What this does not cover, and does not claim to: a chain that goes quiet leaves its last position
+     * open, and that one position ages for as long as the quiet lasts. It is one position behind the head
+     * rather than anywhere near the tail, so it is not the burn this reading is watched for; the remedy if
+     * it ever matters is an idle ack, which is a change to what this frontier does rather than a number it
+     * could report.
+     */
+    @Override
+    public Map<String, Long> stalls() {
+        return Map.of();
+    }
 }
