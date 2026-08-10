@@ -5,8 +5,10 @@ import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import io.tapstate.adapters.transform.MapSpec;
 import io.tapstate.adapters.transform.StatelessTransforms;
+import io.tapstate.core.model.FromClause;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.ServeBlock;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
@@ -24,10 +26,12 @@ import io.tapstate.spi.sink.WriteMode;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.StorePort;
 import io.tapstate.spi.transform.TransformPort;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Builds the Jet topology a pipeline runs from its stored artifact. It loads the pipeline and the source and
@@ -67,9 +71,61 @@ final class StoreBackedDagSource implements DagSource {
     @Override
     public DAG dagFor(String pipelineId) {
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
-        TargetTable target = targetModelResolver.resolve(pipeline).orElse(null);
+        Map<String, String> sourceIdByTable = sourceIdByTable(pipeline);
+        TargetModelResolver.ResolvedTarget resolved =
+                targetModelResolver.resolve(servedSourceId(pipeline, sourceIdByTable));
         return PipelineDagBuilder.build(
-                pipeline, bindings(sourceIdByTable(pipeline), target), sinkAckBinding(pipeline, pipelineId));
+                pipeline,
+                bindings(sourceIdByTable, resolved.target(), resolved.sourceTable()),
+                sinkAckBinding(pipeline, pipelineId));
+    }
+
+    /**
+     * The source whose rows reach the serve sinks: the serve block's {@code from:} walked back through the
+     * transform chain to the source feeding it. A sink's target model and its rename rules key off that
+     * source's table, so what a sink is bound to is the model of the rows that actually arrive there.
+     *
+     * <p>A reference that does not narrow to exactly one source - a regex spanning the universe, a union
+     * merging several, a token naming neither a source nor a step - falls back to the pipeline's first
+     * source, which is the whole of it at the single-source L1 shape.
+     */
+    static String servedSourceId(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
+        String served = pipeline.serve() instanceof ServeBlock.Inline serve
+                ? sourceBehind(serve.from(), pipeline, sourceIdByTable, new HashSet<>())
+                : null;
+        return served != null ? served : pipeline.sources().getFirst();
+    }
+
+    /** The single source a reference reaches, or null when it names several or none. */
+    private static String sourceBehind(FromRef ref, PipelineResource pipeline,
+            Map<String, String> sourceIdByTable, Set<String> visited) {
+        if (!(ref instanceof FromRef.Literal literal)) {
+            return null;
+        }
+        String key = sourceIdByTable.getOrDefault(literal.ref(), literal.ref());
+        if (pipeline.sources().contains(key)) {
+            return key;
+        }
+        // Not a source, so it is a step id to follow upstream; `visited` stops a malformed cycle here
+        // rather than in a stack overflow, since the reference graph is validated before a pipeline is stored.
+        if (!visited.add(key) || pipeline.transforms() == null) {
+            return null;
+        }
+        for (Step step : pipeline.transforms()) {
+            if (step.id().equals(key)) {
+                return sourceBehind(step.from(), pipeline, sourceIdByTable, visited);
+            }
+        }
+        return null;
+    }
+
+    /** The single source a step's upstream wiring reaches; an alias map or a merge of several reaches none. */
+    private static String sourceBehind(FromClause from, PipelineResource pipeline,
+            Map<String, String> sourceIdByTable, Set<String> visited) {
+        if (!(from instanceof FromClause.Flow flow) || flow.refs().size() != 1) {
+            return null;
+        }
+        return sourceBehind(flow.refs().getFirst(), pipeline, sourceIdByTable, visited);
     }
 
     /**
@@ -111,11 +167,11 @@ final class StoreBackedDagSource implements DagSource {
      * builder walks the topology; only the vertex suppliers they return travel onto the DAG, so they may
      * reach the store freely while what they produce stays serializable.
      */
-    private DagBindings bindings(Map<String, String> sourceIdByTable, TargetTable target) {
+    private DagBindings bindings(Map<String, String> sourceIdByTable, TargetTable target, String sourceTable) {
         return new DagBindings(
                 this::sourceVertex,
                 StoreBackedDagSource::transformPort,
-                element -> sinkWriter(element, target),
+                element -> sinkWriter(element, TargetModelResolver.rename(target, sourceTable, element.rename())),
                 ref -> upstreams(ref, sourceIdByTable));
     }
 

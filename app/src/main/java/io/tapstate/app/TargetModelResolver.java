@@ -1,7 +1,8 @@
 package io.tapstate.app;
 
-import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.RenameSpec;
 import io.tapstate.core.model.SourceResource;
+import io.tapstate.core.model.TableRename;
 import io.tapstate.spi.sink.TargetField;
 import io.tapstate.spi.sink.TargetTable;
 import io.tapstate.spi.store.DiscoveredSourceModel;
@@ -17,11 +18,11 @@ import java.util.Optional;
  * Resolves a sink's write-side target model from the source model discovery persisted for a connection. The
  * table structure a sink creates and the key an upsert matches on come from the upstream source's discovered
  * model, not from the events flowing through - so a target table is built by reading the persisted model for
- * the pipeline's source and mapping the discovered {@link SourceTable} onto a {@link TargetTable}.
+ * the source the sink reads and mapping the discovered {@link SourceTable} onto a {@link TargetTable}.
  *
- * <p>L1 shape: a pipeline reads a single source of a single table, so the resolved target is that table. When
- * the source's schema has never been discovered the target is absent, and the sink falls back to a bare table
- * id and lets the connector infer structure and keying.
+ * <p>L1 shape: a source reads a single table, so the resolved target is that table. When the source's schema
+ * has never been discovered the target model is absent, and the sink falls back to a bare table id and lets
+ * the connector infer structure and keying.
  */
 final class TargetModelResolver {
 
@@ -32,21 +33,25 @@ final class TargetModelResolver {
     }
 
     /**
-     * Resolves the write-side target table for a pipeline's sink from the discovered model of the source it
-     * reads: the source's single L1 table looked up in its persisted model and mapped to a target table.
-     * Empty when the source's schema was never discovered, or when the discovered model does not carry that
-     * table.
+     * Resolves the write-side target model for the source a sink reads: that source's single table looked up
+     * in its persisted model and mapped to a target table. The caller names the source, because which source
+     * feeds a sink is a topology question - resolving it here from the pipeline's source list would bind a
+     * sink to whichever source merely happens to have been discovered first.
+     *
+     * <p>The source table travels back with the model whether or not one was discovered, since sink-side
+     * rename rules key off the table name alone. {@code target} is null when that source's schema was never
+     * discovered, or when the discovered model does not carry that table; the sink then falls back to a bare
+     * table id and leaves structure and keying to the connector.
      */
-    Optional<TargetTable> resolve(PipelineResource pipeline) {
-        for (String sourceId : pipeline.sources()) {
-            SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
-            String table = SourceCaptureResolution.of(source).table();
-            Optional<SourceTable> discovered = discoveredTable(sourceId, table);
-            if (discovered.isPresent()) {
-                return Optional.of(toTargetTable(discovered.get()));
-            }
-        }
-        return Optional.empty();
+    ResolvedTarget resolve(String sourceId) {
+        SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
+        String table = SourceCaptureResolution.of(source).table();
+        return new ResolvedTarget(
+                table, discoveredTable(sourceId, table).map(TargetModelResolver::toTargetTable).orElse(null));
+    }
+
+    /** One source's table paired with the target model discovered for it, or a null model when none was. */
+    record ResolvedTarget(String sourceTable, TargetTable target) {
     }
 
     /** The named table in the source's persisted discovery model, or empty when neither is present. */
@@ -75,6 +80,19 @@ final class TargetModelResolver {
             }
         }
         return new TargetTable(source.name(), fields);
+    }
+
+    /**
+     * The target table one sync element writes: the resolved model under the name its rename gives the source
+     * table. A rename with no model behind it still names a table, so the sink is pointed at the renamed one
+     * rather than at whatever table id the first row happens to carry.
+     */
+    static TargetTable rename(TargetTable target, String sourceName, RenameSpec rename) {
+        if (rename == null) {
+            return target;
+        }
+        List<TargetField> fields = target == null ? List.of() : target.fields();
+        return new TargetTable(TableRename.apply(sourceName, rename), fields);
     }
 
     /** The discovered field a key column names; a key naming no discovered field is a broken source model. */
