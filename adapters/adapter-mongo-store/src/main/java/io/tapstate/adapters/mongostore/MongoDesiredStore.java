@@ -62,6 +62,14 @@ public final class MongoDesiredStore implements DesiredStore {
                 .into(new ArrayList<>()));
     }
 
+    @Override
+    public void delete(String pipelineId) {
+        Objects.requireNonNull(pipelineId, "pipelineId");
+        // deleteOne on a missing _id removes nothing and reports so without failing, which is the no-op
+        // an absent intent is meant to be.
+        StoreIo.run(() -> collection.deleteOne(new Document("_id", pipelineId)));
+    }
+
     /** Maps a desired state to its stored document: the pipeline id as {@code _id}, the rest as fields. */
     static Document toDocument(DesiredState desired) {
         return new Document("_id", desired.pipelineId())

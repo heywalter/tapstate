@@ -20,6 +20,11 @@ final class InMemoryDesiredStore implements DesiredStore {
     }
 
     void remove(String pipelineId) {
+        delete(pipelineId);
+    }
+
+    @Override
+    public void delete(String pipelineId) {
         docs.remove(pipelineId);
     }
 

@@ -87,6 +87,35 @@ class MongoDesiredStoreIT {
         });
     }
 
+    @Test
+    void aDeletedIntentIsGoneFromTheReconcileSetAndNotJustFromTheRead() {
+        withStore((store, collection) -> {
+            store.save(new DesiredState("orders_sync", PipelineState.RUNNING, "rev-1"));
+            store.save(new DesiredState("payments_sync", PipelineState.RUNNING, "rev-1"));
+
+            store.delete("orders_sync");
+
+            assertThat(store.read("orders_sync")).isEmpty();
+            // pipelineIds is what the converge side reconciles, so an id surviving here would keep a
+            // removed pipeline in the reconcile loop even though nothing can be read for it.
+            assertThat(store.pipelineIds()).containsExactly("payments_sync");
+            assertThat(collection.countDocuments()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void deletingAnAbsentPipelineIsANoOpAndLeavesTheOthersAlone() {
+        withStore((store, collection) -> {
+            store.save(new DesiredState("orders_sync", PipelineState.RUNNING, "rev-1"));
+
+            store.delete("never_existed");
+            store.delete("orders_sync");
+            store.delete("orders_sync");
+
+            assertThat(collection.countDocuments()).isZero();
+        });
+    }
+
     private interface StoreTest {
         void run(MongoDesiredStore store, MongoCollection<Document> collection);
     }

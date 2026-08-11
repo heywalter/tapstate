@@ -9,8 +9,11 @@ import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.Resource;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.DesiredStore;
+import io.tapstate.spi.store.ObservationStore;
+import io.tapstate.spi.store.SrsMetaStore;
 import io.tapstate.spi.store.StateStore;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -40,6 +43,13 @@ import java.util.Set;
  * is checked and the document removed as one indivisible step — a writer holding a stale version can
  * never remove what it did not see. The precondition is mandatory here, unlike on apply: a delete
  * carries an id and nothing else, so without it the caller is discarding a version it never looked at.
+ *
+ * <p>Removing a pipeline reclaims the bookkeeping that belongs to that pipeline alone — its desired
+ * intent, its checkpoint, its observation — and detaches its cursor from every shared mining chain that
+ * carries one. Nothing that another pipeline may share is touched: the chains themselves, the nest
+ * state and the target data all outlive the artifact. Detaching is not tidiness — a departed consumer's
+ * cursor is folded into two independent minimums that would otherwise pin the shared chain's durable
+ * frontier and cdc write headroom permanently, stalling every other pipeline on it without an error.
  */
 public final class ArtifactMutationService {
 
@@ -54,17 +64,31 @@ public final class ArtifactMutationService {
     private final ArtifactStore store;
     private final DesiredStore desired;
     private final StateStore state;
+    private final ObservationStore observations;
+    private final SrsMetaStore srsMeta;
 
-    public ArtifactMutationService(ArtifactStore store, DesiredStore desired, StateStore state) {
+    public ArtifactMutationService(
+            ArtifactStore store,
+            DesiredStore desired,
+            StateStore state,
+            ObservationStore observations,
+            SrsMetaStore srsMeta) {
         this.store = Objects.requireNonNull(store, "store");
         this.desired = Objects.requireNonNull(desired, "desired");
         this.state = Objects.requireNonNull(state, "state");
+        this.observations = Objects.requireNonNull(observations, "observations");
+        this.srsMeta = Objects.requireNonNull(srsMeta, "srsMeta");
     }
 
     /**
      * Removes the stored artifact {@code id}, provided {@code expectedContentHash} is the version the
-     * caller read and neither refusal ground holds. {@code principal} is the identity the removal is
-     * attributed to.
+     * caller read and neither refusal ground holds, then reclaims a pipeline's dependent bookkeeping.
+     * {@code principal} is the identity the removal is attributed to.
+     *
+     * <p>A refusal happens before anything is written. A failure to reclaim happens after the artifact is
+     * already gone and is reported rather than swallowed, so the residue is visible to whoever has to
+     * clear it; it never puts the artifact back, because a removal the caller was told succeeded must not
+     * silently undo itself.
      */
     public void delete(String principal, String id, String expectedContentHash) {
         Objects.requireNonNull(principal, "principal");
@@ -90,6 +114,55 @@ public final class ArtifactMutationService {
             case NOT_FOUND -> throw error(ArtifactError.NOT_FOUND, Map.of("id", id));
             case VERSION_CONFLICT -> throw error(ArtifactError.VERSION_CONFLICT, Map.of("id", id));
             default -> throw new IllegalStateException("unexpected artifact mutation outcome for delete");
+        }
+
+        if (target instanceof PipelineResource) {
+            reclaim(id);
+        }
+    }
+
+    /**
+     * Reclaims everything a removed pipeline owns. Every step is attempted even after one fails, and the
+     * failures are reported together at the end: aborting at the first would leave the untouched steps'
+     * residue behind on top of the failure, and the artifact is already gone by now so no caller can
+     * simply run the removal again to finish the job.
+     *
+     * <p>The shared chains are detached first because theirs is the only residue that harms a
+     * <em>different</em> pipeline; if the process dies mid-reclaim, the damage that has been contained is
+     * the one that was not this pipeline's alone to suffer.
+     */
+    private void reclaim(String id) {
+        List<RuntimeException> failures = new ArrayList<>();
+        attempt(failures, () -> detachFromEveryChain(id));
+        attempt(failures, () -> desired.delete(id));
+        attempt(failures, () -> state.delete(id));
+        attempt(failures, () -> observations.delete(id));
+        if (failures.isEmpty()) {
+            return;
+        }
+        RuntimeException first = failures.get(0);
+        failures.stream().skip(1).forEach(first::addSuppressed);
+        throw first;
+    }
+
+    /**
+     * Detaches the pipeline's cursor from every chain that carries one. The chains are asked which of
+     * them hold it, rather than derived from what the pipeline reads: chain identity is resolved where
+     * captures are built, and a cursor left behind by an earlier shape of the pipeline would be invisible
+     * to any derivation from its current one.
+     */
+    private void detachFromEveryChain(String id) {
+        for (String miningChainId : srsMeta.miningChainIdsWithConsumer(id)) {
+            srsMeta.detachConsumer(miningChainId, id);
+        }
+    }
+
+    /** Runs one reclaim step, collecting a coded or runtime failure instead of ending the reclaim. */
+    private static void attempt(List<RuntimeException> failures, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException e) {
+            failures.add(e);
         }
     }
 

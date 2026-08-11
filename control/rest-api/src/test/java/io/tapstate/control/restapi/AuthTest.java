@@ -728,6 +728,11 @@ class AuthTest {
             // full-face bundle boots. The read faces themselves are proven in PipelineObservationApiTest.
             return new ObservationStore() {
                 @Override
+                public void delete(String pipelineId) {
+                    throw new UnsupportedOperationException("removal is not exercised by this double");
+                }
+
+                @Override
                 public void save(Observation observation) {
                 }
 
@@ -874,6 +879,11 @@ class AuthTest {
 
     /** An in-memory desired store, last write wins per pipeline id — enough to bring up the lifecycle service. */
     private static final class FakeDesiredStore implements DesiredStore {
+        @Override
+        public void delete(String pipelineId) {
+            throw new UnsupportedOperationException("removal is not exercised by this double");
+        }
+
         private final Map<String, DesiredState> byId = new LinkedHashMap<>();
 
         @Override

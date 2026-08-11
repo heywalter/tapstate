@@ -245,6 +245,11 @@ class PipelineLifecycleServiceTest {
         public List<String> pipelineIds() {
             return List.copyOf(byId.keySet());
         }
+
+        @Override
+        public void delete(String pipelineId) {
+            byId.remove(pipelineId);
+        }
     }
 
     /** An audit store that captures every record written through it. */

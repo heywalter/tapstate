@@ -206,6 +206,82 @@ class MongoSrsMetaStoreIT {
         });
     }
 
+    @Test
+    void detachConsumerRemovesOneCursorAndLeavesTheChainAndItsOtherConsumersByteForByte() {
+        withStore(store -> {
+            store.create(CHAIN, "7d");
+            store.advanceSourceReadOffset(CHAIN, "gtid:aaa-1:500");
+            store.setCdcStartPosition(CHAIN, "gtid:aaa-1:1");
+            store.appendSchemaVersion(CHAIN, new SchemaVersion(0, Map.of("id", "int"), 0));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L), "gtid:aaa-1:100"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("staying", Map.of("orders", 900L), "gtid:aaa-1:900"));
+
+            store.detachConsumer(CHAIN, "departing");
+
+            SrsMeta after = store.read(CHAIN).orElseThrow();
+            // The chain record outlives its consumers: it is keyed by the chain, so removing it would be
+            // cross-pipeline data loss, and everything on it that is not the departing cursor is untouched.
+            assertThat(after.consumerOffsets())
+                    .containsExactly(new ConsumerOffset("staying", Map.of("orders", 900L), "gtid:aaa-1:900"));
+            assertThat(after.sourceReadOffset()).isEqualTo("gtid:aaa-1:500");
+            assertThat(after.cdcStartPosition()).isEqualTo("gtid:aaa-1:1");
+            assertThat(after.schemaHistory()).hasSize(1);
+            assertThat(after.retention()).isEqualTo("7d");
+        });
+    }
+
+    @Test
+    void detachConsumerRemovesTheEntryOutrightRatherThanBlankingIt() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L), "gtid:aaa-1:100"));
+
+            store.detachConsumer(CHAIN, "departing");
+
+            // A cursor left present-but-empty would still be folded into the two minimums taken over every
+            // consumer, which is exactly the permanent stall a detach exists to prevent.
+            assertThat(store.read(CHAIN).orElseThrow().consumerOffsets()).isEmpty();
+            assertThat(store.miningChainIdsWithConsumer("departing")).isEmpty();
+        });
+    }
+
+    @Test
+    void miningChainIdsWithConsumerNamesEveryChainThatCarriesThatConsumerAndNoOther() {
+        withStore(store -> {
+            store.create("chain-a", null);
+            store.create("chain-b", null);
+            store.create("chain-c", null);
+            store.upsertConsumerOffset("chain-a", new ConsumerOffset("departing", Map.of(), "p-1"));
+            store.upsertConsumerOffset("chain-b", new ConsumerOffset("departing", Map.of(), "p-2"));
+            store.upsertConsumerOffset("chain-b", new ConsumerOffset("staying", Map.of(), "p-3"));
+            store.upsertConsumerOffset("chain-c", new ConsumerOffset("staying", Map.of(), "p-4"));
+
+            // Every chain it reads, not just the first: a departing consumer left on any one of them pins
+            // that chain for everyone else on it.
+            assertThat(store.miningChainIdsWithConsumer("departing"))
+                    .containsExactlyInAnyOrder("chain-a", "chain-b");
+            assertThat(store.miningChainIdsWithConsumer("never_joined")).isEmpty();
+        });
+    }
+
+    @Test
+    void detachConsumerIsIdempotentAndSilentOnAnUnseededChain() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of(), "p-1"));
+
+            // A detach states an end condition, so an absent cursor and an absent chain already satisfy it.
+            // The advancing mutators refuse an unseeded chain; refusing here would abort a removal partway
+            // and leave the consumer attached to the chains not yet reached.
+            store.detachConsumer(CHAIN, "departing");
+            store.detachConsumer(CHAIN, "departing");
+            store.detachConsumer("never_seeded", "departing");
+
+            assertThat(store.read(CHAIN).orElseThrow().consumerOffsets()).isEmpty();
+            assertThat(store.read("never_seeded")).isEmpty();
+        });
+    }
+
     /** The single consumer cursor on the test chain — the shape the per-consumer advance tests read back. */
     private static ConsumerOffset onlyConsumer(MongoSrsMetaStore store) {
         List<ConsumerOffset> cursors = store.read(CHAIN).orElseThrow().consumerOffsets();

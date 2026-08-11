@@ -16,9 +16,15 @@ import io.tapstate.core.model.ViewResource;
 import io.tapstate.core.model.SourceMode;
 import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
+import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.spi.store.ArtifactMutation;
 import io.tapstate.spi.store.ArtifactStore;
+import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.DesiredStore;
+import io.tapstate.spi.store.ObservationStore;
+import io.tapstate.spi.store.SchemaVersion;
+import io.tapstate.spi.store.SrsMeta;
+import io.tapstate.spi.store.SrsMetaStore;
 import io.tapstate.spi.store.StateStore;
 import org.junit.jupiter.api.Test;
 
@@ -39,8 +45,11 @@ class ArtifactMutationServiceTest {
     private final InMemoryArtifactStore store = new InMemoryArtifactStore();
     private final InMemoryDesiredStore desired = new InMemoryDesiredStore();
     private final InMemoryStateStore state = new InMemoryStateStore();
+    private final InMemoryObservationStore observations = new InMemoryObservationStore();
+    private final InMemorySrsMetaStore srsMeta = new InMemorySrsMetaStore();
+    private final List<String> reclaimOrder = new ArrayList<>();
     private final ArtifactMutationService service =
-            new ArtifactMutationService(store, desired, state);
+            new ArtifactMutationService(store, desired, state, observations, srsMeta);
 
     @Test
     void deletesAnyKindThroughTheOneVerbAndRemovesOnlyThatArtifact() {
@@ -190,6 +199,159 @@ class ArtifactMutationServiceTest {
         assertThat(store.get("orders")).isEmpty();
     }
 
+    @Test
+    void deletingAPipelineReclaimsItsOwnBookkeepingSharedChainsFirst() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        state.put("flow", PipelineState.STOPPED);
+        desired.put("flow", PipelineState.STOPPED);
+        observations.put("flow");
+        srsMeta.seed("chain-a", consumer("flow"), consumer("other"));
+
+        service.delete(PRINCIPAL, "flow", hash(flow));
+
+        assertThat(desired.read("flow")).isEmpty();
+        // The converge side reconciles exactly this set: an id left in it outlives the artifact and is
+        // reconciled forever against something that no longer exists.
+        assertThat(desired.pipelineIds()).doesNotContain("flow");
+        assertThat(state.read("flow")).isEmpty();
+        assertThat(observations.read("flow")).isEmpty();
+        assertThat(srsMeta.consumerIds("chain-a")).containsExactly("other");
+        // Shared first: it is the only residue that stalls a different pipeline, so a process that dies
+        // mid-reclaim has already contained the damage that was not this pipeline's alone to suffer.
+        assertThat(reclaimOrder).containsExactly("srs", "desired", "state", "observation");
+    }
+
+    @Test
+    void deletingAPipelineDetachesItFromEveryChainAndNeverTouchesAnotherConsumerOrTheChain() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        ConsumerOffset survivor = consumer("other");
+        srsMeta.seed("chain-a", consumer("flow"), survivor);
+        srsMeta.seed("chain-b", consumer("flow"));
+        srsMeta.seed("chain-c", survivor);
+
+        service.delete(PRINCIPAL, "flow", hash(flow));
+
+        // Every chain it consumed, not just the first one found.
+        assertThat(srsMeta.consumerIds("chain-a")).containsExactly("other");
+        assertThat(srsMeta.consumerIds("chain-b")).isEmpty();
+        assertThat(srsMeta.consumerIds("chain-c")).containsExactly("other");
+        // The chain record itself outlives its last consumer: it is keyed by the chain, not the pipeline,
+        // and removing it would be cross-pipeline data loss dressed up as tidying.
+        assertThat(srsMeta.read("chain-b")).isPresent();
+        // The surviving consumer's cursor is not merely present but unchanged: a detach that rewrote a
+        // neighbour's offsets would move the two minimums it is folded into.
+        assertThat(srsMeta.consumerOffset("chain-a", "other")).isEqualTo(survivor);
+    }
+
+    @Test
+    void deletingANonPipelineReclaimsNothingEvenWhenDocumentsShareItsId() {
+        SourceResource orders = source("orders");
+        store.save(orders);
+        // Lifecycle documents are a pipeline's bookkeeping; ones filed under a source's id belong to
+        // something else entirely and are not this removal's to reclaim.
+        state.put("orders", PipelineState.STOPPED);
+        desired.put("orders", PipelineState.STOPPED);
+        observations.put("orders");
+        srsMeta.seed("chain-a", consumer("orders"));
+
+        service.delete(PRINCIPAL, "orders", hash(orders));
+
+        assertThat(store.get("orders")).isEmpty();
+        assertThat(desired.read("orders")).isPresent();
+        assertThat(state.read("orders")).isPresent();
+        assertThat(observations.read("orders")).isPresent();
+        assertThat(srsMeta.consumerIds("chain-a")).containsExactly("orders");
+    }
+
+    @Test
+    void aRefusedDeleteReclaimsNothing() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        state.put("flow", PipelineState.RUNNING);
+        desired.put("flow", PipelineState.STOPPED);
+        observations.put("flow");
+        srsMeta.seed("chain-a", consumer("flow"));
+
+        assertArtifactError(
+                () -> service.delete(PRINCIPAL, "flow", hash(flow)),
+                ArtifactError.PIPELINE_NOT_STOPPED,
+                Map.of("id", "flow", "actual", "RUNNING", "desired", "STOPPED"));
+
+        // A refusal is judged before anything is written, so the pipeline's bookkeeping is as intact as
+        // the artifact: reclaiming here would strip a live pipeline of the state it is still running on.
+        assertThat(desired.read("flow")).isPresent();
+        assertThat(state.read("flow")).isPresent();
+        assertThat(observations.read("flow")).isPresent();
+        assertThat(srsMeta.consumerIds("chain-a")).containsExactly("flow");
+        assertThat(reclaimOrder).isEmpty();
+    }
+
+    @Test
+    void aStaleHashDeleteOfAPipelineRefusesWithoutReclaimingAnything() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        state.put("flow", PipelineState.STOPPED);
+        desired.put("flow", PipelineState.STOPPED);
+        observations.put("flow");
+        srsMeta.seed("chain-a", consumer("flow"));
+
+        assertArtifactError(
+                () -> service.delete(PRINCIPAL, "flow", "0".repeat(64)),
+                ArtifactError.VERSION_CONFLICT,
+                Map.of("id", "flow"));
+
+        // Both gates passed here, so the only thing that refused was the store's own conditional delete —
+        // someone else changed the pipeline while this caller held an old version. It still exists, so
+        // reclaiming would strip a live pipeline of its state on the strength of a delete that failed.
+        assertThat(store.get("flow")).isPresent();
+        assertThat(desired.read("flow")).isPresent();
+        assertThat(state.read("flow")).isPresent();
+        assertThat(observations.read("flow")).isPresent();
+        assertThat(srsMeta.consumerIds("chain-a")).containsExactly("flow");
+        assertThat(reclaimOrder).isEmpty();
+    }
+
+    @Test
+    void aReclaimFailureIsReportedWithoutPuttingTheArtifactBackOrSkippingTheRestOfTheReclaim() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        state.put("flow", PipelineState.STOPPED);
+        desired.put("flow", PipelineState.STOPPED);
+        observations.put("flow");
+        srsMeta.seed("chain-a", consumer("flow"));
+        RuntimeException ioFailure = new IllegalArgumentException("desired store is down");
+        desired.failDeleteWith(ioFailure);
+
+        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow))).isSameAs(ioFailure);
+
+        // Never resurrected: the removal did happen, and a caller told otherwise would re-apply a
+        // resource it believes it deleted.
+        assertThat(store.get("flow")).isEmpty();
+        // The residue the report is about really is left behind — otherwise this witnesses nothing.
+        assertThat(desired.read("flow")).isPresent();
+        // Never abandoned partway: the steps after the failing one still ran, so the failure costs one
+        // stale document rather than all of them — and the artifact is gone, so no retry can finish it.
+        assertThat(state.read("flow")).isEmpty();
+        assertThat(observations.read("flow")).isEmpty();
+        assertThat(srsMeta.consumerIds("chain-a")).isEmpty();
+    }
+
+    @Test
+    void everyReclaimFailureIsReportedAndNotJustTheFirst() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        RuntimeException first = new IllegalArgumentException("desired store is down");
+        RuntimeException second = new IllegalArgumentException("observation store is down");
+        desired.failDeleteWith(first);
+        observations.failDeleteWith(second);
+
+        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
+                .isSameAs(first)
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second));
+    }
+
     private static SourceResource source(String id) {
         return new SourceResource(
                 id, null, "mysql",
@@ -268,12 +430,29 @@ class ArtifactMutationServiceTest {
         }
     }
 
-    private static final class InMemoryDesiredStore implements DesiredStore {
+    private static ConsumerOffset consumer(String pipelineId) {
+        return new ConsumerOffset(pipelineId, Map.of("orders", 42L), "srcpos-7");
+    }
+
+    /** Records that a reclaim step ran, in the order the steps were taken, and fails it when armed. */
+    private void step(String name, RuntimeException failure) {
+        reclaimOrder.add(name);
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private final class InMemoryDesiredStore implements DesiredStore {
 
         private final Map<String, DesiredState> docs = new LinkedHashMap<>();
+        private RuntimeException deleteFailure;
 
         void put(String pipelineId, PipelineState target) {
             docs.put(pipelineId, new DesiredState(pipelineId, target, "0".repeat(64)));
+        }
+
+        void failDeleteWith(RuntimeException failure) {
+            this.deleteFailure = failure;
         }
 
         @Override
@@ -290,11 +469,20 @@ class ArtifactMutationServiceTest {
         public List<String> pipelineIds() {
             return new ArrayList<>(docs.keySet());
         }
+
+        @Override
+        public void delete(String pipelineId) {
+            // Fail before mutating, so an armed failure leaves the document behind — the residue
+            // the reporting is about.
+            step("desired", deleteFailure);
+            docs.remove(pipelineId);
+        }
     }
 
-    private static final class InMemoryStateStore implements StateStore {
+    private final class InMemoryStateStore implements StateStore {
 
         private final Map<String, CheckpointDoc> docs = new LinkedHashMap<>();
+        private RuntimeException deleteFailure;
 
         void put(String pipelineId, PipelineState actual) {
             docs.put(pipelineId, CheckpointDoc.initial(pipelineId, StateJson.of(actual), Instant.EPOCH));
@@ -314,6 +502,128 @@ class ArtifactMutationServiceTest {
         public CasOutcome compareAndSwap(
                 String pipelineId, long expectedEpoch, String nextStateJson, Instant touchTime) {
             throw new UnsupportedOperationException("the delete gate never writes state");
+        }
+
+        @Override
+        public void delete(String pipelineId) {
+            // Fail before mutating, so an armed failure leaves the document behind — the residue
+            // the reporting is about.
+            step("state", deleteFailure);
+            docs.remove(pipelineId);
+        }
+    }
+
+    private final class InMemoryObservationStore implements ObservationStore {
+
+        private final Map<String, Observation> docs = new LinkedHashMap<>();
+        private RuntimeException deleteFailure;
+
+        void put(String pipelineId) {
+            docs.put(pipelineId, new Observation(
+                    pipelineId, PipelineState.STOPPED, Map.of(), Map.of(), Map.of(), null));
+        }
+
+        void failDeleteWith(RuntimeException failure) {
+            this.deleteFailure = failure;
+        }
+
+        @Override
+        public void save(Observation observation) {
+            docs.put(observation.pipelineId(), observation);
+        }
+
+        @Override
+        public Optional<Observation> read(String pipelineId) {
+            return Optional.ofNullable(docs.get(pipelineId));
+        }
+
+        @Override
+        public void delete(String pipelineId) {
+            // Fail before mutating, so an armed failure leaves the document behind — the residue
+            // the reporting is about.
+            step("observation", deleteFailure);
+            docs.remove(pipelineId);
+        }
+    }
+
+    private final class InMemorySrsMetaStore implements SrsMetaStore {
+
+        private final Map<String, SrsMeta> chains = new LinkedHashMap<>();
+
+        void seed(String miningChainId, ConsumerOffset... consumers) {
+            chains.put(miningChainId,
+                    new SrsMeta(miningChainId, "srcpos-1", List.of(consumers), null, List.of(), null));
+        }
+
+        List<String> consumerIds(String miningChainId) {
+            return chains.get(miningChainId).consumerOffsets().stream().map(ConsumerOffset::pipelineId).toList();
+        }
+
+        ConsumerOffset consumerOffset(String miningChainId, String pipelineId) {
+            return chains.get(miningChainId).consumerOffsets().stream()
+                    .filter(offset -> offset.pipelineId().equals(pipelineId))
+                    .findFirst()
+                    .orElseThrow();
+        }
+
+        @Override
+        public Optional<SrsMeta> read(String miningChainId) {
+            return Optional.ofNullable(chains.get(miningChainId));
+        }
+
+        @Override
+        public List<String> miningChainIdsWithConsumer(String pipelineId) {
+            return chains.entrySet().stream()
+                    .filter(entry -> entry.getValue().consumerOffsets().stream()
+                            .anyMatch(offset -> offset.pipelineId().equals(pipelineId)))
+                    .map(Map.Entry::getKey)
+                    .toList();
+        }
+
+        @Override
+        public void detachConsumer(String miningChainId, String pipelineId) {
+            step("srs", null);
+            SrsMeta chain = chains.get(miningChainId);
+            List<ConsumerOffset> kept = chain.consumerOffsets().stream()
+                    .filter(offset -> !offset.pipelineId().equals(pipelineId))
+                    .toList();
+            chains.put(miningChainId, new SrsMeta(chain.miningChainId(), chain.sourceReadOffset(), kept,
+                    chain.cdcStartPosition(), chain.schemaHistory(), chain.retention()));
+        }
+
+        @Override
+        public void create(String miningChainId, String retention) {
+            throw new UnsupportedOperationException("the delete path never seeds a chain");
+        }
+
+        @Override
+        public void advanceSourceReadOffset(String miningChainId, String sourceReadOffset) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
+        }
+
+        @Override
+        public void upsertConsumerOffset(String miningChainId, ConsumerOffset offset) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
+        }
+
+        @Override
+        public void advanceConsumerReadSeq(String miningChainId, String pipelineId, String table, long lastReadSeq) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
+        }
+
+        @Override
+        public void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
+        }
+
+        @Override
+        public void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
+        }
+
+        @Override
+        public void appendSchemaVersion(String miningChainId, SchemaVersion version) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
         }
     }
 }

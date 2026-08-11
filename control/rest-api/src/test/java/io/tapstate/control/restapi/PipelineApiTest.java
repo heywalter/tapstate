@@ -551,6 +551,11 @@ class PipelineApiTest {
             // controller up so the full-face bundle boots. The read faces are proven in PipelineObservationApiTest.
             return new ObservationStore() {
                 @Override
+                public void delete(String pipelineId) {
+                    throw new UnsupportedOperationException("removal is not exercised by this double");
+                }
+
+                @Override
                 public void save(Observation observation) {
                 }
 
@@ -623,6 +628,11 @@ class PipelineApiTest {
 
     /** An in-memory desired store, last write wins per pipeline id. */
     static final class FakeDesiredStore implements DesiredStore {
+        @Override
+        public void delete(String pipelineId) {
+            throw new UnsupportedOperationException("removal is not exercised by this double");
+        }
+
         private final Map<String, DesiredState> byId = new LinkedHashMap<>();
 
         void clear() {

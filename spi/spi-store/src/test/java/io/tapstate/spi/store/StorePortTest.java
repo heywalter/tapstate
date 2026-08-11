@@ -629,6 +629,11 @@ class StorePortTest {
                     }
                     return outcome;
                 }
+
+                @Override
+                public void delete(String pipelineId) {
+                    checkpoints.remove(pipelineId);
+                }
             };
         }
 
@@ -770,6 +775,11 @@ class StorePortTest {
                 public List<String> pipelineIds() {
                     return List.copyOf(desired.keySet());
                 }
+
+                @Override
+                public void delete(String pipelineId) {
+                    desired.remove(pipelineId);
+                }
             };
         }
 
@@ -784,6 +794,11 @@ class StorePortTest {
                 @Override
                 public Optional<Observation> read(String pipelineId) {
                     return Optional.ofNullable(observations.get(pipelineId));
+                }
+
+                @Override
+                public void delete(String pipelineId) {
+                    observations.remove(pipelineId);
                 }
             };
         }
@@ -893,6 +908,33 @@ class StorePortTest {
                     history.add(version);
                     srsMeta.put(miningChainId, new SrsMeta(current.miningChainId(), current.sourceReadOffset(),
                             current.consumerOffsets(), current.cdcStartPosition(), history, current.retention()));
+                }
+
+                @Override
+                public List<String> miningChainIdsWithConsumer(String pipelineId) {
+                    List<String> chains = new ArrayList<>();
+                    srsMeta.forEach((chainId, meta) -> {
+                        if (meta.consumerOffsets().stream()
+                                .anyMatch(offset -> offset.pipelineId().equals(pipelineId))) {
+                            chains.add(chainId);
+                        }
+                    });
+                    return chains;
+                }
+
+                @Override
+                public void detachConsumer(String miningChainId, String pipelineId) {
+                    // Idempotent, unlike the advancing mutators: an absent chain already satisfies the
+                    // end condition a detach states.
+                    SrsMeta current = srsMeta.get(miningChainId);
+                    if (current == null) {
+                        return;
+                    }
+                    List<ConsumerOffset> kept = current.consumerOffsets().stream()
+                            .filter(offset -> !offset.pipelineId().equals(pipelineId))
+                            .toList();
+                    srsMeta.put(miningChainId, new SrsMeta(current.miningChainId(), current.sourceReadOffset(),
+                            kept, current.cdcStartPosition(), current.schemaHistory(), current.retention()));
                 }
 
                 private SrsMeta require(String miningChainId) {

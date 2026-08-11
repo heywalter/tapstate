@@ -191,6 +191,16 @@ class SnapshotPhaseTest {
 
     /** A meta store that records only the cdc-start position; the other facets are unused in the snapshot phase. */
     private static final class RecordingMeta implements SrsMetaStore {
+        @Override
+        public java.util.List<String> miningChainIdsWithConsumer(String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
+        @Override
+        public void detachConsumer(String miningChainId, String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
         private final List<String> trace;
         String cdcStart;
 
