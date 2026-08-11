@@ -16,7 +16,6 @@ import io.tapstate.control.core.Maturity;
 import io.tapstate.control.core.Operation;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
-import io.tapstate.control.core.SourceDraftService;
 import io.tapstate.control.core.StoredArtifact;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.dsl.DslParser;
@@ -404,7 +403,8 @@ class ControlApiTest {
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import({RestApiConfiguration.class, ArtifactController.class, SourceDraftController.class, ConnectionController.class,
+    @Import({RestApiConfiguration.class, SourceDraftTestConfiguration.class, ArtifactController.class,
+            SourceDraftController.class, ConnectionController.class,
             ClusterController.class, HealthController.class, ApiExceptionHandler.class, FaultController.class})
     static class TestApp {
 
@@ -455,11 +455,6 @@ class ControlApiTest {
         @Bean
         ArtifactQueryService artifactQueryService(ArtifactStore store) {
             return new ArtifactQueryService(store);
-        }
-
-        @Bean
-        SourceDraftService sourceDraftService() {
-            return new SourceDraftService(TapstateCatalog::load);
         }
 
         // The connection-test controller is imported, so its service must be present for the context to

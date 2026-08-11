@@ -25,7 +25,6 @@ import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
 import io.tapstate.control.core.Scope;
-import io.tapstate.control.core.SourceDraftService;
 import io.tapstate.control.core.SourceRepresentation;
 import io.tapstate.control.core.SourceService;
 import io.tapstate.control.core.AuditedSourceService;
@@ -521,7 +520,7 @@ class AuthTest {
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import(ControlHttpFace.class)
+    @Import({ControlHttpFace.class, SourceDraftTestConfiguration.class})
     static class TestApp {
 
         @Bean
@@ -604,11 +603,6 @@ class AuthTest {
         @Bean
         ArtifactQueryService artifactQueryService(InMemoryArtifactStore store) {
             return new ArtifactQueryService(store);
-        }
-
-        @Bean
-        SourceDraftService sourceDraftService() {
-            return new SourceDraftService(TapstateCatalog::load);
         }
 
         @Bean

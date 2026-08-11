@@ -139,6 +139,30 @@ class McpOperationExecutorTest {
     }
 
     @Test
+    void sourceDraftFailsClosedForUnavailableConnectorMetadata() throws Exception {
+        assertThat(sourceDraftResult(500, "{}", "{}").body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
+        assertThat(sourceDraftResult(200, "{\"config\":{}}", "{}").body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
+        assertThat(sourceDraftResult(200, "{\"config\":[{\"name\":\"password\"}]}", "{}").body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
+    }
+
+    @Test
+    void sourceDraftFailsClosedForMalformedDraftResponses() throws Exception {
+        String connector = "{\"config\":[{\"name\":\"password\",\"secret\":true}]}";
+        assertThat(sourceDraftResult(200, connector, "{}").body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
+        assertThat(sourceDraftResult(200, connector, "{\"yaml\":\"version: tapstate/v1\\n"
+                + "kind: pipeline\\nid: not_source\\nsource: src_file\\n"
+                + "settings: { read_mode: snapshot_and_cdc }\\n"
+                + "transforms: []\\nserve: { from: src_file, sync: [] }\\n\"}").body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
+        assertThat(sourceDraftResult(200, connector, "{\"yaml\":\"not valid yaml\"}").body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
+    }
+
+    @Test
     void connectionWritesExpandOnlySettingsBeforeSendingThemToTheServer() throws Exception {
         AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
         HttpServer server = server(exchange -> {
@@ -213,6 +237,25 @@ class McpOperationExecutorTest {
 
     private static URI baseOf(HttpServer server) {
         return URI.create("http://127.0.0.1:" + server.getAddress().getPort());
+    }
+
+    private static McpResult sourceDraftResult(
+            int connectorStatus, String connectorBody, String draftBody) throws Exception {
+        HttpServer server = server(exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                answer(exchange, connectorStatus, connectorBody);
+            } else {
+                answer(exchange, 200, draftBody);
+            }
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+            return executor.execute(ControlOperations.SOURCE_DRAFT,
+                    Map.of("id", "orders", "connector", "mysql", "config", Map.of()));
+        } finally {
+            server.stop(0);
+        }
     }
 
     private static void answer(HttpExchange exchange, int status, String body) throws IOException {

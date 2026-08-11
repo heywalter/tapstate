@@ -4,6 +4,7 @@ import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.common.TapstateException;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Collections;
@@ -92,6 +93,43 @@ class SourceDraftServiceTest {
                 null, null, null, List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("unsupported JSON value type");
+    }
+
+    @Test
+    void enforcesTheCompleteJsonValueBoundary() {
+        SourceDraft empty = new SourceDraft(
+                "orders", null, "mysql", null, null, null, null, null, null, null);
+        assertThat(empty.config()).isEmpty();
+
+        Map<String, Object> nullKey = new LinkedHashMap<>();
+        nullKey.put(null, "value");
+        assertThatThrownBy(() -> new SourceDraft(
+                "orders", null, "mysql", nullKey, null, null, null, null, null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("keys must not be null");
+        assertThatThrownBy(() -> new SourceDraft(
+                "orders", null, "mysql", Map.of("value", Double.NaN), null, null,
+                null, null, null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("numbers must be finite");
+        assertThatThrownBy(() -> new SourceDraft(
+                "orders", null, "mysql", Map.of("value", Float.POSITIVE_INFINITY), null, null,
+                null, null, null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("numbers must be finite");
+        assertThatThrownBy(() -> new SourceDraft(
+                "orders", null, "mysql", Map.of("value", new Object()), null, null,
+                null, null, null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("unsupported JSON value type");
+
+        Map<Object, Object> invalidNested = new LinkedHashMap<>();
+        invalidNested.put(1, "value");
+        assertThatThrownBy(() -> new SourceDraft(
+                "orders", null, "mysql", Map.of("nested", invalidNested), null, null,
+                null, null, null, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("keys must be strings");
     }
 
     private static SourceDraftService service() {
