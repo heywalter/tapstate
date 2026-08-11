@@ -25,6 +25,7 @@ import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
 import io.tapstate.control.core.Scope;
+import io.tapstate.control.core.SourceDraftService;
 import io.tapstate.control.core.TokenSecrets;
 import io.tapstate.control.core.TokenService;
 import io.tapstate.control.core.TokenSigner;
@@ -600,6 +601,11 @@ class AuthTest {
         @Bean
         ArtifactQueryService artifactQueryService(InMemoryArtifactStore store) {
             return new ArtifactQueryService(store);
+        }
+
+        @Bean
+        SourceDraftService sourceDraftService() {
+            return new SourceDraftService(TapstateCatalog::load);
         }
 
         // The connection-test controller comes in with the whole ControlHttpFace bundle, so its service must
