@@ -14,12 +14,12 @@ class ControlApiSchemaTest {
             "connector.list", "connector.get",
             "source.list", "source.get", "source.draft",
             "connection.test", "connection.test-result", "connection.discover-schema", "connection.schema",
-            "artifact.validate", "artifact.apply",
+            "artifact.validate", "artifact.apply", "artifact.delete",
             "pipeline.start", "pipeline.stop", "pipeline.status", "pipeline.metrics",
             "pipeline.snapshot", "pipeline.logs");
 
     @Test
-    void betaMcpSurfaceIsExactlyTheOnlinePipelineClosure() {
+    void betaMcpSurfaceIsExactlyTheOnlineAuthoringClosure() {
         Set<String> actual = ControlOperations.registry().exposedOn(Frontend.MCP, Maturity.BETA).stream()
                 .map(Operation::id)
                 .collect(Collectors.toSet());
@@ -44,6 +44,26 @@ class ControlApiSchemaTest {
             assertThat(definitions.containsKey(
                     operation.schema().result().substring("#/$defs/".length()))).isTrue();
         }
+    }
+
+    /**
+     * The delete tool's argument names are published the moment the tool is, and a remote model calls it
+     * by those names alone. Both are required: an id with no precondition would let a caller discard a
+     * version it never read, which is the one thing the conditional delete exists to prevent, and an
+     * optional precondition is indistinguishable from none for a model that omits what it may omit.
+     */
+    @Test
+    void artifactDeleteRequiresBothTheIdAndThePreconditionItWillBeCalledWith() {
+        Map<?, ?> definitions = (Map<?, ?>) ControlApiSchema.document().get("$defs");
+        Map<?, ?> request = (Map<?, ?>) definitions.get("ArtifactDeleteRequest");
+        Map<?, ?> properties = (Map<?, ?>) request.get("properties");
+
+        assertThat(properties.keySet().stream().map(String::valueOf).toList())
+                .containsExactlyInAnyOrder("id", "expectedContentHash");
+        assertThat(request.get("required")).isEqualTo(java.util.List.of("id", "expectedContentHash"));
+        assertThat(request.get("additionalProperties"))
+                .as("an unknown argument must be refused, not silently dropped")
+                .isEqualTo(false);
     }
 
     @Test

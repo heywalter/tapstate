@@ -55,6 +55,59 @@ class HttpControlClientTest {
         }
     }
 
+    /**
+     * The removal verb rides the same transport, so it must carry the same bearer and, additionally, the
+     * precondition as a quoted entity tag. The method itself is asserted: a delete sent as a GET would
+     * reach a server that answers the read face and look like a success here.
+     */
+    @Test
+    void deleteSendsTheMethodTheBearerAndTheQuotedPrecondition() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> authorization = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            method.set(exchange.getRequestMethod());
+            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            ifMatch.set(exchange.getRequestHeaders().getFirst("If-Match"));
+            answer(exchange, 204, "");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            String hash = "a".repeat(64);
+            ControlResponse response = client.delete(
+                    baseOf(server), "secret", "/api/artifacts/tgt_my", hash);
+
+            assertThat(response).isInstanceOfSatisfying(ControlResponse.Success.class, success -> {
+                assertThat(success.status()).isEqualTo(204);
+                assertThat(success.body()).isNull();
+            });
+            assertThat(method.get()).isEqualTo("DELETE");
+            assertThat(authorization.get()).isEqualTo("Bearer secret");
+            assertThat(ifMatch.get()).isEqualTo("\"" + hash + "\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void deleteWithoutAPreconditionSendsNoIfMatchRatherThanAnEmptyOne() throws Exception {
+        // An empty or literal-null If-Match is a malformed precondition, which the server refuses as a
+        // different thing than none at all. Omitting the header is what "the caller supplied nothing" means.
+        AtomicReference<String> ifMatch = new AtomicReference<>("untouched");
+        HttpServer server = server(exchange -> {
+            ifMatch.set(exchange.getRequestHeaders().getFirst("If-Match"));
+            answer(exchange, 428, "{\"code\":\"artifact.precondition-required\"}");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            ControlResponse response = client.delete(baseOf(server), "secret", "/api/artifacts/tgt_my", null);
+
+            assertThat(ifMatch.get()).isNull();
+            assertThat(response).isInstanceOfSatisfying(ControlResponse.Rejected.class, rejected ->
+                    assertThat(rejected.code()).isEqualTo("artifact.precondition-required"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     void codedHttpFailureRetainsStatusCodeMessageAndParams() throws Exception {
         HttpServer server = server(exchange -> answer(exchange, 403,

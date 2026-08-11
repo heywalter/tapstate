@@ -1,5 +1,6 @@
 package io.tapstate.control.restapi;
 
+import io.tapstate.control.core.ArtifactError;
 import io.tapstate.control.core.ControlError;
 import io.tapstate.control.core.MonitorError;
 import io.tapstate.core.common.TapstateErrorCode;
@@ -112,6 +113,50 @@ class ApiExceptionHandlerTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(response.getBody().code()).isEqualTo("control.bootstrap-closed");
+    }
+
+    /**
+     * The removal verb's five refusals, each a client-attributable status rather than the 500 an
+     * unmapped domain falls through to. {@code statusFor} is a pure code-to-status switch with no
+     * knowledge of which endpoint raised the code, so a code that both delete and apply can raise
+     * necessarily answers the same status on both — these five are fixed here once for that reason.
+     */
+    @Test
+    void everyArtifactRefusalIsAClientAttributableStatusRatherThanAServerError() {
+        assertThat(ApiExceptionHandler.statusFor(ArtifactError.NOT_FOUND))
+                .isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(ApiExceptionHandler.statusFor(ArtifactError.PRECONDITION_REQUIRED))
+                .isEqualTo(HttpStatus.PRECONDITION_REQUIRED);
+        assertThat(ApiExceptionHandler.statusFor(ArtifactError.VERSION_CONFLICT))
+                .isEqualTo(HttpStatus.PRECONDITION_FAILED);
+        assertThat(ApiExceptionHandler.statusFor(ArtifactError.IN_USE))
+                .isEqualTo(HttpStatus.CONFLICT);
+        assertThat(ApiExceptionHandler.statusFor(ArtifactError.PIPELINE_NOT_STOPPED))
+                .isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    /**
+     * The refusal body must carry the parameters the caller acts on, not just a status. A caller told
+     * only "409" cannot tell "something references this" from "the pipeline is running", and the two
+     * next steps are different — read the referrers, or stop the pipeline.
+     */
+    @Test
+    void aRefusalCarriesTheParametersTheCallerNeedsToActOnIt() {
+        ResponseEntity<ApiError> inUse = handler.handle(new TapstateException(
+                ArtifactError.IN_USE, Map.of("id", "src1", "referrers", List.of("pl1", "pl2")), null));
+        assertThat(inUse.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(inUse.getBody().code()).isEqualTo("artifact.in-use");
+        assertThat(inUse.getBody().params()).containsEntry("referrers", List.of("pl1", "pl2"));
+        assertThat(inUse.getBody().message()).isNotBlank().isNotEqualTo("artifact.in-use");
+
+        ResponseEntity<ApiError> running = handler.handle(new TapstateException(
+                ArtifactError.PIPELINE_NOT_STOPPED,
+                Map.of("id", "pl1", "actual", "RUNNING", "desired", "RUNNING"), null));
+        assertThat(running.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(running.getBody().params())
+                .containsEntry("actual", "RUNNING")
+                .containsEntry("desired", "RUNNING");
+        assertThat(running.getBody().message()).isNotBlank().isNotEqualTo("artifact.pipeline-not-stopped");
     }
 
     @Test

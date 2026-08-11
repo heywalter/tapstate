@@ -60,6 +60,7 @@ public final class ControlApiSchema {
         bind(refs, "connection.schema", "ConnectionSchema");
         bind(refs, "artifact.validate", "ArtifactValidate");
         bind(refs, "artifact.apply", "ArtifactApply");
+        bind(refs, "artifact.delete", "ArtifactDelete");
         bind(refs, "pipeline.start", "PipelineStart");
         bind(refs, "pipeline.stop", "PipelineStop");
         bind(refs, "pipeline.status", "PipelineStatus");
@@ -136,6 +137,18 @@ public final class ControlApiSchema {
                 List.of("drafts"), Map.of("drafts", array(draft)), false);
         pair(defs, "ArtifactValidate", artifactRequest, opaque);
         pair(defs, "ArtifactApply", artifactRequest, opaque);
+
+        // Both arguments are required. A delete carries an id and nothing else, so without the hash the
+        // caller would be discarding a version it never read; making it optional is the same thing for any
+        // caller that omits what it may omit.
+        Map<String, Object> deleteRequest = object(
+                List.of("id", "expectedContentHash"),
+                Map.of(
+                        "id", id,
+                        "expectedContentHash",
+                        string("Content hash of the version being removed, as returned by a read of it")),
+                false);
+        pair(defs, "ArtifactDelete", deleteRequest, opaque);
 
         Map<String, Object> pipelineId = object(List.of("id"), Map.of("id", id), false);
         pair(defs, "PipelineStart", pipelineId, opaque);

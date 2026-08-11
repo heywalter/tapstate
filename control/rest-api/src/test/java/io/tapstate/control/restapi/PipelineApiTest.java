@@ -1,6 +1,7 @@
 package io.tapstate.control.restapi;
 
 import io.tapstate.control.core.ApplyService;
+import io.tapstate.control.core.ArtifactMutationService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
 import io.tapstate.control.core.AuditedSourceService;
@@ -442,6 +443,16 @@ class PipelineApiTest {
         @Bean
         ArtifactQueryService artifactQueryService(ArtifactStore store) {
             return new ArtifactQueryService(store);
+        }
+
+        // The removal controller comes in with the whole ControlHttpFace bundle, so its service must be
+        // present for the context to stand up. This suite exercises the lifecycle verbs, not the removal,
+        // so the dependent stores refuse rather than pretend: a reclaim reached from here is a defect.
+        @Bean
+        ArtifactMutationService artifactMutationService(ArtifactStore store, AuditGate auditGate) {
+            return new ArtifactMutationService(
+                    store, NoReclaimStores.desired(), NoReclaimStores.state(),
+                    NoReclaimStores.observations(), NoReclaimStores.srsMeta(), auditGate);
         }
 
         // The connection / connector controllers come in with the whole ControlHttpFace bundle, so their

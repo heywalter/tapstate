@@ -66,18 +66,21 @@ public final class ArtifactMutationService {
     private final StateStore state;
     private final ObservationStore observations;
     private final SrsMetaStore srsMeta;
+    private final AuditGate auditGate;
 
     public ArtifactMutationService(
             ArtifactStore store,
             DesiredStore desired,
             StateStore state,
             ObservationStore observations,
-            SrsMetaStore srsMeta) {
+            SrsMetaStore srsMeta,
+            AuditGate auditGate) {
         this.store = Objects.requireNonNull(store, "store");
         this.desired = Objects.requireNonNull(desired, "desired");
         this.state = Objects.requireNonNull(state, "state");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.srsMeta = Objects.requireNonNull(srsMeta, "srsMeta");
+        this.auditGate = Objects.requireNonNull(auditGate, "auditGate");
     }
 
     /**
@@ -108,17 +111,24 @@ public final class ArtifactMutationService {
             refuseWhenNotStopped(id);
         }
 
-        switch (store.delete(id, expectedContentHash)) {
-            case DELETED -> {
+        // Both grounds are judged above, outside the gate, so a refusal writes no audit record and leaves
+        // the store untouched. What the gate wraps is the destruction itself: the record lands before the
+        // document does, so an audit backend that is down refuses the removal rather than destroying a
+        // resource that leaves no trace behind.
+        auditGate.dispatch(ControlOperations.ARTIFACT_DELETE, new AuditContext(principal, id), () -> {
+            switch (store.delete(id, expectedContentHash)) {
+                case DELETED -> {
+                }
+                case NOT_FOUND -> throw error(ArtifactError.NOT_FOUND, Map.of("id", id));
+                case VERSION_CONFLICT -> throw error(ArtifactError.VERSION_CONFLICT, Map.of("id", id));
+                default -> throw new IllegalStateException("unexpected artifact mutation outcome for delete");
             }
-            case NOT_FOUND -> throw error(ArtifactError.NOT_FOUND, Map.of("id", id));
-            case VERSION_CONFLICT -> throw error(ArtifactError.VERSION_CONFLICT, Map.of("id", id));
-            default -> throw new IllegalStateException("unexpected artifact mutation outcome for delete");
-        }
 
-        if (target instanceof PipelineResource) {
-            reclaim(id);
-        }
+            if (target instanceof PipelineResource) {
+                reclaim(id);
+            }
+            return null;
+        });
     }
 
     /**

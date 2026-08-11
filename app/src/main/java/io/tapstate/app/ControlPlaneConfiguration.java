@@ -12,6 +12,7 @@ import io.tapstate.adapters.pdk.RegistryConnectorProvisioner;
 import io.tapstate.adapters.pdk.SeedConnectorSweep;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ConnectorCatalogView;
+import io.tapstate.control.core.ArtifactMutationService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
 import io.tapstate.control.core.AuditedSourceService;
@@ -187,6 +188,17 @@ class ControlPlaneConfiguration {
     @Bean
     ArtifactQueryService artifactQueryService(ArtifactStore artifactStore) {
         return new ArtifactQueryService(artifactStore);
+    }
+
+    @Bean
+    ArtifactMutationService artifactMutationService(
+            ArtifactStore artifactStore, StorePort storePort, AuditGate auditGate) {
+        // The removal takes the same artifact store bean apply writes through, so both paths see one
+        // view of a resource. The dependent bookkeeping a removed pipeline owns is reclaimed straight
+        // off the store port: those facets have no service in front of them.
+        return new ArtifactMutationService(
+                artifactStore, storePort.desired(), storePort.state(), storePort.observations(),
+                storePort.meta(), auditGate);
     }
 
     // ---- the connector plane: the R5 synchronous connection-test verb, wired end to end ----

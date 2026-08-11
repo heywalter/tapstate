@@ -19,6 +19,8 @@ import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.spi.store.ArtifactMutation;
 import io.tapstate.spi.store.ArtifactStore;
+import io.tapstate.spi.store.AuditRecord;
+import io.tapstate.spi.store.AuditStore;
 import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.DesiredStore;
 import io.tapstate.spi.store.ObservationStore;
@@ -28,7 +30,9 @@ import io.tapstate.spi.store.SrsMetaStore;
 import io.tapstate.spi.store.StateStore;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,8 +52,30 @@ class ArtifactMutationServiceTest {
     private final InMemoryObservationStore observations = new InMemoryObservationStore();
     private final InMemorySrsMetaStore srsMeta = new InMemorySrsMetaStore();
     private final List<String> reclaimOrder = new ArrayList<>();
-    private final ArtifactMutationService service =
-            new ArtifactMutationService(store, desired, state, observations, srsMeta);
+    private final RecordingAuditStore auditStore = new RecordingAuditStore();
+    private final ArtifactMutationService service = new ArtifactMutationService(
+            store, desired, state, observations, srsMeta, new AuditGate(auditStore, FIXED_CLOCK));
+
+    private static final Clock FIXED_CLOCK =
+            Clock.fixed(Instant.parse("2026-08-11T09:00:00Z"), ZoneOffset.UTC);
+
+    /** An audit store that captures every record it is asked to write. */
+    private static final class RecordingAuditStore implements AuditStore {
+        final List<AuditRecord> records = new ArrayList<>();
+
+        @Override
+        public void record(AuditRecord record) {
+            records.add(record);
+        }
+    }
+
+    /** An audit store that always fails, standing in for an unavailable audit backend. */
+    private static final class FailingAuditStore implements AuditStore {
+        @Override
+        public void record(AuditRecord record) {
+            throw new IllegalStateException("audit backend down");
+        }
+    }
 
     @Test
     void deletesAnyKindThroughTheOneVerbAndRemovesOnlyThatArtifact() {
@@ -263,6 +289,99 @@ class ArtifactMutationServiceTest {
         assertThat(state.read("orders")).isPresent();
         assertThat(observations.read("orders")).isPresent();
         assertThat(srsMeta.consumerIds("chain-a")).containsExactly("orders");
+    }
+
+    @Test
+    void aSuccessfulDeleteLeavesOneAuditRecordNamingTheCallerAndTheResource() {
+        SourceResource orders = source("orders");
+        store.save(orders);
+
+        service.delete(PRINCIPAL, "orders", hash(orders));
+
+        assertThat(auditStore.records).singleElement().satisfies(record -> {
+            assertThat(record.principal()).isEqualTo(PRINCIPAL);
+            assertThat(record.operationId()).isEqualTo("artifact.delete");
+            assertThat(record.resourceId()).isEqualTo("orders");
+        });
+    }
+
+    /**
+     * A refusal is not an attempt worth recording: nothing was destroyed, and a record for every rejected
+     * delete would bury the ones that actually removed something. This also pins the ordering — the two
+     * grounds are judged before the gate is entered, so an audit backend being down cannot change which
+     * deletions are refused.
+     */
+    @Test
+    void aDeleteRefusedOnEitherGroundLeavesNoAuditRecord() {
+        SourceResource orders = source("orders");
+        store.save(orders);
+        store.save(pipelineReading("flow", "orders"));
+        PipelineResource running = pipeline("live");
+        store.save(running);
+        state.put("live", PipelineState.RUNNING);
+
+        assertArtifactError(
+                () -> service.delete(PRINCIPAL, "orders", hash(orders)),
+                ArtifactError.IN_USE,
+                Map.of("id", "orders", "referrers", List.of("flow")));
+        assertArtifactError(
+                () -> service.delete(PRINCIPAL, "live", hash(running)),
+                ArtifactError.PIPELINE_NOT_STOPPED,
+                Map.of("id", "live", "actual", "RUNNING", "desired", "NEW"));
+        assertArtifactError(
+                () -> service.delete(PRINCIPAL, "orders", null),
+                ArtifactError.PRECONDITION_REQUIRED,
+                Map.of("id", "orders"));
+
+        assertThat(auditStore.records).isEmpty();
+    }
+
+    /**
+     * A stale precondition does leave a record, unlike the two refusal grounds. The split is deliberate
+     * and follows from where each check can live: the grounds are judged from state this service already
+     * holds, so they resolve before the gate; the version check is the store's own atomic compare, which
+     * happens inside the write the gate exists to precede. Recording an attempt that the store then
+     * refused is the honest reading of an audit-before-execute log — and the alternative, auditing after
+     * the fact, would give up the guarantee that nothing is destroyed unrecorded.
+     */
+    @Test
+    void aStalePreconditionLeavesTheAttemptOnTheAuditLogEvenThoughNothingWasRemoved() {
+        SourceResource orders = source("orders");
+        store.save(orders);
+
+        assertArtifactError(
+                () -> service.delete(PRINCIPAL, "orders", "0".repeat(64)),
+                ArtifactError.VERSION_CONFLICT,
+                Map.of("id", "orders"));
+
+        assertThat(store.get("orders")).isPresent();
+        assertThat(auditStore.records).singleElement().satisfies(record -> {
+            assertThat(record.operationId()).isEqualTo("artifact.delete");
+            assertThat(record.resourceId()).isEqualTo("orders");
+        });
+    }
+
+    /**
+     * No audit, no destruction. The record is written before the store delete runs, so an audit backend
+     * that is down refuses the removal outright rather than destroying a resource that leaves no trace —
+     * the one failure mode an audited destructive verb must not have.
+     */
+    @Test
+    void anUnavailableAuditBackendRefusesTheDeleteAndLeavesTheArtifactByteForByte() {
+        ArtifactMutationService blocked = new ArtifactMutationService(
+                store, desired, state, observations, srsMeta,
+                new AuditGate(new FailingAuditStore(), FIXED_CLOCK));
+        SourceResource orders = source("orders");
+        store.save(orders);
+        String before = hash(orders);
+
+        assertThatThrownBy(() -> blocked.delete(PRINCIPAL, "orders", before))
+                .isInstanceOf(TapstateException.class)
+                .satisfies(e -> assertThat(((TapstateException) e).code().code())
+                        .isEqualTo("control.audit-blocked"));
+
+        assertThat(store.get("orders")).isPresent();
+        assertThat(hash(store.get("orders").orElseThrow())).isEqualTo(before);
     }
 
     @Test

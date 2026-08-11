@@ -53,6 +53,7 @@ final class McpOperationExecutor {
                 case "artifact.validate" -> post(
                         "/api/artifacts:validate", args, RequestBudget.HEAVY);
                 case "artifact.apply" -> post("/api/artifacts:apply", args, RequestBudget.HEAVY);
+                case "artifact.delete" -> artifactDelete(args);
                 case "pipeline.start" -> pipelineAction(args, "start");
                 case "pipeline.stop" -> pipelineAction(args, "stop");
                 case "pipeline.status" -> pipelineRead(args, "status");
@@ -73,6 +74,18 @@ final class McpOperationExecutor {
                 "/api/pipelines/" + segment(required(arguments, "id")) + ":" + action,
                 null,
                 RequestBudget.LIGHT);
+    }
+
+    /**
+     * Both arguments are demanded before the request is built. The precondition is not optional here: a
+     * removal sent without one is refused by the server anyway, and refusing it at this end names the
+     * argument that was missing instead of returning a protocol-level refusal the caller has to decode.
+     */
+    private McpResult artifactDelete(Map<String, Object> arguments) {
+        String id = required(arguments, "id");
+        String expectedContentHash = required(arguments, "expectedContentHash");
+        return McpResult.from(client.delete(
+                server, token, "/api/artifacts/" + segment(id), expectedContentHash));
     }
 
     private McpResult connectionWrite(Map<String, Object> arguments, String path) {

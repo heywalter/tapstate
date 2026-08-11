@@ -8,9 +8,10 @@ import java.util.Map;
  * scanning). This is the single source of truth from which every face derives its surface, and the
  * seed an {@link OperationRegistry} is built over.
  *
- * <p>Each face reads its exposed operations from this registry. The first MCP surface is the online
- * pipeline closure at {@code BETA}; protocol adapters must derive tool names and schemas from these
- * entries rather than maintaining an independent catalog.
+ * <p>Each face reads its exposed operations from this registry. The MCP surface at {@code BETA} is the
+ * online authoring closure — reading the catalog, drafting and applying a workspace, removing one, and
+ * driving a pipeline; protocol adapters must derive tool names and schemas from these entries rather
+ * than maintaining an independent catalog.
  *
  * <p>The audit flag marks the operations that mutate persisted control-plane state (an artifact, a
  * connection's persisted probe or discovery result, a user, a token) and therefore leave a record;
@@ -31,6 +32,16 @@ public final class ControlOperations {
             "Validate a complete tapstate/v1 workspace without writing artifacts or audit records.");
     public static final Operation ARTIFACT_GET = new Operation("artifact.get", Scope.READ, false, null, CLI_POC);
     public static final Operation ARTIFACT_LIST = new Operation("artifact.list", Scope.READ, false, null, CLI_POC);
+    // The removal verb, one path for every kind. It destroys a named resource for good, which no other
+    // operation on this surface does, so its description says so plainly rather than leaving a caller to
+    // infer it: a remote model reads this text and nothing else before deciding to call it.
+    public static final Operation ARTIFACT_DELETE = mcp(
+            "artifact.delete", Scope.WRITE, true,
+            "Permanently remove one applied resource of any kind by id. This is not reversible and leaves "
+                    + "no tombstone; restoring means applying the resource again. The expectedContentHash "
+                    + "must be the hash of the version just read, and the removal is refused if the stored "
+                    + "version has moved on, if another resource still references the id, or if the id is a "
+                    + "pipeline that is not stopped.");
 
     // connection domain: each probing verb runs an external probe and persists its result for later query
     // and display, so it mutates persisted state (a write) and is audited; its read-back peer returns the
@@ -132,6 +143,7 @@ public final class ControlOperations {
             ARTIFACT_VALIDATE,
             ARTIFACT_GET,
             ARTIFACT_LIST,
+            ARTIFACT_DELETE,
             SOURCE_CREATE,
             SOURCE_DRAFT,
             SOURCE_LIST,

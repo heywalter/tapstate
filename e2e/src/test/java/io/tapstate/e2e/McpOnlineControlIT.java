@@ -89,11 +89,13 @@ class McpOnlineControlIT {
                         {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
                         """);
                 List<?> tools = (List<?>) ((Map<?, ?>) receive(output).get("result")).get("tools");
-                assertThat(tools).hasSize(17);
+                assertThat(tools).hasSize(18);
                 assertThat(tools.stream()
                         .map(tool -> String.valueOf(((Map<?, ?>) tool).get("name")))
                         .toList())
-                        .contains("source_draft", "artifact_apply", "pipeline_stop")
+                        // artifact_delete is here because this session was started with write access;
+                        // that it is absent without it is pinned where the surface is derived.
+                        .contains("source_draft", "artifact_apply", "artifact_delete", "pipeline_stop")
                         .doesNotContain("source_create");
 
                 send(input, """

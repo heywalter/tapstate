@@ -1,5 +1,6 @@
 package io.tapstate.cli;
 
+import io.tapstate.core.model.canonical.CanonicalHash;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine;
@@ -94,6 +95,9 @@ class ReplTest {
         /** The canned connected-verb outcomes (used when the target base is healthy) and their call logs. */
         ApplyOutcome applyOutcome = new ApplyOutcome.Unreachable();
         GetOutcome getOutcome = new GetOutcome.Unreachable();
+        DeleteOutcome deleteOutcome = new DeleteOutcome.Unreachable();
+        /** Every removal asked for, as {@code credential@base/id#hash} — the hash is what the tests pin. */
+        final List<String> deleteCalls = new ArrayList<>();
         ListOutcome listOutcome = new ListOutcome.Unreachable();
         ConnectionTestOutcome testOutcome = new ConnectionTestOutcome.Unreachable();
         ConnectionTestResultOutcome testResultOutcome = new ConnectionTestResultOutcome.Unreachable();
@@ -185,6 +189,12 @@ class ReplTest {
         public GetOutcome get(URI baseUrl, String credential, String id) {
             getCalls.add(credential + "@" + baseUrl + "/" + id);
             return healthy.contains(baseUrl) ? getOutcome : new GetOutcome.Unreachable();
+        }
+
+        @Override
+        public DeleteOutcome delete(URI baseUrl, String credential, String id, String expectedContentHash) {
+            deleteCalls.add(credential + "@" + baseUrl + "/" + id + "#" + expectedContentHash);
+            return healthy.contains(baseUrl) ? deleteOutcome : new DeleteOutcome.Unreachable();
         }
 
         @Override
@@ -1034,6 +1044,145 @@ class ReplTest {
         assertThat(out).contains("kind: source").contains("src_kfk");
         // the credential travels to the current landing node
         assertThat(client.getCalls).containsExactly("jwt-tok@http://node1:7900/src_kfk");
+    }
+
+    /**
+     * Every verb that needs a connection must be routed to the server once one exists. The routing list
+     * is written out separately from the projection (it also carries {@code ls}, which browses locally
+     * when offline), and nothing reconciled the two: a verb added to the projection but not to the
+     * routing list is registered, listed, helped, completed — and then answers "run connect first" to a
+     * user who is already connected, which reads as a broken server rather than a missing line here.
+     * Measured on {@code delete}, which did exactly that until this test was written.
+     */
+    @Test
+    void everyVerbThatNeedsAConnectionIsRoutedOnceThereIsOne() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+
+        for (String verb : Cli.CONNECTED_VERBS) {
+            int mark = h.sink().toString().length();
+            h.repl().dispatch(verb);
+            assertThat(h.sink().toString().substring(mark))
+                    .as(verb + " is projected as a connected verb, so a connected session must route it")
+                    .doesNotContain("cli.not-connected");
+        }
+    }
+
+    /**
+     * Without {@code --if-match} the verb reads first and removes the version it read. The hash sent is
+     * asserted against the canonical bytes that came back: sending anything else — a blank, a literal
+     * null, a hash of something else — would make the removal unconditional in effect, which is the one
+     * property the precondition exists to provide.
+     */
+    @Test
+    void deleteWithoutAPreconditionReadsTheArtifactAndRemovesThatExactVersion() {
+        String canonical = "kind: source\nid: src_kfk\n";
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = new GetOutcome.Found(new RemoteArtifact("src_kfk", "source", canonical));
+        client.deleteOutcome = new DeleteOutcome.Removed("src_kfk");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete src_kfk")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark)).contains("deleted").contains("source").contains("src_kfk");
+        assertThat(client.deleteCalls).containsExactly(
+                "jwt-tok@http://node1:7900/src_kfk#" + CanonicalHash.of(canonical));
+    }
+
+    @Test
+    void deleteWithAnExplicitPreconditionSkipsTheReadAndSendsTheHashGiven() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.deleteOutcome = new DeleteOutcome.Removed("src_kfk");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        String hash = "c".repeat(64);
+
+        assertThat(h.repl().dispatch("delete src_kfk --if-match " + hash)).isTrue();
+
+        assertThat(client.deleteCalls).containsExactly("jwt-tok@http://node1:7900/src_kfk#" + hash);
+        // The caller already holds a version, so no read is issued on its behalf.
+        assertThat(client.getCalls).isEmpty();
+    }
+
+    @Test
+    void deleteOfAnIdThatIsNotThereReportsNotFoundAndAsksTheServerToRemoveNothing() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = new GetOutcome.Absent();
+        Harness h = onlineSession(Path.of("tap-work"), client);
+
+        assertThat(h.repl().dispatch("delete nope")).isTrue();
+
+        assertThat(h.repl().lastExitCode()).isEqualTo(Cli.EXIT_DIAGNOSTIC);
+        assertThat(client.deleteCalls).isEmpty();
+    }
+
+    /**
+     * A refusal has to leave the user with the next move, not just a code. Both grounds name something
+     * the caller must decide on — and this verb deliberately does neither of them itself, so saying what
+     * to do is the whole of the help it can give.
+     */
+    @Test
+    void aReferencedRefusalNamesTheReferrersAndDoesNotOfferToRemoveThem() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.deleteOutcome = new DeleteOutcome.Rejected(
+                "artifact.in-use", "Resource 'src_kfk' is still referenced.",
+                Map.of("id", "src_kfk", "referrers", List.of("kfk2my", "kfk2pg")));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete src_kfk --if-match " + "d".repeat(64))).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("artifact.in-use").contains("kfk2my").contains("kfk2pg");
+        assertThat(out).contains("remove those first");
+    }
+
+    @Test
+    void aRunningPipelineRefusalShowsBothHalvesOfTheStateAndPointsAtStop() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.deleteOutcome = new DeleteOutcome.Rejected(
+                "artifact.pipeline-not-stopped", "Pipeline 'kfk2my' is not stopped.",
+                Map.of("id", "kfk2my", "actual", "RUNNING", "desired", "RUNNING"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete kfk2my --if-match " + "e".repeat(64))).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        // Both halves are shown: the desired state alone would not explain a pipeline that is still
+        // draining after a stop, and the actual alone would not explain one that is about to come back up.
+        assertThat(out).contains("actual=RUNNING").contains("desired=RUNNING");
+        assertThat(out).contains("stop kfk2my");
+    }
+
+    @Test
+    void aVersionConflictTellsTheUserToReadAgainRatherThanToRetryWithoutThePrecondition() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.deleteOutcome = new DeleteOutcome.Rejected(
+                "artifact.version-conflict", "Resource 'src_kfk' has changed.", Map.of("id", "src_kfk"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete src_kfk --if-match " + "f".repeat(64))).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("artifact.version-conflict").contains("read it again");
+        // Dropping the precondition and retrying is the one recovery that must never be suggested: it
+        // turns a refused removal into one that discards whatever the other writer just put there.
+        assertThat(out).doesNotContain("--if-match to skip").doesNotContain("without --if-match");
+    }
+
+    @Test
+    void deleteRejectsAMalformedInvocationBeforeTouchingTheServer() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+
+        for (String line : List.of("delete", "delete a b", "delete a --if-match", "delete a --nope")) {
+            assertThat(h.repl().dispatch(line)).as(line).isTrue();
+            assertThat(h.repl().lastExitCode()).as(line).isEqualTo(Cli.EXIT_USAGE);
+        }
+        assertThat(client.deleteCalls).isEmpty();
+        assertThat(client.getCalls).isEmpty();
     }
 
     @Test

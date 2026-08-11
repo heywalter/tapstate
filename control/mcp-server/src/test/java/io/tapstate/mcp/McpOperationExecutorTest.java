@@ -7,6 +7,7 @@ import io.tapstate.control.core.ControlOperations;
 import io.tapstate.control.core.Operation;
 import io.tapstate.control.core.Scope;
 import io.tapstate.core.common.JsonReader;
+import io.tapstate.core.common.JsonWriter;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -65,6 +66,8 @@ class McpOperationExecutorTest {
                     Map.entry(ControlOperations.CONNECTION_SCHEMA, Map.of("id", "orders")),
                     Map.entry(ControlOperations.ARTIFACT_VALIDATE, Map.of("drafts", List.of())),
                     Map.entry(ControlOperations.ARTIFACT_APPLY, Map.of("drafts", List.of())),
+                    Map.entry(ControlOperations.ARTIFACT_DELETE,
+                            Map.of("id", "orders", "expectedContentHash", "a".repeat(64))),
                     Map.entry(ControlOperations.PIPELINE_START, pipeline),
                     Map.entry(ControlOperations.PIPELINE_STOP, pipeline),
                     Map.entry(ControlOperations.PIPELINE_STATUS, pipeline),
@@ -83,6 +86,7 @@ class McpOperationExecutorTest {
                     "/api/sources/orders", "/api/connections:test",
                     "/api/connections/orders/test-result", "/api/connections:discover-schema",
                     "/api/connections/orders/schema", "/api/artifacts:validate", "/api/artifacts:apply",
+                    "/api/artifacts/orders",
                     "/api/pipelines/orders:start", "/api/pipelines/orders:stop",
                     "/api/pipelines/orders/status", "/api/pipelines/orders/metrics",
                     "/api/pipelines/orders/snapshot", "/api/pipelines/orders/logs?limit=200");
@@ -165,6 +169,79 @@ class McpOperationExecutorTest {
                     .isEqualTo("sentinel-secret");
         } finally {
             server.stop(0);
+        }
+    }
+
+    /**
+     * Every operation the registry opens on the MCP face must have a route here. Without this, adding a
+     * tool to the registry publishes it to the model — the sidecar advertises it, the schema resolves,
+     * the description reads fine — and only a call at runtime discovers there is no path behind it. The
+     * enumerated routing test above cannot catch that: a route nobody remembered to add is also a row
+     * nobody remembered to list.
+     */
+    @Test
+    void everyOperationTheMcpFaceExposesHasARouteBehindIt() throws Exception {
+        HttpServer server = server(exchange -> answer(exchange, 200, "{}"));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            for (io.tapstate.control.core.Operation operation : McpToolCatalog.operations(true)) {
+                // Arguments are deliberately absent: a missing required argument is refused with its own
+                // code, which is a route doing its job. What must not appear is the unsupported-operation
+                // code, which means execute() fell through to its default.
+                McpResult result = executor.execute(operation, Map.of());
+                assertThat(String.valueOf(JsonWriter.write(result.body())))
+                        .as(operation.id())
+                        .doesNotContain("unsupported MCP operation");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void artifactDeleteSendsADeleteCarryingThePreconditionAsAnEntityTag() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            method.set(exchange.getRequestMethod());
+            ifMatch.set(exchange.getRequestHeaders().getFirst("If-Match"));
+            path.set(exchange.getRequestURI().toString());
+            answer(exchange, 204, "");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+            String hash = "b".repeat(64);
+
+            McpResult result = executor.execute(
+                    ControlOperations.ARTIFACT_DELETE, Map.of("id", "orders", "expectedContentHash", hash));
+
+            assertThat(result.error()).isFalse();
+            // Routed as a real DELETE with the precondition attached. A GET to the same path would read
+            // the artifact and answer 200, which this test would otherwise accept as a removal.
+            assertThat(method.get()).isEqualTo("DELETE");
+            assertThat(path.get()).isEqualTo("/api/artifacts/orders");
+            assertThat(ifMatch.get()).isEqualTo("\"" + hash + "\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void artifactDeleteRefusesBeforeAnyRequestWhenThePreconditionIsMissing() {
+        // The precondition is required, so a model that omits it must be refused here rather than have a
+        // hash-less delete reach the server, where the refusal would be indistinguishable from a bug.
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    URI.create("http://127.0.0.1:1"), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_DELETE, Map.of("id", "orders"));
+
+            assertThat(result.error()).isTrue();
+            assertThat(JsonWriter.write(result.body())).contains("expectedContentHash");
         }
     }
 

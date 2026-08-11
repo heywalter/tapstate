@@ -234,6 +234,52 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     }
 
     @Override
+    public DeleteOutcome delete(URI baseUrl, String credential, String id, String expectedContentHash) {
+        try {
+            HttpRequest.Builder builder = authed(
+                    baseUrl, "/api/artifacts/" + URLEncoder.encode(id, StandardCharsets.UTF_8), credential);
+            // Send no If-Match at all rather than an empty one when the caller supplied no precondition:
+            // the server tells "you sent none" (428) apart from "yours is stale" (412), and an empty
+            // header would turn the first into the second.
+            if (expectedContentHash != null) {
+                builder.header("If-Match", "\"" + expectedContentHash + "\"");
+            }
+            HttpResponse<String> response = send(
+                    builder.DELETE().build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() / 100 == 2) {
+                return new DeleteOutcome.Removed(id);
+            }
+            return rejectedDelete(response.body());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new DeleteOutcome.Unreachable();
+        } catch (IOException | RuntimeException e) {
+            return new DeleteOutcome.Unreachable();
+        }
+    }
+
+    /**
+     * Decodes a refused removal, keeping the named parameters as well as the message. The two refusal
+     * grounds each carry what the caller has to act on — who still references the resource, and what state
+     * the pipeline is really in — so dropping the parameters would leave a sentence and no next step.
+     */
+    private static DeleteOutcome rejectedDelete(String body) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        try {
+            if (JsonReader.parse(body) instanceof Map<?, ?> map && map.get("code") instanceof String code) {
+                String message = map.get("message") instanceof String m ? m : code;
+                if (map.get("params") instanceof Map<?, ?> raw) {
+                    raw.forEach((key, value) -> params.put(String.valueOf(key), value));
+                }
+                return new DeleteOutcome.Rejected(code, message, Map.copyOf(params));
+            }
+        } catch (RuntimeException malformed) {
+            // fall through: a non-coded / unparseable error body is still a refusal, not a crash
+        }
+        return new DeleteOutcome.Rejected("", "The server refused the removal.", Map.of());
+    }
+
+    @Override
     public ListOutcome list(URI baseUrl, String credential, String kind) {
         try {
             String path = kind == null || kind.isBlank()

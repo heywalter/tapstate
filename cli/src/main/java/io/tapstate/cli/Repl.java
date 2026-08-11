@@ -5,6 +5,7 @@ import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.dsl.Interpolator;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.SourceResource;
+import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.schema.SchemaNavigator;
 import io.tapstate.messages.MessageCatalog;
 import org.jline.reader.EndOfFileException;
@@ -74,8 +75,9 @@ final class Repl {
      * runs the full local stack in either state until a server validate endpoint exists.
      */
     private static final List<String> ONLINE_VERBS = List.of(
-            "apply", "get", "ls", "start", "stop", "pause", "resume", "status", "metrics", "snapshot",
-            "logs", "test", "test-result", "discover-schema", "schema", "register", "connectors", "token");
+            "apply", "get", "delete", "ls", "start", "stop", "pause", "resume", "status", "metrics",
+            "snapshot", "logs", "test", "test-result", "discover-schema", "schema", "register",
+            "connectors", "token");
 
     private final CommandLine commandLine;
 
@@ -348,6 +350,11 @@ final class Repl {
         }
         if (words.get(0).equals("token")) {
             return tokenOnline(words);
+        }
+        // `delete` carries a precondition of its own (`--if-match <hash>`), so it parses its own words
+        // rather than falling into the positional-only guard below, which would refuse the flag.
+        if (words.get(0).equals("delete")) {
+            return deleteOnline(words);
         }
         // The two streaming sugars ride the read verbs over the websocket channel: `status --watch` and
         // `logs --follow`. They are the only dash-options a connected verb accepts, and only on their verb.
@@ -657,6 +664,128 @@ final class Repl {
             case GetOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case GetOutcome.Unreachable ignored -> reportRequestFailed();
         };
+    }
+
+    /**
+     * {@code delete <id> [--if-match <hash>]} — removes one stored artifact of any kind, for good.
+     *
+     * <p>Without {@code --if-match} the verb reads the artifact first and removes the version it just
+     * read. That is not the same as removing unconditionally: if the resource changes in between, the
+     * server refuses rather than discarding an edit nobody here has seen. Supplying the flag pins a
+     * version the caller already holds and skips the read.
+     */
+    private int deleteOnline(List<String> words) {
+        PrintWriter err = commandLine.getErr();
+        String id = null;
+        String ifMatch = null;
+        for (int i = 1; i < words.size(); i++) {
+            String word = words.get(i);
+            if (word.equals("--if-match")) {
+                if (i + 1 >= words.size()) {
+                    return deleteUsage("--if-match needs a hash");
+                }
+                ifMatch = words.get(++i);
+            } else if (word.startsWith("-")) {
+                return deleteUsage("unknown option '" + word + "'");
+            } else if (id == null) {
+                id = word;
+            } else {
+                return deleteUsage("unexpected operand '" + word + "'");
+            }
+        }
+        if (id == null || id.isBlank()) {
+            return deleteUsage("missing operand");
+        }
+        final String target = id;
+
+        String kind = null;
+        if (ifMatch == null) {
+            GetOutcome read = withFailover(() ->
+                    controlPlane.get(session.landingNode(), session.credential(), target),
+                    o -> o instanceof GetOutcome.Unreachable);
+            switch (read) {
+                case GetOutcome.Found found -> {
+                    ifMatch = CanonicalHash.of(found.artifact().canonicalForm());
+                    kind = found.artifact().kind();
+                }
+                case GetOutcome.Absent ignored -> {
+                    err.println("not found: " + target);
+                    err.flush();
+                    return Cli.EXIT_DIAGNOSTIC;
+                }
+                case GetOutcome.Rejected rejected -> {
+                    return renderRejection(rejected.code(), rejected.message());
+                }
+                case GetOutcome.Unreachable ignored -> {
+                    return reportRequestFailed();
+                }
+            }
+        }
+
+        String hash = ifMatch;
+        String removedKind = kind;
+        DeleteOutcome outcome = withFailover(() ->
+                controlPlane.delete(session.landingNode(), session.credential(), target, hash),
+                o -> o instanceof DeleteOutcome.Unreachable);
+        PrintWriter out = commandLine.getOut();
+        return switch (outcome) {
+            case DeleteOutcome.Removed removed -> {
+                out.println("deleted " + (removedKind == null ? "" : removedKind + "  ") + removed.id());
+                out.flush();
+                yield Cli.EXIT_OK;
+            }
+            case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected);
+            case DeleteOutcome.Unreachable ignored -> reportRequestFailed();
+        };
+    }
+
+    private int deleteUsage(String reason) {
+        PrintWriter err = commandLine.getErr();
+        err.println("delete: " + reason + " (usage: delete <id> [--if-match <hash>])");
+        err.flush();
+        return Cli.EXIT_USAGE;
+    }
+
+    /**
+     * Renders a refused removal, following the coded message with the next step the refusal's own
+     * parameters name. Both grounds are acted on, not merely reported: what is still referencing the
+     * resource, and what state the pipeline is really in — neither of which the caller can be expected
+     * to work out from the code alone, and neither of which this verb does anything about on its own.
+     */
+    private int renderDeleteRefusal(DeleteOutcome.Rejected rejected) {
+        int status = renderRejection(rejected.code(), rejected.message());
+        PrintWriter err = commandLine.getErr();
+        switch (rejected.code()) {
+            case "artifact.in-use" -> {
+                Object referrers = rejected.params().get("referrers");
+                if (referrers != null) {
+                    err.println("  still referenced by: " + renderReferrers(referrers));
+                    err.println("  remove those first, or keep this resource.");
+                }
+            }
+            case "artifact.pipeline-not-stopped" -> {
+                Object actual = rejected.params().get("actual");
+                Object desired = rejected.params().get("desired");
+                if (actual != null || desired != null) {
+                    err.println("  pipeline state: actual=" + actual + ", desired=" + desired);
+                    err.println("  run `stop " + rejected.params().get("id") + "` and wait for it to settle.");
+                }
+            }
+            case "artifact.version-conflict" ->
+                    err.println("  it changed since you read it; read it again and redo the removal.");
+            default -> {
+                // Every other refusal is fully said by its own rendered message.
+            }
+        }
+        err.flush();
+        return status;
+    }
+
+    private static String renderReferrers(Object referrers) {
+        if (referrers instanceof List<?> rows) {
+            return rows.stream().map(String::valueOf).collect(Collectors.joining(", "));
+        }
+        return String.valueOf(referrers);
     }
 
     /**
