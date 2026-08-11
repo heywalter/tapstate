@@ -127,8 +127,12 @@ class WhatAWindowHoldsBackKeepsTheFrontierBelowItTest {
     /** What this level promises on the policies chain after a bound far above it arrives on that edge. */
     private List<Long> boundsAfter(AssemblerProcessor processor, long arriving) {
         processor.tryProcessWatermark(FROM_POLICIES, new Watermark(arriving, AXES.axisOf(POLICIES)));
+        return boundsIn(drained());
+    }
+
+    private static List<Long> boundsIn(List<Object> out) {
         List<Long> bounds = new ArrayList<>();
-        for (Object item : drained()) {
+        for (Object item : out) {
             if (item instanceof Watermark bound) {
                 bounds.add(bound.timestamp());
             }
@@ -172,6 +176,31 @@ class WhatAWindowHoldsBackKeepsTheFrontierBelowItTest {
                 .describedAs("the change is downstream now, so what held the bound down is gone - a window "
                         + "that kept holding it would pin the frontier at the rate documents change")
                 .containsExactly(FAR_ABOVE + 1);
+    }
+
+    /**
+     * The bound has to climb when the window lets go, with nothing else arriving to prompt it. A level
+     * works out what it may promise when a bound reaches it, so a level that only ever answers then is
+     * answering a question whose other half - what it is still holding - changed after the last one was
+     * asked. An upstream that has said everything it is going to say leaves that half changing alone, and
+     * the chain stays pinned at the value the fold held it to for as long as the job runs.
+     */
+    @Test
+    void theBoundClimbsWhenTheWindowLetsGoEvenIfNoFurtherBoundArrives() throws Exception {
+        AssemblerProcessor processor = throttled();
+        feed(processor, ROOT_ROWS, customer(1, "C1"));
+        clock.advance(1);
+        feed(processor, FROM_POLICIES, policyElement(200, "C1", "P1"));
+        assertThat(boundsAfter(processor, FAR_ABOVE))
+                .containsExactly(FrontierOrders.pack(POLICIES, at(200)) - 1);
+
+        clock.advance(WINDOW);
+        processor.tryProcess();
+
+        assertThat(boundsIn(drained()))
+                .describedAs("the flush released what the bound was being held below, and no further bound "
+                        + "is coming - the upstream has said all it has to say")
+                .containsExactly(FAR_ABOVE);
     }
 
     @Test

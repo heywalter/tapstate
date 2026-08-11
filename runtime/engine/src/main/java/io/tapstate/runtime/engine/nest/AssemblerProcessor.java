@@ -492,6 +492,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
             return flush();
         }
         long now = clock.millis();
+        boolean letGo = false;
         Iterator<Map.Entry<Object, Window>> open = windows.entrySet().iterator();
         while (open.hasNext()) {
             Map.Entry<Object, Window> entry = open.next();
@@ -515,8 +516,17 @@ public final class AssemblerProcessor extends AbstractProcessor {
             assembly.documentSent();
             store.save(entry.getKey(), assembly);
             window.reopen(now);
+            letGo = true;
         }
-        return flush();
+        if (!flush()) {
+            return false;
+        }
+        // Only after they have actually left: a bound offered ahead of the documents queued behind it
+        // would say they had gone. And it has to be offered at all, because what this level may promise
+        // depends on what it is holding as well as on what its edges said - an upstream that has finished
+        // speaking sends nothing more to prompt the recount, and the chain would stay pinned at whatever
+        // the fold held it to.
+        return !letGo || bounds == null || bounds.release(this::tryEmit);
     }
 
     /**

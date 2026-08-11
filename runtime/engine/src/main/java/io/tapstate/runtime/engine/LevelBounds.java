@@ -100,6 +100,39 @@ public final class LevelBounds {
     }
 
     /**
+     * Offers whatever this level may promise now that it is holding less than it was, on every chain
+     * rather than one, and answers whether it is done. A refusal means the outbox is full and the value is
+     * kept to be offered again.
+     *
+     * <p><b>Letting go has to be able to move the answer on its own.</b> What a level may promise depends
+     * on two things - what its edges promised, and what it is still holding - and only the first of them
+     * arrives as a message. A level that answered solely when a bound arrived would leave a chain pinned
+     * at whatever it was holding it to at the moment the upstream said its last word: the hold is released
+     * later, nothing prompts a recount, and the frontier stops there for as long as the job runs, with
+     * every count reading healthy.
+     */
+    public boolean release(Predicate<Watermark> emit) {
+        if (held != null) {
+            if (!emit.test(held)) {
+                return false;
+            }
+            held = null;
+        }
+        for (String chain : ordinalsByChain.keySet()) {
+            OptionalLong promise = promise(chain);
+            if (promise.isEmpty()) {
+                continue;
+            }
+            Watermark onward = new Watermark(promise.getAsLong(), axes.axisOf(chain));
+            if (!emit.test(onward)) {
+                held = onward;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Takes in the bound {@code axis}'s chain has reached on the edge at {@code ordinal}, and answers with
      * what this level may now promise on that same axis, or nothing when it may promise no more than it
      * already has.
@@ -112,7 +145,20 @@ public final class LevelBounds {
                     + ordinal + ", which this level is not compiled to carry it over");
         }
         promised.computeIfAbsent(chain, named -> new HashMap<>()).put(ordinal, bound);
+        return promise(chain);
+    }
 
+    /**
+     * What this level may promise on {@code chain} as things stand, or nothing when it may promise no more
+     * than it already has. Every edge expected to carry the chain must have spoken; whatever is still held
+     * on it lowers the answer to the value immediately beneath.
+     */
+    private OptionalLong promise(String chain) {
+        Set<Integer> expected = ordinalsByChain.get(chain);
+        Map<Integer, Long> byEdge = promised.get(chain);
+        if (byEdge == null) {
+            return OptionalLong.empty();
+        }
         long lowest = Long.MAX_VALUE;
         for (int edge : expected) {
             Long promise = promised.get(chain).get(edge);
