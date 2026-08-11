@@ -36,6 +36,7 @@ class McpOperationExecutorTest {
                     && exchange.getRequestURI().getPath().equals("/api/connectors/mysql")) {
                 answer(exchange, 200, """
                         {"id":"mysql","origin":"registered","runtimeAvailable":true,
+                         "config":[],
                          "spec":{"contentHash":"abc123","text":"{}","unavailable":null}}
                         """);
             } else {
@@ -105,22 +106,33 @@ class McpOperationExecutorTest {
     void sourceDraftExpandsOnlyConfigBeforeSendingItToTheServer() throws Exception {
         AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
         HttpServer server = server(exchange -> {
-            posted.set((Map<?, ?>) JsonReader.parse(new String(
-                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-            answer(exchange, 200, "{\"yaml\":\"version: tapstate/v1\\nkind: source\\n\"}");
+            if (exchange.getRequestMethod().equals("GET")) {
+                answer(exchange, 200, """
+                        {"id":"mysql","config":[{"name":"password","secret":true}]}
+                        """);
+            } else {
+                posted.set((Map<?, ?>) JsonReader.parse(new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+                answer(exchange, 200, "{\"yaml\":\"version: tapstate/v1\\nkind: source\\nid: orders\\nconnector: mysql\\nconfig:\\n  password: expanded-secret\\n\"}");
+            }
         });
         try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
             McpOperationExecutor executor = new McpOperationExecutor(
                     baseOf(server), "token", Map.of("MYSQL_PASSWORD", "expanded-secret"), client);
 
             McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
-                    Map.of("id", "orders", "connector", "mysql", "mode", "snapshot",
+                    Map.of("id", "${MYSQL_PASSWORD}", "connector", "mysql", "mode", "snapshot",
                             "config", Map.of("password", "${MYSQL_PASSWORD}")));
 
             assertThat(result.error()).isFalse();
             assertThat(posted.get().get("mode")).isEqualTo("snapshot");
+            assertThat(posted.get().get("id")).isEqualTo("${MYSQL_PASSWORD}");
             assertThat(((Map<?, ?>) posted.get().get("config")).get("password"))
                     .isEqualTo("expanded-secret");
+            assertThat(result.body().get("yaml")).isEqualTo("version: tapstate/v1\n"
+                    + "kind: source\n"
+                    + "id: orders\n"
+                    + "connector: mysql\n");
         } finally {
             server.stop(0);
         }
