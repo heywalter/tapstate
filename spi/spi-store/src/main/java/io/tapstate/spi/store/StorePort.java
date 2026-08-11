@@ -7,9 +7,10 @@ package io.tapstate.spi.store;
  * catalog, the discovered source-schema store, the connector distribution registry, the derived
  * connector catalog rows (one normalized capability row per registered connector), the latest
  * connection-test result per connection, the per-pipeline observation store (plain upsert latest
- * projection, read by the monitor read faces), and the SRS meta store (one durable coordination
- * record per mining chain). A pure interface over the core ring only (rule R2); a store backend
- * (a database adapter) implements the ten sub-stores behind it.
+ * projection, read by the monitor read faces), the SRS meta store (one durable coordination
+ * record per mining chain), the cold layer under a stateful operator, and the channel holding what
+ * such an operator could never assemble. A pure interface over the core ring only (rule R2); a store
+ * backend (a database adapter) implements the sub-stores behind it.
  */
 public interface StorePort {
 
@@ -51,4 +52,10 @@ public interface StorePort {
      * Read and written on the data path as keys are handled, never enumerated.
      */
     KeyedStateStore keyedState();
+
+    /**
+     * Where changes a stateful operator can never place in a document are kept, so that what was discarded
+     * can be looked at rather than only counted. Written on the data path, read by whoever is looking.
+     */
+    NestDeadLetterStore nestDeadLetters();
 }

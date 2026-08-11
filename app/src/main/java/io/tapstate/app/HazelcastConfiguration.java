@@ -10,6 +10,7 @@ import com.hazelcast.core.HazelcastException;
 import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.adapters.pdk.ConnectorProvisioner;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.runtime.engine.nest.DurableNestDeadLetter;
 import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestStateMapStoreFactory;
 import io.tapstate.runtime.srs.CaptureRunUnit;
@@ -17,6 +18,7 @@ import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsItem;
 import io.tapstate.runtime.srs.SrsItemSerializer;
 import io.tapstate.spi.store.KeyedStateStore;
+import io.tapstate.spi.store.NestDeadLetterStore;
 import io.tapstate.spi.store.SrsMetaStore;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -53,7 +55,8 @@ class HazelcastConfiguration {
     @Bean(destroyMethod = "shutdown")
     HazelcastInstance hazelcastMember(HazelcastProperties properties, @Nullable SrsMetaStore srsMetaStore,
             @Nullable ConnectorProvisioner connectorProvisioner, @Nullable SnapshotBuffer snapshotBuffer,
-            @Nullable KeyedStateStore nestStateStore, NestSettings nestSettings) {
+            @Nullable KeyedStateStore nestStateStore, NestSettings nestSettings,
+            @Nullable NestDeadLetterStore nestDeadLetterStore) {
         Config config = memberConfig(properties, nestStateStore, nestSettings);
         HazelcastInstance member = startMember(() -> Hazelcast.newHazelcastInstance(config));
         // Bind the SRS meta store onto the member so the read-cursor publisher factory -- carried onto the
@@ -84,6 +87,14 @@ class HazelcastConfiguration {
         // with no store (mongo disabled) binds nothing, and its maps declare no store to resolve.
         if (nestStateStore != null) {
             NestStateMapStoreFactory.bindTo(member, nestStateStore);
+        }
+        // Bind the channel behind the nest dead letters onto the member for the same reason: the channel is
+        // carried onto the vertex and resolved member-side, because somewhere durable to put a row is
+        // reached through a handle that does not survive being written into a graph. A run with no store
+        // (mongo disabled) binds nothing, and a nest vertex then refuses to start rather than running on
+        // with nowhere to put what it cannot assemble -- which is the failure this channel exists to stop.
+        if (nestDeadLetterStore != null) {
+            DurableNestDeadLetter.bindTo(member, nestDeadLetterStore);
         }
         return member;
     }

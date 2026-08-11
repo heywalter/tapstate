@@ -4,6 +4,7 @@ import io.tapstate.adapters.mongostore.MongoConnection;
 import io.tapstate.adapters.mongostore.MongoConnectionSettings;
 import io.tapstate.adapters.mongostore.MongoStorePort;
 import io.tapstate.spi.store.KeyedStateStore;
+import io.tapstate.spi.store.NestDeadLetterStore;
 import io.tapstate.spi.store.SrsMetaStore;
 import io.tapstate.spi.store.StorePort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -68,5 +69,16 @@ class StoreConfiguration {
     @ConditionalOnProperty(prefix = "tapstate.store.mongo", name = "enabled", matchIfMissing = true)
     KeyedStateStore nestStateStore(StorePort storePort) {
         return storePort.keyedState();
+    }
+
+    /**
+     * Where a nest puts the changes it can never place in a document. Gated with the store beside it,
+     * because it is the same gate: a run with no store has nowhere durable to put either, and a nest vertex
+     * on such a member refuses to start rather than discarding rows with nothing to show for it.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "tapstate.store.mongo", name = "enabled", matchIfMissing = true)
+    NestDeadLetterStore nestDeadLetterStore(StorePort storePort) {
+        return storePort.nestDeadLetters();
     }
 }

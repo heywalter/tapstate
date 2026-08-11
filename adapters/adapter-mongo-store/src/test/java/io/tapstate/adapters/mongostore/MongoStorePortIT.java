@@ -12,6 +12,7 @@ import io.tapstate.spi.store.ConnectionConfig;
 import io.tapstate.spi.store.ConnectionTestItem;
 import io.tapstate.spi.store.ConnectionTestResult;
 import io.tapstate.spi.store.DiscoveredSourceModel;
+import io.tapstate.spi.store.NestDeadLetterRecord;
 import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
@@ -144,6 +145,33 @@ class MongoStorePortIT {
                         .getCollection(MongoStorePort.OPERATOR_STATE).countDocuments()).isEqualTo(1);
                 assertThat(raw.getDatabase(configured)
                         .getCollection(MongoStorePort.OPERATOR_STATE).countDocuments()).isZero();
+            }
+        }
+    }
+
+    /**
+     * And so does what that operator could never assemble, for the same reason and into the same database:
+     * it is produced by the same run at the same rates and dropped with the same namespace, so an operation
+     * aimed at what an operator configured should not be able to reach it by accident either.
+     */
+    @Test
+    void nestDeadLettersLandInTheSameDatabaseAsTheStateTheyCameFrom() {
+        String uri = REPLICA_SET.getReplicaSetUrl();
+        MongoConnectionSettings settings = new MongoConnectionSettings(uri, null, Duration.ofSeconds(5));
+        try (MongoConnection connection = new MongoConnection(settings)) {
+            connection.verify();
+            MongoStorePort port = new MongoStorePort(connection);
+
+            port.nestDeadLetters().record(new NestDeadLetterRecord("nest.orders_sync.assemble.items",
+                    "[\"items\"]#[1]~i", "mysql-a", "1:1", 0L, 9_000L, Map.of("id", 1)));
+
+            assertThat(port.nestDeadLetters().read("nest.orders_sync.assemble.items", 10)).hasSize(1);
+            String configured = new ConnectionString(uri).getDatabase();
+            try (MongoClient raw = MongoClients.create(uri)) {
+                assertThat(raw.getDatabase("tapstate_nest")
+                        .getCollection(MongoStorePort.NEST_DEAD_LETTERS).countDocuments()).isEqualTo(1);
+                assertThat(raw.getDatabase(configured)
+                        .getCollection(MongoStorePort.NEST_DEAD_LETTERS).countDocuments()).isZero();
             }
         }
     }

@@ -78,6 +78,13 @@ public final class ObservationPublisher {
      */
     private static final String NEST_STORED_PREFIX = "nestStateStored.";
 
+    /**
+     * How many changes the namespace could never place in a document. Published only for a namespace that
+     * discarded any, so that nothing discarded is an absence rather than a zero - the one reading here whose
+     * quiet state and whose unwired state would otherwise be spelled the same way.
+     */
+    private static final String NEST_DEAD_LETTERED_PREFIX = "nestDeadLettered.";
+
     private final StateStore state;
     private final ObservationStore observations;
     private final Function<String, OptionalLong> recordCounts;
@@ -86,6 +93,7 @@ public final class ObservationPublisher {
     private final Function<String, Map<String, Long>> frontierGaps;
     private final Function<String, Map<String, NestStateReading>> nestStateReadings;
     private final Function<String, Map<String, Long>> frontierStalls;
+    private final Function<String, Map<String, Long>> nestDeadLetters;
     private final FrontierStallWatch frontierStall;
     private final NestColdLayerWatch coldLayer;
 
@@ -196,6 +204,31 @@ public final class ObservationPublisher {
             NestColdLayerWatch coldLayer,
             Function<String, Map<String, Long>> frontierStalls,
             FrontierStallWatch frontierStall) {
+        this(state, observations, recordCounts, positions, snapshots, frontierGaps, nestStateReadings,
+                coldLayer, frontierStalls, frontierStall, id -> Map.of());
+    }
+
+    /**
+     * A publisher also wired to how many changes each namespace could never place in a document:
+     * {@code nestDeadLetters} yields that for the namespaces of a pipeline's live run that discarded any
+     * (empty when none did). An eighth port for the same reason as the others.
+     *
+     * <p>Separate from the state readings despite the same shape, and for a sharper reason than they are
+     * separate from each other: those describe how a namespace's memory is holding up and are published for
+     * every namespace that runs, while this is published only where data was lost. Folded together, a
+     * namespace would have to report a zero here on every pass to keep its readings complete - and a zero on
+     * every pass is exactly what a discarding pipeline would look like if this ever stopped being wired.
+     */
+    public ObservationPublisher(StateStore state, ObservationStore observations,
+            Function<String, OptionalLong> recordCounts, Function<String, Map<String, String>> positions,
+            Function<String, Map<String, TableSnapshot>> snapshots,
+            Function<String, Map<String, Long>> frontierGaps,
+            Function<String, Map<String, NestStateReading>> nestStateReadings,
+            NestColdLayerWatch coldLayer,
+            Function<String, Map<String, Long>> frontierStalls,
+            FrontierStallWatch frontierStall,
+            Function<String, Map<String, Long>> nestDeadLetters) {
+        this.nestDeadLetters = Objects.requireNonNull(nestDeadLetters, "nestDeadLetters");
         this.state = Objects.requireNonNull(state, "state");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.recordCounts = Objects.requireNonNull(recordCounts, "recordCounts");
@@ -238,7 +271,7 @@ public final class ObservationPublisher {
             Map<String, Long> gaps = frontierGaps.apply(pipelineId);
             Map<String, Long> pinned = frontierStalls.apply(pipelineId);
             observations.save(new Observation(pipelineId, actual,
-                    metrics(pipelineId, actual, readings, gaps, pinned),
+                    metrics(pipelineId, actual, readings, gaps, pinned, nestDeadLetters.apply(pipelineId)),
                     snapshots.apply(pipelineId), positions.apply(pipelineId), carried));
             // Fed after the observation is written and never before. The observation is the contract and
             // the alert is a courtesy on top of it, so a fault in the alerting path must not be able to
@@ -273,7 +306,8 @@ public final class ObservationPublisher {
      * when a live job reports one, so its absence reads as "not wired" rather than a zero count.
      */
     private Map<String, Long> metrics(String pipelineId, PipelineState actual,
-            Map<String, NestStateReading> nestReadings, Map<String, Long> gaps, Map<String, Long> pinned) {
+            Map<String, NestStateReading> nestReadings, Map<String, Long> gaps, Map<String, Long> pinned,
+            Map<String, Long> discarded) {
         Map<String, Long> metrics = new HashMap<>();
         metrics.put("errorCount", actual == PipelineState.FAILED ? 1L : 0L);
         recordCounts.apply(pipelineId).ifPresent(count -> metrics.put("recordCount", count));
@@ -295,6 +329,11 @@ public final class ObservationPublisher {
             metrics.put(NEST_BACKFILL_MILLIS_PREFIX + namespace, reading.backfillMillis());
             reading.stored().ifPresent(stored -> metrics.put(NEST_STORED_PREFIX + namespace, stored));
         });
+        // One entry per namespace that discarded something, and none for a namespace that discarded
+        // nothing. The absence is load-bearing here rather than merely tidy: rows that never reach a
+        // document leave no other trace, so a reader has only this to go on, and a zero published on every
+        // pass is what an unwired count would look like too.
+        discarded.forEach((namespace, count) -> metrics.put(NEST_DEAD_LETTERED_PREFIX + namespace, count));
         return metrics;
     }
 }

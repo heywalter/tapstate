@@ -12,6 +12,7 @@ import com.hazelcast.jet.core.metrics.MetricNames;
 import com.hazelcast.jet.core.metrics.MetricTags;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.lifecycle.NestStateReading;
+import io.tapstate.runtime.engine.nest.NestDeadLetterMetricNames;
 import io.tapstate.runtime.engine.nest.NestMemoryBudget;
 import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestStateMetricNames;
@@ -252,9 +253,27 @@ public final class Engine {
     }
 
     /**
+     * How many changes each namespace of the pipeline could never place in a document, keyed by namespace;
+     * empty when it has no live job and for a job whose nests have discarded nothing.
+     *
+     * <p>The one number about a nest that nothing else can stand in for. A pipeline discarding every row it
+     * reads and one discarding none produce the same documents, run the same queues and report the same
+     * throughput - the rows counted here were never going to appear in any document, so no assertion about
+     * the output distinguishes the two. Absent rather than zero for a namespace that discarded nothing, for
+     * the reason the state readings are: "not measured" and "measured at nothing" call for opposite
+     * responses, and this is one where the second is the quiet state worth being able to trust.
+     *
+     * <p>Kept at its highest per namespace rather than summed, because every processor of a vertex on a
+     * member reports that member's running total rather than its own share.
+     */
+    public Map<String, Long> nestDeadLetters(String pipelineId) {
+        return byChain(pipelineId, NestDeadLetterMetricNames::namespaceOf);
+    }
+
+    /**
      * The pipeline's per-chain readings whose metric names {@code chainOf} recognises, each kept at its
      * highest across every sink that reported it. A metric name it does not recognise is skipped, so the
-     * two readings that share this shape stay separate despite riding the same collection.
+     * readings that share this shape stay separate despite riding the same collection.
      */
     private Map<String, Long> byChain(String pipelineId, Function<String, String> chainOf) {
         Job job = liveJob(pipelineId);

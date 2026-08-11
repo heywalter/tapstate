@@ -10,6 +10,7 @@ import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.DesiredStore;
 import io.tapstate.spi.store.KeyedStateStore;
+import io.tapstate.spi.store.NestDeadLetterStore;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.SchemaStore;
 import io.tapstate.spi.store.SrsMetaStore;
@@ -59,6 +60,14 @@ public final class MongoStorePort implements StorePort {
     public static final String OPERATOR_STATE = "operator_state";
 
     /**
+     * The collection holding one document per element a stateful operator could never assemble. It sits
+     * beside the state rather than with everything else because it is produced by the same run at the same
+     * rates and is dropped with the same namespace - and because a dump or a restore aimed at what an
+     * operator configured should not carry a pipeline's discarded rows along with it.
+     */
+    public static final String NEST_DEAD_LETTERS = "nest_dead_letters";
+
+    /**
      * The database holding operator state, which is deliberately not the one holding everything else.
      * What an operator configured and what a running job is holding have nothing in common but the
      * connection: one is edited by hand and read rarely, the other is written at event rates and read
@@ -84,6 +93,7 @@ public final class MongoStorePort implements StorePort {
     private final ObservationStore observations;
     private final SrsMetaStore meta;
     private final KeyedStateStore keyedState;
+    private final NestDeadLetterStore nestDeadLetters;
 
     /**
      * Binds the sub-stores to their own collections on the verified connection's database, bar operator
@@ -107,9 +117,11 @@ public final class MongoStorePort implements StorePort {
         this.observations = new MongoObservationStore(database.getCollection(PIPELINE_OBSERVATION));
         this.meta = new MongoSrsMetaStore(database.getCollection(SRS_META));
         // Operator state alone sits in its own database on the same client, for the reasons on the
-        // constant. Same connection, same credentials, same lifecycle - a different database.
-        this.keyedState = new MongoKeyedStateStore(
-                connection.client().getDatabase(NEST_STATE_DATABASE).getCollection(OPERATOR_STATE));
+        // constant. Same connection, same credentials, same lifecycle - a different database. What that
+        // operator could not assemble goes in the same database, being produced by the same run.
+        MongoDatabase nestState = connection.client().getDatabase(NEST_STATE_DATABASE);
+        this.keyedState = new MongoKeyedStateStore(nestState.getCollection(OPERATOR_STATE));
+        this.nestDeadLetters = new MongoNestDeadLetterStore(nestState.getCollection(NEST_DEAD_LETTERS));
     }
 
     @Override
@@ -170,5 +182,10 @@ public final class MongoStorePort implements StorePort {
     @Override
     public KeyedStateStore keyedState() {
         return keyedState;
+    }
+
+    @Override
+    public NestDeadLetterStore nestDeadLetters() {
+        return nestDeadLetters;
     }
 }

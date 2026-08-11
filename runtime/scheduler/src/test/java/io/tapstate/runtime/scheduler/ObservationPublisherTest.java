@@ -2,6 +2,7 @@ package io.tapstate.runtime.scheduler;
 
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
+import io.tapstate.core.lifecycle.FrontierStallPressure;
 import io.tapstate.core.lifecycle.NestColdLayerPressure;
 import io.tapstate.core.lifecycle.NestStateWindow;
 import io.tapstate.core.lifecycle.Observation;
@@ -235,6 +236,45 @@ class ObservationPublisherTest {
 
         assertThat(observations.read("orders").orElseThrow().metrics())
                 .doesNotContainKey("nestStateStored.nest.orders.doc.$root");
+    }
+
+    /**
+     * The one number about a nest that nothing else on this face can stand in for. A pipeline discarding
+     * every row it reads and one discarding none produce the same documents, the same record count and the
+     * same state readings, because the rows counted here were never going to appear in a document at all.
+     */
+    @Test
+    void publishWiresHowManyChangesANamespaceCouldNeverPlaceInADocument() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, NestColdLayerAlert.NONE),
+                id -> Map.of(),
+                new FrontierStallWatch(FrontierStallPressure.DEFAULT, FrontierStallAlert.NONE),
+                id -> Map.of("nest.orders.doc.items", 412L));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .contains(entry("nestDeadLettered.nest.orders.doc.items", 412L));
+    }
+
+    /**
+     * And absent, not zero, for a namespace that discarded nothing. The distinction is load-bearing here in
+     * a way it is not for the other readings: rows that never reach a document leave no other trace, so a
+     * zero published every pass is exactly what this reading would look like if it stopped being wired.
+     */
+    @Test
+    void aNamespaceThatDiscardedNothingReportsNothingRatherThanZero() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.items", new NestStateReading(4_000L, 900L, 30L, 210L)));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .doesNotContainKey("nestDeadLettered.nest.orders.doc.items");
     }
 
     /**

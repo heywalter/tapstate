@@ -21,6 +21,7 @@ import io.tapstate.runtime.engine.FrontierBinding;
 import io.tapstate.runtime.engine.FrontierOrders;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
 import io.tapstate.runtime.engine.SinkAckFactory;
+import io.tapstate.runtime.engine.nest.DurableNestDeadLetter;
 import io.tapstate.runtime.engine.nest.NestBinding;
 import io.tapstate.runtime.engine.nest.NestClock;
 import io.tapstate.runtime.engine.nest.NestSettings;
@@ -320,7 +321,8 @@ final class StoreBackedDagSource implements DagSource {
 
     private NestBinding nestBinding(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
         Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
-        return new NestBinding(byAlias::get, NestBinding.onMap(), new CountingNestDeadLetter(),
+        return new NestBinding(byAlias::get, NestBinding.onMap(),
+                new LoggingNestDeadLetter(new DurableNestDeadLetter()),
                 new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()),
                 new StoreBackedNestStateLedger(storePort.keyedState()),
                 // What the deployment was started with, with what this pipeline's author wrote over it.

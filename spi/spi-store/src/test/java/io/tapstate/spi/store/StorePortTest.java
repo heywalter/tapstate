@@ -18,8 +18,10 @@ import io.tapstate.core.model.ViewResource;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -686,6 +688,7 @@ class StorePortTest {
         private final Map<String, Observation> observations = new HashMap<>();
         private final Map<String, SrsMeta> srsMeta = new HashMap<>();
         private final Map<String, byte[]> keyedState = new HashMap<>();
+        private final Map<String, NestDeadLetterRecord> deadLetters = new LinkedHashMap<>();
 
         @Override
         public ArtifactStore artifacts() {
@@ -920,6 +923,30 @@ class StorePortTest {
                 @Override
                 public long count(String namespace) {
                     return keyedState.keySet().stream().filter(id -> id.startsWith(namespace + "/")).count();
+                }
+            };
+        }
+
+        @Override
+        public NestDeadLetterStore nestDeadLetters() {
+            return new NestDeadLetterStore() {
+                @Override
+                public void record(NestDeadLetterRecord record) {
+                    deadLetters.put(record.namespace() + "/" + record.element(), record);
+                }
+
+                @Override
+                public List<NestDeadLetterRecord> read(String namespace, int limit) {
+                    return deadLetters.values().stream()
+                            .filter(held -> held.namespace().equals(namespace))
+                            .sorted(Comparator.comparingLong(NestDeadLetterRecord::discardedAt).reversed())
+                            .limit(limit)
+                            .toList();
+                }
+
+                @Override
+                public void dropNamespace(String namespace) {
+                    deadLetters.values().removeIf(held -> held.namespace().equals(namespace));
                 }
             };
         }

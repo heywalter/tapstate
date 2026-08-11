@@ -53,7 +53,13 @@ class RuntimeConvergenceConfiguration {
                 captureCoordinator::snapshotProgress, engine::frontierGaps, engine::nestStateReadings,
                 new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, new LoggingNestColdLayerAlert()),
                 engine::frontierStalls,
-                new FrontierStallWatch(FrontierStallPressure.DEFAULT, new LoggingFrontierStallAlert()));
+                new FrontierStallWatch(FrontierStallPressure.DEFAULT, new LoggingFrontierStallAlert()),
+                // The one number about a nest that nothing else can stand in for: a pipeline discarding
+                // every row it reads and one discarding none produce the same documents and the same
+                // statistics everywhere else, because the rows counted here were never going to appear in
+                // any document. Without it on this face, "is anything being thrown away" is answerable
+                // only by reading logs on whichever member happened to run the vertex.
+                engine::nestDeadLetters);
     }
 
     @Bean

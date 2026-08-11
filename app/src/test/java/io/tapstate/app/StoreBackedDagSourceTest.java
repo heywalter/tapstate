@@ -345,6 +345,7 @@ class StoreBackedDagSourceTest {
 
         private final SrsMetaStore meta = new InMemorySrsMetaStore();
         private final InMemoryKeyedStateStore keyedState = new InMemoryKeyedStateStore();
+        private final InMemoryNestDeadLetterStore nestDeadLetters = new InMemoryNestDeadLetterStore();
 
         @Override
         public SrsMetaStore meta() {
@@ -354,6 +355,11 @@ class StoreBackedDagSourceTest {
         @Override
         public io.tapstate.spi.store.KeyedStateStore keyedState() {
             return keyedState;
+        }
+
+        @Override
+        public io.tapstate.spi.store.NestDeadLetterStore nestDeadLetters() {
+            return nestDeadLetters;
         }
     }
 }

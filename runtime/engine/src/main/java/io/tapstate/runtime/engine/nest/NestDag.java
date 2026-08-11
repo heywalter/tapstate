@@ -224,6 +224,7 @@ public final class NestDag {
         private final NestClock clock;
         private transient ReplayFloor floor;
         private transient NestBinding.NestStores bound;
+        private transient NestDeadLetter boundDeadLetter;
 
         private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
                 NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
@@ -247,6 +248,9 @@ public final class NestDag {
             // Metered from here and nowhere else: this is the one place a job is what the stores are
             // being bound for, and a reading can only be left from a thread running its processors.
             bound = stores.bind(context.hazelcastInstance(), JetNestStateGauge::new);
+            // Bound for the same reason and at the same moment: somewhere to keep what cannot be assembled
+            // is reached through a handle that does not travel with the graph.
+            boundDeadLetter = deadLetter.bind(context.hazelcastInstance());
         }
 
         @Override
@@ -256,7 +260,7 @@ public final class NestDag {
                 processors.add(spec.isAssembler()
                         ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
                                 axes, chainsByOrdinal, floor, settings, clock)
-                        : new ResolverProcessor(spec, bound.forResolver(spec), deadLetter, axes,
+                        : new ResolverProcessor(spec, bound.forResolver(spec), boundDeadLetter, axes,
                                 chainsByOrdinal, floor, clock, settings));
             }
             return processors;
