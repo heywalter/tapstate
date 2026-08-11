@@ -27,7 +27,7 @@ import org.springframework.context.annotation.Import;
 @Import({RestApiConfiguration.class, ArtifactController.class, ConnectionController.class,
         ConnectorController.class, PipelineController.class, PipelineObservationController.class,
         PipelineLogsController.class, PipelineStreamConfiguration.class, ClusterController.class,
-        HealthController.class, AuthController.class, TokenController.class,
+        HealthController.class, AuthController.class, TokenController.class, SourceDraftController.class,
         ApiExceptionHandler.class})
 public class ControlHttpFace {
 

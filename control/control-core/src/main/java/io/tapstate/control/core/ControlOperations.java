@@ -32,6 +32,13 @@ public final class ControlOperations {
     public static final Operation ARTIFACT_GET = new Operation("artifact.get", Scope.READ, false, null, CLI_POC);
     public static final Operation ARTIFACT_LIST = new Operation("artifact.list", Scope.READ, false, null, CLI_POC);
 
+    // source.draft validates a structured Source view and renders canonical YAML without persistence;
+    // Source CRUD is intentionally not part of this registry.
+    public static final Operation SOURCE_DRAFT = mcp(
+            "source.draft", Scope.READ, false,
+            "Render canonical YAML for a Source with a known connector through the live connector contract."
+                    + " This does not create an artifact or audit record.");
+
     // connection domain: each probing verb runs an external probe and persists its result for later query
     // and display, so it mutates persisted state (a write) and is audited; its read-back peer returns the
     // latest persisted result (or a 404 when the connection was never probed), mutates nothing, and is
@@ -115,6 +122,7 @@ public final class ControlOperations {
             ARTIFACT_VALIDATE,
             ARTIFACT_GET,
             ARTIFACT_LIST,
+            SOURCE_DRAFT,
             CONNECTION_TEST,
             CONNECTION_TEST_RESULT,
             CONNECTION_DISCOVER_SCHEMA,

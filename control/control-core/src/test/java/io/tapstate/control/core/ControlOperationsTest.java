@@ -17,6 +17,7 @@ class ControlOperationsTest {
                         "artifact.validate",
                         "artifact.get",
                         "artifact.list",
+                        "source.draft",
                         "connection.test",
                         "connection.test-result",
                         "connection.discover-schema",
@@ -101,6 +102,7 @@ class ControlOperationsTest {
         for (String id : List.of(
                 "artifact.get",
                 "artifact.list",
+                "source.draft",
                 "artifact.validate",
                 "connection.test-result",
                 "connection.schema",
@@ -122,7 +124,7 @@ class ControlOperationsTest {
         // A scope statement about the registry alone: the CLI face opens every registered operation and
         // clips none of them below POC. Whether each one has a verb behind it is not knowable from here
         // — control-core cannot see the CLI — and is gated where both are visible, in arch-tests.
-        assertThat(registry.exposedOn(Frontend.CLI, Maturity.POC)).hasSize(26);
+        assertThat(registry.exposedOn(Frontend.CLI, Maturity.POC)).hasSize(27);
         assertThat(registry.all()).allSatisfy(op ->
                 assertThat(op.exposure()).as(op.id()).containsEntry(Frontend.CLI, Maturity.POC));
     }
@@ -133,6 +135,7 @@ class ControlOperationsTest {
                 .extracting(Operation::id)
                 .containsExactlyInAnyOrder(
                         "connector.list", "connector.get",
+                        "source.draft",
                         "connection.test", "connection.test-result",
                         "connection.discover-schema", "connection.schema",
                         "artifact.validate", "artifact.apply",

@@ -113,6 +113,7 @@ class ControlPlaneAssemblyIT {
                 .retrieve().body(Map.class);
         assertThat(logs.get("pipelineId")).isEqualTo("ghost");
         assertThat((List<?>) logs.get("lines")).isEmpty();
+    }
 
     @Test
     void connectionTestIsWiredThroughToTheConnectorRegistryOverARealStore() {

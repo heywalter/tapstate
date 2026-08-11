@@ -12,6 +12,7 @@ class ControlApiSchemaTest {
 
     private static final Set<String> MCP_OPERATIONS = Set.of(
             "connector.list", "connector.get",
+            "source.draft",
             "connection.test", "connection.test-result", "connection.discover-schema", "connection.schema",
             "artifact.validate", "artifact.apply",
             "pipeline.start", "pipeline.stop", "pipeline.status", "pipeline.metrics",
@@ -43,6 +44,12 @@ class ControlApiSchemaTest {
             assertThat(definitions.containsKey(
                     operation.schema().result().substring("#/$defs/".length()))).isTrue();
         }
+    }
+
+    @Test
+    void sourceDraftUsesTheStructuredSourceRequestAndYamlResult() {
+        assertThat(ControlApiSchema.ref("source.draft").params()).isEqualTo("#/$defs/SourceDraftRequest");
+        assertThat(ControlApiSchema.ref("source.draft").result()).isEqualTo("#/$defs/SourceDraftResult");
     }
 
 }

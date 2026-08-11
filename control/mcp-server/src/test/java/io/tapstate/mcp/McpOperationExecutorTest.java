@@ -54,6 +54,8 @@ class McpOperationExecutorTest {
             List<Map.Entry<io.tapstate.control.core.Operation, Map<String, Object>>> calls = List.of(
                     Map.entry(ControlOperations.CONNECTOR_LIST, Map.of()),
                     Map.entry(ControlOperations.CONNECTOR_GET, Map.of("id", "mysql")),
+                    Map.entry(ControlOperations.SOURCE_DRAFT, Map.of(
+                            "id", "orders", "connector", "mysql", "config", Map.of("host", "db"))),
                     Map.entry(ControlOperations.CONNECTION_TEST, connection),
                     Map.entry(ControlOperations.CONNECTION_TEST_RESULT, Map.of("id", "orders")),
                     Map.entry(ControlOperations.CONNECTION_DISCOVER_SCHEMA, connection),
@@ -75,6 +77,7 @@ class McpOperationExecutorTest {
 
             assertThat(paths).contains(
                     "/api/connectors", "/api/connectors/mysql", "/api/connections:test",
+                    "/api/sources:draft",
                     "/api/connections/orders/test-result", "/api/connections:discover-schema",
                     "/api/connections/orders/schema", "/api/artifacts:validate", "/api/artifacts:apply",
                     "/api/pipelines/orders:start", "/api/pipelines/orders:stop",

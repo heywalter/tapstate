@@ -50,6 +50,7 @@ public final class ControlApiSchema {
         Map<String, SchemaRef> refs = new LinkedHashMap<>();
         bind(refs, "connector.list", "ConnectorList");
         bind(refs, "connector.get", "ConnectorGet");
+        bind(refs, "source.draft", "SourceDraft");
         bind(refs, "connection.test", "ConnectionTest");
         bind(refs, "connection.test-result", "ConnectionTestResult");
         bind(refs, "connection.discover-schema", "ConnectionDiscoverSchema");
@@ -77,6 +78,21 @@ public final class ControlApiSchema {
 
         pair(defs, "ConnectorList", empty, opaque);
         pair(defs, "ConnectorGet", object(List.of("id"), Map.of("id", id), false), opaque);
+
+        Map<String, Object> sourceProperties = new LinkedHashMap<>();
+        sourceProperties.put("id", id);
+        sourceProperties.put("metadata", opaque);
+        sourceProperties.put("connector", string("Registered connector id"));
+        sourceProperties.put("config", object(List.of(), Map.of(), true));
+        sourceProperties.put("mode", string("Source read mode"));
+        sourceProperties.put("tables", array(opaque));
+        sourceProperties.put("options", opaque);
+        sourceProperties.put("srs", opaque);
+        sourceProperties.put("experimental", opaque);
+        sourceProperties.put("clearSecrets", array(string("Config secret field to clear")));
+        pair(defs, "SourceDraft", object(
+                List.of("id", "connector", "config"), sourceProperties, false), object(
+                List.of("yaml"), Map.of("yaml", string("Canonical tapstate/v1 Source YAML")), false));
         Map<String, Object> connectionProperties = new LinkedHashMap<>();
         connectionProperties.put("id", id);
         connectionProperties.put("connectorId", string("Connector id"));
