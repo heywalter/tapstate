@@ -140,26 +140,20 @@ class McpOperationExecutorTest {
 
     @Test
     void sourceDraftFailsClosedForUnavailableConnectorMetadata() throws Exception {
-        assertThat(sourceDraftResult(500, "{}", "{}").body())
-                .containsEntry("code", "mcp.connector-spec-unavailable");
-        assertThat(sourceDraftResult(200, "{\"config\":{}}", "{}").body())
-                .containsEntry("code", "mcp.connector-spec-unavailable");
-        assertThat(sourceDraftResult(200, "{\"config\":[{\"name\":\"password\"}]}", "{}").body())
-                .containsEntry("code", "mcp.connector-spec-unavailable");
+        assertSourceDraftUnavailable(500, "{}", "{}");
+        assertSourceDraftUnavailable(200, "{\"config\":{}}", "{}");
+        assertSourceDraftUnavailable(200, "{\"config\":[{\"name\":\"password\"}]}", "{}");
     }
 
     @Test
     void sourceDraftFailsClosedForMalformedDraftResponses() throws Exception {
         String connector = "{\"config\":[{\"name\":\"password\",\"secret\":true}]}";
-        assertThat(sourceDraftResult(200, connector, "{}").body())
-                .containsEntry("code", "mcp.connector-spec-unavailable");
-        assertThat(sourceDraftResult(200, connector, "{\"yaml\":\"version: tapstate/v1\\n"
+        assertSourceDraftUnavailable(200, connector, "{}");
+        assertSourceDraftUnavailable(200, connector, "{\"yaml\":\"version: tapstate/v1\\n"
                 + "kind: pipeline\\nid: not_source\\nsource: src_file\\n"
                 + "settings: { read_mode: snapshot_and_cdc }\\n"
-                + "transforms: []\\nserve: { from: src_file, sync: [] }\\n\"}").body())
-                .containsEntry("code", "mcp.connector-spec-unavailable");
-        assertThat(sourceDraftResult(200, connector, "{\"yaml\":\"not valid yaml\"}").body())
-                .containsEntry("code", "mcp.connector-spec-unavailable");
+                + "transforms: []\\nserve: { from: src_file, sync: [] }\\n\"}");
+        assertSourceDraftUnavailable(200, connector, "{\"yaml\":\"not valid yaml\"}");
     }
 
     @Test
@@ -256,6 +250,12 @@ class McpOperationExecutorTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    private static void assertSourceDraftUnavailable(
+            int connectorStatus, String connectorBody, String draftBody) throws Exception {
+        assertThat(sourceDraftResult(connectorStatus, connectorBody, draftBody).body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
     }
 
     private static void answer(HttpExchange exchange, int status, String body) throws IOException {

@@ -4,10 +4,10 @@ import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.common.TapstateException;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Collections;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -103,33 +103,23 @@ class SourceDraftServiceTest {
 
         Map<String, Object> nullKey = new LinkedHashMap<>();
         nullKey.put(null, "value");
-        assertThatThrownBy(() -> new SourceDraft(
-                "orders", null, "mysql", nullKey, null, null, null, null, null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("keys must not be null");
-        assertThatThrownBy(() -> new SourceDraft(
-                "orders", null, "mysql", Map.of("value", Double.NaN), null, null,
-                null, null, null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("numbers must be finite");
-        assertThatThrownBy(() -> new SourceDraft(
-                "orders", null, "mysql", Map.of("value", Float.POSITIVE_INFINITY), null, null,
-                null, null, null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("numbers must be finite");
-        assertThatThrownBy(() -> new SourceDraft(
-                "orders", null, "mysql", Map.of("value", new Object()), null, null,
-                null, null, null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("unsupported JSON value type");
+        assertInvalidConfig(nullKey, "keys must not be null");
+        assertInvalidConfig(Map.of("value", Double.NaN), "numbers must be finite");
+        assertInvalidConfig(Map.of("value", Float.POSITIVE_INFINITY), "numbers must be finite");
+        assertInvalidConfig(Map.of("value", new Object()), "unsupported JSON value type");
 
         Map<Object, Object> invalidNested = new LinkedHashMap<>();
         invalidNested.put(1, "value");
+        Map<String, Object> nestedConfig = new LinkedHashMap<>();
+        nestedConfig.put("nested", invalidNested);
+        assertInvalidConfig(nestedConfig, "keys must be strings");
+    }
+
+    private static void assertInvalidConfig(Map<String, Object> config, String message) {
         assertThatThrownBy(() -> new SourceDraft(
-                "orders", null, "mysql", Map.of("nested", invalidNested), null, null,
-                null, null, null, null))
+                "orders", null, "mysql", config, null, null, null, null, null, null))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("keys must be strings");
+                .hasMessageContaining(message);
     }
 
     private static SourceDraftService service() {
