@@ -118,4 +118,33 @@ class MongoStorePortIT {
             }
         }
     }
+
+    /**
+     * Operator state is the one sub-store that does not live beside the others. It is the working state of
+     * a running job rather than anything an operator configured, and it is written at event rates, so it
+     * is kept out of the database holding the configuration - named here by the literal rather than by the
+     * constant, because the name is the contract: two Tapstate installs pointed at one Mongo are meant to
+     * find the same one.
+     */
+    @Test
+    void nestStateLandsInItsOwnDatabaseRatherThanTheOneHoldingPipelineConfiguration() {
+        String uri = REPLICA_SET.getReplicaSetUrl();
+        MongoConnectionSettings settings = new MongoConnectionSettings(uri, null, Duration.ofSeconds(5));
+        try (MongoConnection connection = new MongoConnection(settings)) {
+            connection.verify();
+            MongoStorePort port = new MongoStorePort(connection);
+
+            port.keyedState().save("nest.orders_sync.assemble.items", "k1",
+                    "held-child".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(port.keyedState().load("nest.orders_sync.assemble.items", "k1")).isPresent();
+            String configured = new ConnectionString(uri).getDatabase();
+            try (MongoClient raw = MongoClients.create(uri)) {
+                assertThat(raw.getDatabase("tapstate_nest")
+                        .getCollection(MongoStorePort.OPERATOR_STATE).countDocuments()).isEqualTo(1);
+                assertThat(raw.getDatabase(configured)
+                        .getCollection(MongoStorePort.OPERATOR_STATE).countDocuments()).isZero();
+            }
+        }
+    }
 }

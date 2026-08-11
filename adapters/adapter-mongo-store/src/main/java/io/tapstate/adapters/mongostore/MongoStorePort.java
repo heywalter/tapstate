@@ -25,8 +25,10 @@ import java.util.Objects;
  * derived connector catalog rows, the latest connection-test result per connection, the plain-upsert
  * per-pipeline observation store, and the SRS meta store (one durable coordination record per mining
  * chain) — each bound to its own collection (or GridFS bucket) on the verified connection's database.
- * This is the store bridge the assembly root wires into the platform under {@code --role=all}; the app
- * sees only the driver-free {@link StorePort}, so no driver type escapes this module (rule R3).
+ * Operator state is the one exception and sits in a database of its own on the same client, for the
+ * reasons on {@link #NEST_STATE_DATABASE}. This is the store bridge the assembly root wires into the
+ * platform under {@code --role=all}; the app sees only the driver-free {@link StorePort}, so no driver
+ * type escapes this module (rule R3).
  */
 public final class MongoStorePort implements StorePort {
 
@@ -56,6 +58,20 @@ public final class MongoStorePort implements StorePort {
     /** The collection holding one stateful-operator state document per key, per namespace. */
     public static final String OPERATOR_STATE = "operator_state";
 
+    /**
+     * The database holding operator state, which is deliberately not the one holding everything else.
+     * What an operator configured and what a running job is holding have nothing in common but the
+     * connection: one is edited by hand and read rarely, the other is written at event rates and read
+     * back by key, and an operation aimed at one of them - a restore, a dump, a drop - should not be able
+     * to reach the other by accident.
+     *
+     * <p>The name is fixed rather than derived or configurable. Two installs pointed at one Mongo are
+     * meant to find the same database, and a pipeline of the same id in both of them then shares one
+     * state: the price of the fixed name, taken knowingly. Telling them apart later is a matter of what
+     * goes in the namespace, not of what the database is called.
+     */
+    public static final String NEST_STATE_DATABASE = "tapstate_nest";
+
     private final ArtifactStore artifacts;
     private final StateStore state;
     private final DesiredStore desired;
@@ -70,7 +86,8 @@ public final class MongoStorePort implements StorePort {
     private final KeyedStateStore keyedState;
 
     /**
-     * Binds the ten sub-stores to their own collections on the verified connection's database. The
+     * Binds the sub-stores to their own collections on the verified connection's database, bar operator
+     * state, which gets a database of its own on the same client ({@link #NEST_STATE_DATABASE}). The
      * connection must have been verified first (its client opened); the sub-stores share that one
      * client and are closed with it when the connection closes.
      */
@@ -89,7 +106,10 @@ public final class MongoStorePort implements StorePort {
                 new MongoConnectionTestResultStore(database.getCollection(CONNECTION_TEST_RESULTS));
         this.observations = new MongoObservationStore(database.getCollection(PIPELINE_OBSERVATION));
         this.meta = new MongoSrsMetaStore(database.getCollection(SRS_META));
-        this.keyedState = new MongoKeyedStateStore(database.getCollection(OPERATOR_STATE));
+        // Operator state alone sits in its own database on the same client, for the reasons on the
+        // constant. Same connection, same credentials, same lifecycle - a different database.
+        this.keyedState = new MongoKeyedStateStore(
+                connection.client().getDatabase(NEST_STATE_DATABASE).getCollection(OPERATOR_STATE));
     }
 
     @Override
