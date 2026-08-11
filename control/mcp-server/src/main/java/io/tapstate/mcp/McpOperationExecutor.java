@@ -94,10 +94,14 @@ final class McpOperationExecutor {
                     McpError.CONNECTOR_SPEC_UNAVAILABLE,
                     Map.of("connector", connector));
         }
+        Object originalConfig = arguments.get("config");
         Map<String, Object> expanded = new LinkedHashMap<>(arguments);
-        expanded.put("config", EnvironmentExpander.expand(arguments.get("config"), environment));
+        expanded.put("config", EnvironmentExpander.expand(originalConfig, environment));
         return redactSourceDraft(
-                post("/api/sources:draft", expanded, RequestBudget.HEAVY), secretFields, connector);
+                post("/api/sources:draft", expanded, RequestBudget.HEAVY),
+                secretFields,
+                connector,
+                originalConfig);
     }
 
     private List<String> connectorSecretFields(String connector) {
@@ -124,8 +128,12 @@ final class McpOperationExecutor {
     }
 
     private McpResult redactSourceDraft(
-            McpResult result, List<String> secretFields, String connector) {
-        if (result.error() || secretFields.isEmpty()) {
+            McpResult result,
+            List<String> secretFields,
+            String connector,
+            Object originalConfig) {
+        if (result.error()
+                || (secretFields.isEmpty() && !EnvironmentExpander.containsReference(originalConfig))) {
             return result;
         }
         Object value = result.body().get("yaml");
@@ -141,7 +149,14 @@ final class McpOperationExecutor {
                         McpError.CONNECTOR_SPEC_UNAVAILABLE,
                         Map.of("connector", connector));
             }
-            Map<String, Object> config = new LinkedHashMap<>(source.config());
+            Object restoredConfig = EnvironmentExpander.restoreReferences(source.config(), originalConfig);
+            if (!(restoredConfig instanceof Map<?, ?> restored)) {
+                return McpResult.coded(
+                        McpError.CONNECTOR_SPEC_UNAVAILABLE,
+                        Map.of("connector", connector));
+            }
+            Map<String, Object> config = new LinkedHashMap<>();
+            restored.forEach((key, item) -> config.put(String.valueOf(key), item));
             secretFields.forEach(config::remove);
             SourceResource redacted = new SourceResource(
                     source.id(),

@@ -139,6 +139,40 @@ class McpOperationExecutorTest {
     }
 
     @Test
+    void sourceDraftRestoresPlaceholdersForNonSecretConfigFields() throws Exception {
+        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                answer(exchange, 200, """
+                        {"id":"mysql","config":[{"name":"host","secret":false}]}
+                        """);
+            } else {
+                posted.set((Map<?, ?>) JsonReader.parse(new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+                answer(exchange, 200, "{\"yaml\":\"version: tapstate/v1\\nkind: source\\nid: orders\\n"
+                        + "connector: mysql\\nconfig:\\n  host: expanded-host\\n\"}");
+            }
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of("MYSQL_HOST", "expanded-host"), client);
+
+            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
+                    Map.of("id", "orders", "connector", "mysql", "mode", "snapshot",
+                            "config", Map.of("host", "${MYSQL_HOST}")));
+
+            assertThat(result.error()).isFalse();
+            assertThat(((Map<?, ?>) posted.get().get("config")).get("host"))
+                    .isEqualTo("expanded-host");
+            assertThat(result.body().get("yaml")).asString()
+                    .contains("host: ${MYSQL_HOST}")
+                    .doesNotContain("host: expanded-host");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void sourceDraftFailsClosedForUnavailableConnectorMetadata() throws Exception {
         assertSourceDraftUnavailable(500, "{}", "{}");
         assertSourceDraftUnavailable(200, "{\"config\":{}}", "{}");
