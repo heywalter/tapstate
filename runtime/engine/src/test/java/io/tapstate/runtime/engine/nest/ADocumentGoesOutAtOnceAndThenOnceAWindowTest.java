@@ -267,6 +267,24 @@ class ADocumentGoesOutAtOnceAndThenOnceAWindowTest {
     }
 
     @Test
+    void aBusyVertexStillLetsGoOfWhatTheWindowRanOutOn() throws Exception {
+        AssemblerProcessor processor = throttled(WINDOW);
+        feed(processor, ROOT_ROWS, customer(1, "C1", "Ada"));
+        clock.advance(1);
+        feed(processor, FROM_POLICIES, policyElement(2, "C1", "P1"));
+        clock.advance(WINDOW);
+
+        // Another root arriving, and no idle turn anywhere: a vertex fed steadily is never asked to make
+        // progress with an empty inbox, which is exactly when the sweep would be the only thing running.
+        List<Envelope> out = feed(processor, ROOT_ROWS, customer(3, "C2", "Bo"));
+
+        assertThat(out)
+                .describedAs("C2's own leading edge, and C1's window running out - a nest under load would "
+                        + "otherwise hold every folded document until the load stopped")
+                .hasSize(2);
+    }
+
+    @Test
     void aRunThatEndsSendsWhatItsWindowsWereStillHolding() throws Exception {
         AssemblerProcessor processor = throttled(WINDOW);
         feed(processor, ROOT_ROWS, customer(1, "C1", "Ada"));
