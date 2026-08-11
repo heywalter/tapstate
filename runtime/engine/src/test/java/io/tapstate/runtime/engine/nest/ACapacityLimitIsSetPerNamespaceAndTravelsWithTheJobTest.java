@@ -1,6 +1,7 @@
 package io.tapstate.runtime.engine.nest;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -79,10 +80,59 @@ class ACapacityLimitIsSetPerNamespaceAndTravelsWithTheJobTest {
     }
 
     @Test
+    void aNamespaceNobodyConfiguredTakesTheDefaultSendWindow() {
+        assertThat(NestSettings.defaults().sendWindowIn(CUSTOMERS))
+                .isEqualTo(NestSettings.DEFAULT_SEND_WINDOW_MILLIS);
+    }
+
+    @Test
+    void aNamespaceGivenASendWindowOfItsOwnTakesThatOne() {
+        NestSettings settings = NestSettings.defaults().withSendWindow(CUSTOMERS, 200L);
+
+        assertThat(settings.sendWindowIn(CUSTOMERS)).isEqualTo(200L);
+        assertThat(settings.sendWindowIn(ORDERS))
+                .describedAs("filed under the namespace that set it, like every other number here")
+                .isEqualTo(NestSettings.DEFAULT_SEND_WINDOW_MILLIS);
+    }
+
+    /**
+     * Zero is a real setting - send every version as it is assembled - so it has to survive being written
+     * down. A guard that refused it, or a lookup that fell back to the default for it, would leave a
+     * deployment reading its own configuration back as 50 while running unthrottled or the other way round.
+     */
+    @Test
+    void aWindowOfZeroIsASettingRatherThanAnAbsentOne() {
+        assertThat(NestSettings.defaults().withSendWindow(CUSTOMERS, 0L).sendWindowIn(CUSTOMERS))
+                .isZero();
+    }
+
+    @Test
+    void aWindowShorterThanNoWindowIsRefused() {
+        assertThatThrownBy(() -> NestSettings.defaults().withSendWindow(CUSTOMERS, -1L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(CUSTOMERS);
+    }
+
+    /**
+     * The two ways of asking for something that cannot be built. A negative window is nonsense outright; a
+     * window with folding turned off is worse than nonsense, because it reads as a setting - it would delay
+     * every change by the window and merge none of them, which is the cost of throttling with none of the
+     * point.
+     */
+    @Test
+    void aSendPolicyThatCouldNotDoWhatItSaysIsRefused() {
+        assertThatThrownBy(() -> new NestSendPolicy(-1L, true))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new NestSendPolicy(50L, false))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void everyLimitReachesTheMemberThatWillEnforceIt() throws Exception {
         NestSettings settings = NestSettings.defaults()
                 .withElementLimit(CUSTOMERS, 12L).withElementLimit(ORDERS, 34L)
-                .withPendingLimit(CUSTOMERS, 56L).withPendingLimit(ORDERS, 78L);
+                .withPendingLimit(CUSTOMERS, 56L).withPendingLimit(ORDERS, 78L)
+                .withSendWindow(CUSTOMERS, 200L).withSendWindow(ORDERS, 10L);
 
         NestSettings arrived = roundTripped(settings);
 
@@ -90,6 +140,8 @@ class ACapacityLimitIsSetPerNamespaceAndTravelsWithTheJobTest {
         assertThat(arrived.elementsAllowedIn(ORDERS)).isEqualTo(34L);
         assertThat(arrived.pendingAllowedIn(CUSTOMERS)).isEqualTo(56L);
         assertThat(arrived.pendingAllowedIn(ORDERS)).isEqualTo(78L);
+        assertThat(arrived.sendWindowIn(CUSTOMERS)).isEqualTo(200L);
+        assertThat(arrived.sendWindowIn(ORDERS)).isEqualTo(10L);
     }
 
     /** What the job submission does to anything the vertices are configured with, and nothing more. */
