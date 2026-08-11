@@ -3,6 +3,7 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
+import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
@@ -25,9 +26,7 @@ import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
 import io.tapstate.control.core.Scope;
-import io.tapstate.control.core.SourceRepresentation;
 import io.tapstate.control.core.SourceService;
-import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.TokenSecrets;
 import io.tapstate.control.core.TokenService;
 import io.tapstate.control.core.TokenSigner;
@@ -520,7 +519,7 @@ class AuthTest {
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import({ControlHttpFace.class, SourceDraftTestConfiguration.class})
+    @Import({ControlHttpFace.class, SourceDraftTestConfiguration.class, SourceServiceTestConfiguration.class})
     static class TestApp {
 
         @Bean
@@ -603,16 +602,6 @@ class AuthTest {
         @Bean
         ArtifactQueryService artifactQueryService(InMemoryArtifactStore store) {
             return new ArtifactQueryService(store);
-        }
-
-        @Bean
-        SourceRepresentation sourceRepresentation() {
-            return new SourceRepresentation(TapstateCatalog::load);
-        }
-
-        @Bean
-        SourceService sourceService(InMemoryArtifactStore store, SourceRepresentation representation) {
-            return new SourceService(TapstateCatalog::load, store, representation);
         }
 
         @Bean
