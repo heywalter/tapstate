@@ -25,6 +25,7 @@ import io.tapstate.core.model.ServeBlock;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
+import io.tapstate.runtime.engine.nest.HeapNestStores;
 import io.tapstate.runtime.engine.nest.NestBinding;
 import io.tapstate.runtime.engine.nest.NestClock;
 import io.tapstate.runtime.engine.nest.NestSettings;
@@ -239,7 +240,7 @@ class NestDagRunTest {
                 s -> (SupplierEx<TransformPort>) () -> event -> List.of(event),
                 syncElement -> (SupplierEx<SinkWriter>) CollectingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onHeap(),
+                new NestBinding(tables::get, HeapNestStores.onHeap(),
                         (from, released) -> RELEASED.add(released), new CountingFloors(),
                         NestStateLedger.NONE, NestSettings.defaults(),
                         // A backstop of seconds rather than hours, so what would be given up on after a

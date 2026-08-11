@@ -114,7 +114,7 @@ class HazelcastConfiguration {
         return NestSettings.defaults();
     }
 
-    /** Builds the single-member config with nothing behind the nest state maps. */
+    /** Builds the single-member config for a run with no store, and so with no nest state maps. */
     static Config memberConfig(HazelcastProperties properties) {
         return memberConfig(properties, null);
     }
@@ -126,8 +126,8 @@ class HazelcastConfiguration {
 
     /**
      * Builds the single-member config; pure function, exposed for direct assertion. A run with no store
-     * ({@code nestStateStore} null) still gets the nest state maps, holding only what the member holds:
-     * declaring a store that is not there would fail the map the first time a vertex asked it for a key.
+     * ({@code nestStateStore} null) gets no nest state maps at all -- see the comment where they are
+     * installed.
      */
     static Config memberConfig(HazelcastProperties properties, @Nullable KeyedStateStore nestStateStore,
             NestSettings nestSettings) {
@@ -170,9 +170,15 @@ class HazelcastConfiguration {
         // compiled topology gave that vertex, so what those maps are has to be declared before any of them
         // exists. The engine owns their shape -- the assembly root only installs it here, next to the ring
         // it does the same for.
-        config.addMapConfig(nestStateStore == null
-                ? nestSettings.stateMaps()
-                : nestSettings.backedStateMaps());
+        //
+        // Only with a store behind them. Nest state must outlive the process: it holds changes that have
+        // been let past the source's read offset on the strength of being held here, so a map that keeps
+        // them in memory alone is not a smaller version of this, it is a way to lose them silently. There
+        // is no shape for that, and nothing needs one -- a run with no store drives no pipeline, so no
+        // vertex ever asks for a state map.
+        if (nestStateStore != null) {
+            config.addMapConfig(nestSettings.backedStateMaps());
+        }
         return config;
     }
 }

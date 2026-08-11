@@ -95,7 +95,7 @@ class NestStateSitsOnThePartitionItsEventsArriveOnTest {
         }
         NestDag.attach(dag, topology, "doc", "customer", "doc",
                 alias -> List.of(sources.get(alias)),
-                new NestBinding(tables(), NestBinding.onHeap(), (from, released) -> { }),
+                new NestBinding(tables(), HeapNestStores.onHeap(), (from, released) -> { }),
                 vertex -> 0, null);
     }
 

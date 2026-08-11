@@ -24,6 +24,7 @@ import io.tapstate.core.model.ServeBlock;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
+import io.tapstate.runtime.engine.nest.HeapNestStores;
 import io.tapstate.runtime.engine.nest.NestBinding;
 import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.spi.sink.SinkWriter;
@@ -187,7 +188,7 @@ class NestIsolatesSameLevelKeyspacesTest {
                 s -> (SupplierEx<TransformPort>) () -> event -> List.of(event),
                 syncElement -> (SupplierEx<SinkWriter>) CollectingSinkWriter::new,
                 ref -> List.of(((FromRef.Literal) ref).ref()),
-                new NestBinding(tables::get, NestBinding.onHeap(), (from, released) -> { }));
+                new NestBinding(tables::get, HeapNestStores.onHeap(), (from, released) -> { }));
 
         return PipelineDagBuilder.build(pipeline, bindings);
     }

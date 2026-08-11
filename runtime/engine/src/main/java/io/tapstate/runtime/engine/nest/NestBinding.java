@@ -107,22 +107,6 @@ public record NestBinding(
         }
     }
 
-    /** Stores that keep everything on the heap of the member running the vertex, and outlive nothing. */
-    public static NestStores onHeap() {
-        return new NestStores() {
-
-            @Override
-            public NestStore<ResolverState> forResolver(NestVertex vertex) {
-                return new HeapNestStore<>();
-            }
-
-            @Override
-            public NestStore<RootAssembly> forAssembler(NestVertex vertex) {
-                return new HeapNestStore<>();
-            }
-        };
-    }
-
     /**
      * Stores backed by one distributed map per vertex, the map named by whatever name the topology computed
      * for that vertex. That name has until now been derived and never consulted; here is where it starts to

@@ -109,7 +109,7 @@ class NestStateIsFoundByTheVertexMapNameTest {
      */
     @Test
     void theHeapBindingDeliberatelyFailsThisAndMustKeepFailingIt() {
-        NestBinding.NestStores stores = NestBinding.onHeap();
+        NestBinding.NestStores stores = HeapNestStores.onHeap();
         NestVertex vertex = resolver("nest.p1.n1.orders");
 
         stores.forResolver(vertex).save(7L, declaring("customer-1"));

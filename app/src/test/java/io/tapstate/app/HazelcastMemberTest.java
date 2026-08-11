@@ -2,7 +2,6 @@ package io.tapstate.app;
 
 import io.tapstate.core.event.ChainPosition;
 import com.hazelcast.config.Config;
-import com.hazelcast.config.EvictionPolicy;
 import com.hazelcast.config.InMemoryFormat;
 import com.hazelcast.config.JoinConfig;
 import com.hazelcast.config.MapConfig;
@@ -129,16 +128,21 @@ class HazelcastMemberTest {
     void memberConfigDeclaresWhatNestStateMapsAre() {
         // Nest state maps are created on demand as vertices ask for them, so what they are is decided here
         // or not at all -- and the substrate's own defaults are wrong for state a vertex must read back: a
-        // backup replica costs a copy per write for redundancy this state does not need, and expiry or
-        // eviction would drop entries with nothing behind the map to load them back from, emitting a
-        // half-built document instead of failing. The wildcard applies to every map the nest naming lands
-        // under, so the engine owns its shape and the assembly root only installs it.
-        Config config = HazelcastConfiguration.memberConfig(new HazelcastProperties());
+        // backup replica costs a copy per write for redundancy this state does not need, and expiry would
+        // drop entries that a later event is answered from, emitting a half-built document instead of
+        // failing. Eviction is the one bound that is allowed, because the store behind the map is where an
+        // evicted entry comes back from. The wildcard applies to every map the nest naming lands under, so
+        // the engine owns its shape and the assembly root only installs it.
+        Config config = HazelcastConfiguration.memberConfig(
+                new HazelcastProperties(), new InMemoryKeyedStateStore());
         MapConfig state = config.getMapConfigs().get(NestSettings.defaults().stateMaps().getName());
         assertThat(state).isNotNull();
         assertThat(state.getBackupCount()).isZero();
         assertThat(state.getTimeToLiveSeconds()).isZero();
-        assertThat(state.getEvictionConfig().getEvictionPolicy()).isEqualTo(EvictionPolicy.NONE);
+        assertThat(state.getMaxIdleSeconds()).isZero();
+        assertThat(state.getMapStoreConfig().isEnabled())
+                .describedAs("the only shape this member installs is one with a store behind it")
+                .isTrue();
     }
 
     @Test
@@ -156,14 +160,15 @@ class HazelcastMemberTest {
     }
 
     @Test
-    void memberConfigLeavesTheStateMapsWithNothingBehindThemWhenThereIsNoStore() {
-        // A run with no store -- a substrate check, say -- still gets nest state maps, and they still hold
-        // only what the member holds. Configuring a store that is not there would fail the map on first use.
+    void memberConfigDeclaresNoStateMapsAtAllWhenThereIsNoStore() {
+        // Nest state that outlives nothing is not a lesser version of nest state, it is a way to emit a
+        // half-built document and call it whole. So there is no shape for it: without a store there are no
+        // state maps to declare. Nothing is lost by their absence -- a run with no store drives no pipeline,
+        // so no vertex ever asks for one.
         Config config = HazelcastConfiguration.memberConfig(new HazelcastProperties(), null);
-        MapStoreConfig store = config.getMapConfigs().get(NestSettings.defaults().stateMaps().getName()).getMapStoreConfig();
-        assertThat(store == null || !store.isEnabled())
-                .describedAs("no store was supplied, so none is declared")
-                .isTrue();
+        assertThat(config.getMapConfigs())
+                .describedAs("a state map with nothing behind it is not a shape this member offers")
+                .doesNotContainKey(NestSettings.defaults().stateMaps().getName());
     }
 
     @Test

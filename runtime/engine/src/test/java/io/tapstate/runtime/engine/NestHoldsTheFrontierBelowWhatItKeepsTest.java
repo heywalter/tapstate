@@ -22,6 +22,7 @@ import io.tapstate.core.model.Embed;
 import io.tapstate.core.model.EmbedAs;
 import io.tapstate.core.model.NestRoot;
 import io.tapstate.core.model.TransformBody;
+import io.tapstate.runtime.engine.nest.HeapNestStores;
 import io.tapstate.runtime.engine.nest.NestBinding;
 import io.tapstate.runtime.engine.nest.NestDag;
 import io.tapstate.runtime.engine.nest.NestFrontier;
@@ -167,7 +168,7 @@ class NestHoldsTheFrontierBelowWhatItKeepsTest {
                 NestTopology.compile("p", "doc", body, tables::get),
                 "doc", "c", "doc",
                 alias -> List.of(byAlias.get(alias)),
-                new NestBinding(tables::get, NestBinding.onHeap(), (from, released) -> { }),
+                new NestBinding(tables::get, HeapNestStores.onHeap(), (from, released) -> { }),
                 vertex -> outbound.merge(vertex, 1, Integer::sum) - 1,
                 new NestFrontier(AXES, alias -> List.of(List.of(chainOfAlias.get(alias)))));
 
