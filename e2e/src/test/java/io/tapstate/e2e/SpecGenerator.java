@@ -152,6 +152,7 @@ final class SpecGenerator {
             forms.add(
                     switch (word) {
                         case COUNT -> keyed(word.word(), countBody());
+                        case DEAD_LETTERED -> keyed(word.word(), deadLetteredBody());
                         case ERROR_COUNT -> keyed(word.word(), errorCountBody());
                         case FAILURE_CODE -> keyed(word.word(), failureCodeBody());
                         case STATE -> keyed(word.word(), stateBody());
@@ -199,6 +200,15 @@ final class SpecGenerator {
         Map<String, Object> count = scalar("integer", "The published error count the pipeline is expected to show.");
         count.put("minimum", 0);
         return count;
+    }
+
+    private static Map<String, Object> deadLetteredBody() {
+        Map<String, Object> discarded = scalar("integer",
+                "How many changes this pipeline's nests are expected to have been unable to place in a "
+                        + "document, added up over its namespaces. Zero is a real assertion here rather than "
+                        + "a default: a pipeline that discarded rows publishes a number instead.");
+        discarded.put("minimum", 0);
+        return discarded;
     }
 
     private static Map<String, Object> failureCodeBody() {
@@ -279,6 +289,10 @@ final class SpecGenerator {
         return switch (MatcherWord.valueOf(word.toUpperCase(java.util.Locale.ROOT))) {
             case COUNT -> "Rows present at an endpoint, read from the endpoint itself rather than from "
                     + "the product's record of what it wrote.";
+            case DEAD_LETTERED -> "How many changes the pipeline's nests could never place in a document, "
+                    + "added up over its namespaces and read from the metrics face. Nothing else says it: "
+                    + "these rows were never going to appear in any document, so a pipeline discarding all "
+                    + "of them and one discarding none have the same counts, state and code.";
             case ERROR_COUNT -> "The pipeline's published error count, read from the metrics face: one "
                     + "while it is FAILED, zero otherwise.";
             case FAILURE_CODE -> "The canonical code of the failure the pipeline published, read from the "

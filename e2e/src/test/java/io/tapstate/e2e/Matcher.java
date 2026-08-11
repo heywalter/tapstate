@@ -48,6 +48,14 @@ public sealed interface Matcher {
      */
     record FailureCode(String expected) implements Matcher {}
 
+    /**
+     * How many changes the pipeline this specification names could never place in a document, added up over
+     * every namespace of it, read from its metrics face. Written as one number rather than keyed by
+     * namespace: a namespace name is derived from the pipeline and an embed path inside it, so naming one
+     * here would be an internal name for an author to copy by hand and to rewrite whenever a step is renamed.
+     */
+    record DeadLettered(long expected) implements Matcher {}
+
     static Matcher count(TableAlias table, long rows) {
         return new Count(Map.of(table, rows));
     }
@@ -62,5 +70,9 @@ public sealed interface Matcher {
 
     static Matcher failureCode(String expected) {
         return new FailureCode(expected);
+    }
+
+    static Matcher deadLettered(long expected) {
+        return new DeadLettered(expected);
     }
 }

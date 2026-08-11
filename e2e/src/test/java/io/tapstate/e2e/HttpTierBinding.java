@@ -137,6 +137,11 @@ final class HttpTierBinding implements TierBinding {
     }
 
     @Override
+    public Optional<Long> deadLettered(String pipelineId) {
+        return control.deadLettered(pipelineId);
+    }
+
+    @Override
     public Optional<String> failureCode(String pipelineId) {
         return control.failureCode(pipelineId);
     }

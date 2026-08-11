@@ -29,6 +29,17 @@ enum MatcherWord {
     ERROR_COUNT,
 
     /**
+     * How many changes the pipeline's nests could never place in a document, added up over its namespaces.
+     * Its source is the metrics read face, which carries a count per namespace that discarded anything.
+     *
+     * <p>The only word here whose subject leaves no other trace. A count of rows, a state and a failure code
+     * all describe something a specification could corner another way; discarded rows were never going to
+     * appear in any document, so a pipeline throwing all of them away and one throwing none produce
+     * identical counts, states and codes. Without this word a specification cannot tell those two apart.
+     */
+    DEAD_LETTERED,
+
+    /**
      * The canonical code of the failure the pipeline has published. Its source is the status read face,
      * which carries the coded reason a run died alongside the state, so what killed a pipeline is assertable
      * rather than only greppable in a log.

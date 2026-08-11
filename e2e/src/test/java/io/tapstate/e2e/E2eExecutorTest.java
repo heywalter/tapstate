@@ -281,6 +281,41 @@ class E2eExecutorTest {
     }
 
     @Test
+    void awaitsTheDiscardedChangesOfThePipelineResolvedFromTheEnvelope() {
+        binding.deadLettered(0L, 0L, 3L);
+
+        execute(minimal("steps:\n  - await: { dead_lettered: 3 }\n"));
+
+        assertThat(binding.deadLetteredReads).isEqualTo(3);
+        // The metrics read must address the pipeline the envelope names, not a hand-copied id.
+        assertThat(binding.deadLetteredPipelineIds).containsOnly(PIPELINE_ID);
+    }
+
+    @Test
+    void awaitsThroughAPipelineThatHasPublishedNoObservationYetForTheDiscardedChanges() {
+        binding.deadLetteredUnobservedThen(2L);
+
+        execute(minimal("steps:\n  - await: { dead_lettered: 2 }\n"));
+
+        assertThat(binding.deadLetteredReads).isEqualTo(2);
+    }
+
+    /**
+     * Asserting zero is the case worth having, and the reason this word exists. Nothing else a specification
+     * can say distinguishes a nest that placed every row from one that quietly threw rows away: the row
+     * counts, the state and the failure code all read identically either way.
+     */
+    @Test
+    void reportsChangesThatWereDiscardedWhereTheSpecificationExpectedNone() {
+        binding.deadLettered(4L);
+
+        assertThatThrownBy(() -> execute(minimal("steps:\n  - assert: { dead_lettered: 0 }\n")))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining(
+                        "mongo2mongo expected 0 changes that could not be placed in a document, found 4");
+    }
+
+    @Test
     void producesCdcChangesAgainstTheNamedTable() {
         execute(minimal("steps:\n  - cdc: { src_mongo.orders: insert 10 }\n"));
 
@@ -359,9 +394,12 @@ class E2eExecutorTest {
         private final List<String> errorCountedPipelineIds = new ArrayList<>();
         private List<Optional<String>> failureCodeSeries = List.of(Optional.empty());
         private final List<String> failureCodedPipelineIds = new ArrayList<>();
+        private List<Optional<Long>> deadLetteredSeries = List.of(Optional.of(0L));
+        private final List<String> deadLetteredPipelineIds = new ArrayList<>();
         private int stateReads;
         private int errorCountReads;
         private int failureCodeReads;
+        private int deadLetteredReads;
         private int countReads;
 
         void countsOverTime(TableAlias table, Long... readings) {
@@ -407,6 +445,19 @@ class E2eExecutorTest {
         /** Never publishes a failure: a pipeline that is running fine, or one never observed at all. */
         void failureCodeNeverPublished() {
             failureCodeSeries = List.of(Optional.empty());
+        }
+
+        void deadLettered(Long... readings) {
+            deadLetteredSeries = Stream.of(readings).map(Optional::of).toList();
+        }
+
+        /** Publishes no observation on the first read, then these counts: the window a real start opens. */
+        void deadLetteredUnobservedThen(Long... readings) {
+            deadLetteredSeries =
+                    Stream.concat(
+                                    Stream.of(Optional.<Long>empty()),
+                                    Stream.of(readings).map(Optional::of))
+                            .toList();
         }
 
         /** Publishes nothing on the first read, then these states: the window a real start opens. */
@@ -487,6 +538,13 @@ class E2eExecutorTest {
             failureCodedPipelineIds.add(pipelineId);
             int index = failureCodeReads++;
             return failureCodeSeries.get(Math.min(index, failureCodeSeries.size() - 1));
+        }
+
+        @Override
+        public Optional<Long> deadLettered(String pipelineId) {
+            deadLetteredPipelineIds.add(pipelineId);
+            int index = deadLetteredReads++;
+            return deadLetteredSeries.get(Math.min(index, deadLetteredSeries.size() - 1));
         }
     }
 }

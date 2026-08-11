@@ -142,6 +142,49 @@ class ControlPlaneTest {
                 .hasMessageContaining("carried no errorCount");
     }
 
+    /**
+     * The count a specification asserts on is one number, and the product publishes one per namespace. This
+     * is where the two meet, so it is where a nest that discarded rows in a namespace nobody thought to look
+     * at would go unreported.
+     */
+    @Test
+    void addsUpTheDiscardedChangesOfEveryNamespaceThatReportedAny() {
+        String body = JsonWriter.write(Map.of("pipelineId", PIPELINE, "metrics", Map.of(
+                "errorCount", 0,
+                "nestDeadLettered.nest.p.doc.items", 3,
+                "nestDeadLettered.nest.p.doc.items.tags", 4)));
+
+        assertThat(ControlPlane.interpretDeadLettered(200, body, PIPELINE)).contains(7L);
+    }
+
+    /**
+     * A pipeline that discarded nothing publishes no such metric at all, and that reads as zero rather than
+     * as nothing measured - which is what makes {@code dead_lettered: 0} an assertion a specification can
+     * hold a healthy pipeline to, rather than a wait that never resolves.
+     */
+    @Test
+    void readsAMetricsAnswerWithNoDiscardedChangesAsNoneRatherThanAsUnmeasured() {
+        assertThat(ControlPlane.interpretDeadLettered(200, metrics(0L), PIPELINE)).contains(0L);
+    }
+
+    /** And an unpublished observation stays "not yet", the same window every other reading sits through. */
+    @Test
+    void readsAnUnpublishedObservationAsNothingYetForDiscardedChanges() {
+        assertThat(ControlPlane.interpretDeadLettered(
+                404, coded(MonitorError.NO_OBSERVATION.code()), PIPELINE)).isEmpty();
+    }
+
+    /** A metric whose name merely starts the same way is not one of these, and must not be added in. */
+    @Test
+    void countsOnlyTheMetricsThatAreDiscardedChanges() {
+        String body = JsonWriter.write(Map.of("pipelineId", PIPELINE, "metrics", Map.of(
+                "errorCount", 0,
+                "nestStateEntries.nest.p.doc.items", 4_000,
+                "nestDeadLettered.nest.p.doc.items", 3)));
+
+        assertThat(ControlPlane.interpretDeadLettered(200, body, PIPELINE)).contains(3L);
+    }
+
     // A verb the harness expects to be refused reads its answer the same way: the product declining a
     // request is the outcome under test, and everything else - it succeeding, or the server failing - is
     // the specification's own failure and has to stay loud. Only the client-error range is a refusal; a

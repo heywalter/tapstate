@@ -191,6 +191,20 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "dead_lettered"
+          ],
+          "properties": {
+            "dead_lettered": {
+              "type": "integer",
+              "description": "How many changes this pipeline's nests are expected to have been unable to place in a document, added up over its namespaces. Zero is a real assertion here rather than a default: a pipeline that discarded rows publishes a number instead.",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
             "failure_code"
           ],
           "properties": {

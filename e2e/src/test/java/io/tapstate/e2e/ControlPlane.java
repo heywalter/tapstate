@@ -35,6 +35,14 @@ final class ControlPlane {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(20);
 
+    /**
+     * What every per-namespace count of unassemblable changes is named with, before the namespace itself.
+     * Written here rather than shared with the runtime that publishes it: this side is a reader of the
+     * product's metrics face, and a name it imported from the publisher would agree with the publisher by
+     * construction rather than by contract - so a rename would move both ends at once and assert nothing.
+     */
+    private static final String DEAD_LETTERED_PREFIX = "nestDeadLettered.";
+
     private final URI baseUrl;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(TIMEOUT).build();
 
@@ -325,6 +333,47 @@ final class ControlPlane {
             throw new AssertionError("metrics carried no errorCount: " + body);
         }
         return Optional.of(errorCount.longValue());
+    }
+
+    /**
+     * How many changes this pipeline's nests could never place in a document, added up over every namespace
+     * that reported any, or empty when the pipeline has published no observation yet.
+     *
+     * <p>Summed rather than keyed by namespace on purpose. A namespace name is derived from the pipeline and
+     * the embed path inside it, so asking a specification to name one would be asking an author to copy an
+     * internal name by hand - and to rewrite their assertion whenever a step is renamed. What a specification
+     * is asking is whether this pipeline threw anything away, which is one number.
+     *
+     * <p>Absent namespaces read as nothing discarded rather than as nothing measured, which is the opposite
+     * of how the readings around it are treated and is right here: this metric is published only where rows
+     * were lost, so no entry is the healthy answer rather than an unwired one.
+     */
+    Optional<Long> deadLettered(String pipelineId) {
+        HttpResponse<String> response = send(authedGet("/api/pipelines/" + pipelineId + "/metrics"));
+        return interpretDeadLettered(response.statusCode(), response.body(), pipelineId);
+    }
+
+    /** What a metrics answer says about discarded changes, read exactly the way the error count is. */
+    static Optional<Long> interpretDeadLettered(int status, String body, String pipelineId) {
+        if (status == 404 && MonitorError.NO_OBSERVATION.code().equals(codeOf(body))) {
+            return Optional.empty();
+        }
+        if (status != 200) {
+            throw new AssertionError(
+                    "could not read the metrics of " + pipelineId + ": expected HTTP 200, got " + status
+                            + " - " + body);
+        }
+        if (!(JsonReader.parse(body) instanceof Map<?, ?> map) || !(map.get("metrics") instanceof Map<?, ?> metrics)) {
+            throw new AssertionError("metrics answer carried no metrics: " + body);
+        }
+        long discarded = 0L;
+        for (Map.Entry<?, ?> entry : metrics.entrySet()) {
+            if (entry.getKey() instanceof String name && name.startsWith(DEAD_LETTERED_PREFIX)
+                    && entry.getValue() instanceof Number count) {
+                discarded += count.longValue();
+            }
+        }
+        return Optional.of(discarded);
     }
 
     /**
