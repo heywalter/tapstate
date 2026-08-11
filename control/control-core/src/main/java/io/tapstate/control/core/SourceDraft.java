@@ -4,6 +4,8 @@ import io.tapstate.core.model.Metadata;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +64,17 @@ public record SourceDraft(
             return value;
         }
         if (value instanceof Number number) {
+            if (!(number instanceof Byte
+                    || number instanceof Short
+                    || number instanceof Integer
+                    || number instanceof Long
+                    || number instanceof BigInteger
+                    || number instanceof BigDecimal
+                    || number instanceof Float
+                    || number instanceof Double)) {
+                throw new IllegalArgumentException(
+                        "unsupported JSON value type: " + value.getClass().getName());
+            }
             if (number instanceof Double doubleValue && !Double.isFinite(doubleValue)
                     || number instanceof Float floatValue && !Float.isFinite(floatValue)) {
                 throw new IllegalArgumentException("JSON numbers must be finite");

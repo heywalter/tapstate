@@ -5,8 +5,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SourceDraftServiceTest {
 
@@ -27,5 +29,16 @@ class SourceDraftServiceTest {
                 List.of()));
 
         assertThat(result.yaml()).contains("kind: source", "id: orders", "connector: mysql");
+    }
+
+    @Test
+    void rejectsMutableNumberImplementationsAtTheImmutableInputBoundary() {
+        AtomicInteger mutable = new AtomicInteger(3306);
+
+        assertThatThrownBy(() -> new SourceDraft(
+                "orders", null, "mysql", Map.of("port", mutable), null, null,
+                null, null, null, List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("unsupported JSON value type");
     }
 }

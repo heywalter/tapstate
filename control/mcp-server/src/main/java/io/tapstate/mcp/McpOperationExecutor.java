@@ -40,7 +40,7 @@ final class McpOperationExecutor {
             return switch (operation.id()) {
                 case "connector.list" -> get("/api/connectors");
                 case "connector.get" -> get("/api/connectors/" + segment(required(args, "id")));
-                case "source.draft" -> post("/api/sources:draft", args, RequestBudget.HEAVY);
+                case "source.draft" -> sourceDraft(args);
                 case "connection.test" -> connectionWrite(args, "/api/connections:test");
                 case "connection.test-result" -> get(
                         "/api/connections/" + segment(required(args, "id")) + "/test-result");
@@ -77,6 +77,12 @@ final class McpOperationExecutor {
         Map<String, Object> expanded = new LinkedHashMap<>(arguments);
         expanded.put("settings", EnvironmentExpander.expand(arguments.get("settings"), environment));
         return post(path, expanded, RequestBudget.HEAVY);
+    }
+
+    private McpResult sourceDraft(Map<String, Object> arguments) {
+        Map<String, Object> expanded = new LinkedHashMap<>(arguments);
+        expanded.put("config", EnvironmentExpander.expand(arguments.get("config"), environment));
+        return post("/api/sources:draft", expanded, RequestBudget.HEAVY);
     }
 
     private McpResult pipelineRead(Map<String, Object> arguments, String view) {

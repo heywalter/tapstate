@@ -47,9 +47,55 @@ class ControlApiSchemaTest {
     }
 
     @Test
-    void sourceDraftUsesTheStructuredSourceRequestAndYamlResult() {
-        assertThat(ControlApiSchema.ref("source.draft").params()).isEqualTo("#/$defs/SourceDraftRequest");
-        assertThat(ControlApiSchema.ref("source.draft").result()).isEqualTo("#/$defs/SourceDraftResult");
+    void sourceDraftDescriptionMakesTheServerOwnTheLiveConnectorContract() {
+        assertThat(ControlOperations.SOURCE_DRAFT.description())
+                .contains("known connector", "live connector contract", "canonical YAML");
     }
 
+    @Test
+    void sourceDraftLeavesOnlyConnectorConfigOpenForTheLiveContract() {
+        Map<?, ?> definitions = (Map<?, ?>) ControlApiSchema.document().get("$defs");
+        Map<?, ?> request = (Map<?, ?>) definitions.get("SourceDraftRequest");
+        Map<?, ?> properties = (Map<?, ?>) request.get("properties");
+        Map<?, ?> config = (Map<?, ?>) properties.get("config");
+
+        assertThat(request.get("additionalProperties")).isEqualTo(false);
+        assertThat(request.get("required")).isEqualTo(java.util.List.of("id", "connector", "config"));
+        assertThat(properties.keySet().stream().map(String::valueOf).toList()).containsExactlyInAnyOrder(
+                "id", "metadata", "connector", "config", "mode", "tables",
+                "options", "srs", "experimental", "clearSecrets");
+        assertThat(config.get("type")).isEqualTo("object");
+        assertThat(config.get("additionalProperties")).isEqualTo(true);
+        assertThat(definitions.get("SourceDraftResult")).isEqualTo(Map.of(
+                "type", "object",
+                "properties", Map.of("yaml", Map.of(
+                        "type", "string", "minLength", 1,
+                        "description", "Canonical tapstate/v1 Source YAML")),
+                "additionalProperties", false,
+                "required", java.util.List.of("yaml")));
+    }
+
+    @Test
+    void sourceDraftSchemaConstrainsNestedFieldsButKeepsExtensionMapsOpen() {
+        Map<?, ?> definitions = (Map<?, ?>) ControlApiSchema.document().get("$defs");
+        Map<?, ?> request = (Map<?, ?>) definitions.get("SourceDraftRequest");
+        Map<?, ?> properties = (Map<?, ?>) request.get("properties");
+
+        Map<?, ?> metadata = (Map<?, ?>) properties.get("metadata");
+        assertThat(metadata.get("additionalProperties")).isEqualTo(false);
+        assertThat(((Map<?, ?>) metadata.get("properties")).keySet().stream().map(String::valueOf).toList())
+                .containsExactlyInAnyOrder("labels", "description");
+
+        Map<?, ?> table = (Map<?, ?>) ((Map<?, ?>) properties.get("tables")).get("items");
+        assertThat(((Map<?, ?>) ((Map<?, ?>) table.get("properties")).get("type")).get("enum"))
+                .isEqualTo(java.util.List.of("literal", "regex", "spec"));
+
+        Map<?, ?> srs = (Map<?, ?>) properties.get("srs");
+        assertThat(((Map<?, ?>) ((Map<?, ?>) srs.get("properties")).get("schemaEvolution")).get("enum"))
+                .isEqualTo(java.util.List.of("track", "ignore"));
+        assertThat(((Map<?, ?>) ((Map<?, ?>) srs.get("properties")).get("queryable")).get("type"))
+                .isEqualTo("boolean");
+        assertThat(((Map<?, ?>) properties.get("options")).get("additionalProperties"))
+                .isEqualTo(true);
+    }
 }

@@ -1,5 +1,7 @@
 package io.tapstate.adapters.mongostore;
 
+import com.mongodb.ErrorCategory;
+import com.mongodb.MongoException;
 import com.mongodb.client.ClientSession;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoCollection;
@@ -10,6 +12,7 @@ import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
+import io.tapstate.spi.store.ArtifactMutation;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.IoError;
 import org.bson.Document;
@@ -45,6 +48,56 @@ public final class MongoArtifactStore implements ArtifactStore {
     public MongoArtifactStore(MongoClient client, MongoCollection<Document> collection) {
         this.client = Objects.requireNonNull(client, "client");
         this.collection = Objects.requireNonNull(collection, "collection");
+    }
+
+    @Override
+    public ArtifactMutation create(Resource artifact) {
+        Objects.requireNonNull(artifact, "artifact");
+        return StoreIo.call(() -> {
+            try {
+                collection.insertOne(toDocument(artifact));
+                return ArtifactMutation.CREATED;
+            } catch (MongoException e) {
+                if (ErrorCategory.fromErrorCode(e.getCode()) == ErrorCategory.DUPLICATE_KEY) {
+                    return ArtifactMutation.ALREADY_EXISTS;
+                }
+                throw e;
+            }
+        });
+    }
+
+    @Override
+    public ArtifactMutation replace(String id, String expectedContentHash, Resource replacement) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(expectedContentHash, "expectedContentHash");
+        Objects.requireNonNull(replacement, "replacement");
+        if (!id.equals(replacement.id())) {
+            throw new IllegalArgumentException("replacement id must equal the artifact id");
+        }
+        return StoreIo.call(() -> {
+            Document filter = new Document("_id", id).append("contentHash", expectedContentHash);
+            if (collection.replaceOne(filter, toDocument(replacement)).getMatchedCount() == 1) {
+                return ArtifactMutation.REPLACED;
+            }
+            return collection.find(new Document("_id", id)).first() == null
+                    ? ArtifactMutation.NOT_FOUND
+                    : ArtifactMutation.VERSION_CONFLICT;
+        });
+    }
+
+    @Override
+    public ArtifactMutation delete(String id, String expectedContentHash) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(expectedContentHash, "expectedContentHash");
+        return StoreIo.call(() -> {
+            Document filter = new Document("_id", id).append("contentHash", expectedContentHash);
+            if (collection.findOneAndDelete(filter) != null) {
+                return ArtifactMutation.DELETED;
+            }
+            return collection.find(new Document("_id", id)).first() == null
+                    ? ArtifactMutation.NOT_FOUND
+                    : ArtifactMutation.VERSION_CONFLICT;
+        });
     }
 
     @Override
