@@ -39,6 +39,17 @@ import java.util.function.Predicate;
  */
 public final class LevelBounds {
 
+    /**
+     * For a level with nothing that would lower its answer: it promises whatever its edges promised.
+     *
+     * <p>Holding a change is not by itself a reason to lower it. What lowers it is holding a change
+     * <em>nowhere it survives from</em> - one that is neither at a sink nor written down, so that letting
+     * the frontier past it would leave it neither delivered nor replayable. A change kept in state that is
+     * written through to a store is not in that position, and the level says so by passing its edges'
+     * answer straight on.
+     */
+    public static final Function<String, SourceOrder> HOLDS_NOTHING = chain -> null;
+
     private final Map<String, Set<Integer>> ordinalsByChain;
     private final ChainAxes axes;
     private final Function<String, SourceOrder> lowestHeld;

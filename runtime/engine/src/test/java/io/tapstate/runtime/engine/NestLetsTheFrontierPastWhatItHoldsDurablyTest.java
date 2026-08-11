@@ -46,12 +46,17 @@ import org.junit.jupiter.api.Test;
  * back, then an assembler, then whatever is downstream. Every other bound test drives one level: this is
  * the first that watches a bound travel two of them and a cascading edge between.
  *
- * <p>What it is here to catch is the failure the whole mechanism exists for, and the one no count reports.
- * A child whose parent row has not arrived is taken off the stream and put where no sink can see it. If
- * the bound its upstream reported travels on regardless — which is exactly what the engine does by
- * default — then the frontier is written down above that child, and a restart replays from above it: the
- * change is neither delivered nor replayable, the document is short an element forever, and nothing
- * anywhere says so.
+ * <p>What it is here to catch is the shape of the answer to "where may the frontier go". A child whose
+ * parent row has not arrived is taken off the stream and put in this level's state - and that state is
+ * written through to a store as the drain settles, so the child is somewhere it survives a restart from.
+ * The frontier may therefore pass it: what the frontier promises is that everything at or below it is
+ * either at a sink or held somewhere durable, not that it has been emitted. Keeping the bound beneath a
+ * held child instead would pin the source's read offset on a row that may never come, and burn the
+ * source's retention window while every count reads healthy.
+ *
+ * <p>The discriminating half is the second assertion: the bound must go past <em>while the child is still
+ * held</em>. A level that let the child go - dead-lettered it, timed it out - would move the bound too,
+ * and would be losing a row to do it.
  *
  * <p>The tree is the smallest one with a cascade in it: customers, policies beneath them, claims beneath
  * those. Only the middle level is a resolver, and it is the one holding something.
@@ -59,16 +64,15 @@ import org.junit.jupiter.api.Test;
  * <p>The sources never finish. A finished queue stops constraining the coalesced bound and jumps it to the
  * highest any queue ever reported, which would make these pass for the wrong reason.
  */
-class NestHoldsTheFrontierBelowWhatItKeepsTest {
+class NestLetsTheFrontierPastWhatItHoldsDurablyTest {
 
     private static final String CUSTOMERS = "customers";
     private static final String POLICIES = "policies";
     private static final String CLAIMS = "claims";
     private static final ChainAxes AXES = ChainAxes.assign(List.of(CUSTOMERS, POLICIES, CLAIMS));
 
-    /** Where the claim held for a missing policy came from, and the highest bound below it. */
+    /** Where the claim held for a missing policy came from. */
     private static final SourceOrder CLAIM_AT = new SourceOrder(1, 5);
-    private static final long BENEATH_THE_CLAIM = FrontierOrders.pack(CLAIMS, CLAIM_AT) - 1;
 
     /** Far above anything that arrives, so a level passing its edge's bound straight on is unmistakable. */
     private static final long FAR_ABOVE = FrontierOrders.pack(CLAIMS, new SourceOrder(1, 900));
@@ -76,12 +80,16 @@ class NestHoldsTheFrontierBelowWhatItKeepsTest {
     /** Every bound that got past the nest, as {@code chain:value}. Static: the job runs on the member. */
     private static final List<String> SEEN = Collections.synchronizedList(new ArrayList<>());
 
+    /** Anything a level stopped holding and handed off instead. Empty is the expected reading. */
+    private static final List<String> LET_GO = Collections.synchronizedList(new ArrayList<>());
+
     private HazelcastInstance member;
     private Job job;
 
     @BeforeEach
     void startMember() {
         SEEN.clear();
+        LET_GO.clear();
         Config config = new Config();
         config.getJetConfig().setEnabled(true).setCooperativeThreadCount(4);
         config.setProperty("hazelcast.phone.home.enabled", "false");
@@ -105,31 +113,35 @@ class NestHoldsTheFrontierBelowWhatItKeepsTest {
     }
 
     @Test
-    void noBoundCrossesTheNodeAheadOfAChangeAResolverIsKeepingBack() {
+    void theBoundCrossesTheNodeAheadOfAChangeAResolverIsStillHolding() {
         run(false);
 
         // The customers chain reaching the top proves the far-above bounds were delivered and acted on,
-        // so the claims chain stopping short is a decision rather than a message that never arrived.
+        // so the claims chain arriving there is this level's answer rather than an accident of timing.
         await(() -> SEEN.contains(bound(CUSTOMERS, FAR_ABOVE))
-                && SEEN.contains(bound(CLAIMS, BENEATH_THE_CLAIM)));
+                && SEEN.contains(bound(CLAIMS, FAR_ABOVE)));
 
         assertThat(seen())
-                .describedAs("the claim is held for a policy that never arrives, so the frontier may not "
-                        + "pass it - and the engine's own default would have carried the upstream's bound "
-                        + "straight through")
-                .doesNotContain(bound(CLAIMS, FAR_ABOVE));
+                .describedAs("the claim is held in state that is written through to a store, so it survives "
+                        + "a restart on its own and the frontier has no reason to wait beneath it")
+                .contains(bound(CLAIMS, FAR_ABOVE));
+        assertThat(LET_GO)
+                .describedAs("the bound went past while the claim was still held - a level that had thrown "
+                        + "the claim away would move the bound too, and would have lost a row to do it")
+                .isEmpty();
     }
 
     @Test
-    void theBoundCatchesUpOnceWhatWasHeldIsLetGo() {
+    void theBoundCrossesJustTheSameWhenNothingIsHeldAtAll() {
         run(true);
 
         await(() -> SEEN.contains(bound(CLAIMS, FAR_ABOVE)));
 
         assertThat(seen())
-                .describedAs("the policy arrived, so the claim reached its document and nothing here is "
-                        + "holding the chain back any more")
+                .describedAs("the policy arrived, so the claim reached its document; the answer is the same "
+                        + "as when it was held, which is the point")
                 .contains(bound(CLAIMS, FAR_ABOVE));
+        assertThat(LET_GO).isEmpty();
     }
 
     // ---- the job under test ------------------------------------------------------------
@@ -168,7 +180,8 @@ class NestHoldsTheFrontierBelowWhatItKeepsTest {
                 NestTopology.compile("p", "doc", body, tables::get),
                 "doc", "c", "doc",
                 alias -> List.of(byAlias.get(alias)),
-                new NestBinding(tables::get, HeapNestStores.onHeap(), (from, released) -> { }),
+                new NestBinding(tables::get, HeapNestStores.onHeap(),
+                        (from, released) -> LET_GO.add(from + ":" + released)),
                 vertex -> outbound.merge(vertex, 1, Integer::sum) - 1,
                 new NestFrontier(AXES, alias -> List.of(List.of(chainOfAlias.get(alias)))));
 

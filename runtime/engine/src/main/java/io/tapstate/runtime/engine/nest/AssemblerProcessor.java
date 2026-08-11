@@ -60,41 +60,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final NestStore<RootAssembly> store;
     private final String outputStream;
     private final Deque<Object> outgoing = new ArrayDeque<>();
-    private final ChainBounds held = new ChainBounds();
     private final LevelBounds bounds;
     private final ReplayFloor floor;
     private final NestDeadLetter deadLetter;
-
-    /** What this vertex is held to over how long it may go on holding a change, or null when it is not. */
-    private final PendingWatch watch;
-
-    /** The stream this vertex's root rows — the rows every document here waits for — arrive on. */
-    private final String rootStream;
-
-    /**
-     * How far that stream has been read, in its own clock, or null before any root row has arrived.
-     *
-     * <p>Read from what has arrived here rather than from anything global, and that is what makes it
-     * answer the question at all: a root row and the elements of its document are keyed alike, so they are
-     * partitioned alike and land on this same processor. A root row stamped later than an element still
-     * held here therefore means the root that would have carried it does not exist — had it existed, it
-     * would have come past here first.
-     */
-    private Long rootStreamReached;
-
-    /**
-     * Keys holding something, which is where the sweep has to look. Kept here because the store cannot be
-     * asked which keys hold anything: listing what it has is exactly what reading through it on demand is
-     * there to avoid.
-     *
-     * <p>A restart starts it empty, and the keys that matter re-enter it on their own: a change still held
-     * is one the frontier never passed, so a restart replays it, and it is filed here again the moment its
-     * key is touched.
-     */
-    private final Set<Object> holding = new LinkedHashSet<>();
-
-    /** When the last sweep ran, or null before the first one. */
-    private Long sweptAt;
 
     /**
      * How many elements any one document may hold. Read once: it is chosen where the job is built, not
@@ -127,6 +95,14 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * one, so a test driving that clock drives these too, and the system clock where there is not.
      */
     private final NestClock clock;
+
+    /**
+     * Where the clock comes from, and nothing else any more: what a change waited is still stamped on it
+     * as it is taken in, because a change that turns out to be unassemblable says how long it had been
+     * waiting when it is handed to the dead-letter. Null where the caller supplied none, which is a vertex
+     * that times nothing.
+     */
+    private final PendingWatch watch;
 
     /**
      * Roots whose deletion has gone downstream and whose record is still kept, against what that deletion
@@ -202,7 +178,11 @@ public final class AssemblerProcessor extends AbstractProcessor {
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
         this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
         this.watch = watch;
-        this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, held::lowest);
+        // Nothing here lowers the bound. An orphan waiting for its ancestor is in the document's own
+        // state, written through as the drain settles, so it survives a restart and comes out when the
+        // ancestor arrives. What would lower the bound is a document changed and not yet emitted
+        // anywhere - which cannot happen while every change is emitted in the drain that applies it.
+        this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, LevelBounds.HOLDS_NOTHING);
         this.floor = Objects.requireNonNull(floor, "floor");
         this.elementLimit =
                 Objects.requireNonNull(settings, "settings").elementsAllowedIn(vertex.mapName());
@@ -212,7 +192,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
-        this.rootStream = vertex.inboundFor(List.of()).alias();
     }
 
     @Override
@@ -241,7 +220,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 candidates.remove();
             }
         }
-        stopHoldingWhereNothingIsComing();
         forgetDeletionsReplayCannotReach();
         return true;
     }
@@ -280,90 +258,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 keys.remove();
             }
         }
-    }
-
-    /**
-     * Lets go of what is held here for a root, or for an ancestor, that is not coming, so the bound this
-     * level reports can rise past it. Off the path a change takes, like the sweep above and for the same
-     * reason: nothing here is urgent to the millisecond, and the price of being wrong is a row nobody can
-     * get back.
-     *
-     * <p>What each document was holding is re-read into the reported bound whether or not anything went,
-     * since a change let go of that still counted against the bound would leave the frontier exactly where
-     * it was — with the change reported as let go of as well, which is both halves of the damage and
-     * neither of the benefits.
-     */
-    private void stopHoldingWhereNothingIsComing() {
-        if (watch == null || holding.isEmpty()) {
-            return;
-        }
-        long now = watch.clock().millis();
-        if (sweptAt != null && now - sweptAt < SWEEP_INTERVAL_MILLIS) {
-            return;
-        }
-        sweptAt = now;
-        PendingRelease whileTheRootIsAbsent = rootReleaseRule();
-        PendingRelease whileAnAncestorIsAbsent = ancestorReleaseRule();
-        Iterator<Object> keys = holding.iterator();
-        while (keys.hasNext()) {
-            Object key = keys.next();
-            RootAssembly assembly = store.load(key);
-            if (assembly == null) {
-                keys.remove();
-                continue;
-            }
-            List<ReleasedChild> released =
-                    assembly.letGo(whileTheRootIsAbsent, whileAnAncestorIsAbsent, now);
-            if (!released.isEmpty()) {
-                store.save(key, assembly);
-                released.forEach(child -> deadLetter.unassemblable(vertex, child));
-            }
-            if (bounds != null) {
-                held.holding(key, assembly.lowestHeldByChain());
-            }
-            if (!assembly.holdsAnything()) {
-                keys.remove();
-            }
-        }
-    }
-
-    /**
-     * The rule as it applies to what waits for a root row: the protection, with what is known about the
-     * stream those rows come on filled in. Worked out once per sweep rather than per change, because every
-     * document here waits for a row of that one stream.
-     */
-    private PendingRelease rootReleaseRule() {
-        boolean loaded = watch.facts().loaded(rootStream);
-        String rootClock = watch.facts().clockOf(rootStream);
-        return (change, heldFor) -> watch.protection()
-                .verdictOn(new ParentProgress(loaded, readPast(change, rootClock)), change.eventTime(),
-                        heldFor);
-    }
-
-    /**
-     * The rule as it applies to what waits for an ancestor element: the backstop and nothing else. That
-     * element arrives already routed by the level below, on an edge that names no stream, so neither
-     * whether its load has finished nor how far it has been read can be asked here — and answering with
-     * what is known about the root's stream would end the wait on evidence about something else entirely.
-     */
-    private PendingRelease ancestorReleaseRule() {
-        return (change, heldFor) -> watch.protection()
-                .verdictOn(new ParentProgress(false, OptionalLong.empty()), change.eventTime(), heldFor);
-    }
-
-    /**
-     * How far the root's stream has been read, in a clock this change may be compared against — absent
-     * where there is no such clock. A change covering more than one stream has no single clock of its own
-     * and is never comparable; nor is one whose stream is not known to share a clock with the root's.
-     */
-    private OptionalLong readPast(NestElement change, String rootClock) {
-        if (rootStreamReached == null || rootClock == null || change.positions().size() != 1) {
-            return OptionalLong.empty();
-        }
-        String stream = change.positions().keySet().iterator().next();
-        return rootClock.equals(watch.facts().clockOf(stream))
-                ? OptionalLong.of(rootStreamReached)
-                : OptionalLong.empty();
     }
 
     /**
@@ -460,12 +354,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
             List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
             Touched document = touched(key, touched);
             document.ts = event.ts();
-            // How far this stream has been read, which is what says whether a root still missing from a key
-            // is late or absent. Taken from every row of it, including one that loses to what a key already
-            // holds: the read passed it either way, and that is all this records.
-            rootStreamReached = rootStreamReached == null
-                    ? event.ts()
-                    : Math.max(rootStreamReached, event.ts());
             if (NestKeys.isDeletion(event)) {
                 document.assembly.deleteRoot(order, event.positions());
                 document.rootDeleted = true;
@@ -532,14 +420,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 keeping.add(key);
             } else {
                 keeping.remove(key);
-            }
-            if (bounds != null) {
-                held.holding(key, document.assembly.lowestHeldByChain());
-            }
-            if (document.assembly.holdsAnything()) {
-                holding.add(key);
-            } else {
-                holding.remove(key);
             }
         });
     }

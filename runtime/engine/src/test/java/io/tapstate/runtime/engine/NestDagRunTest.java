@@ -148,22 +148,17 @@ class NestDagRunTest {
     }
 
     @Test
-    void anItemWhoseOrderNeverArrivesIsLetGoOfByTheAssemblerTheGraphBuilt() throws Exception {
-        // An assembler supplied without a watch assembles every document here correctly and passes every
-        // other test in this file, and simply holds that stray item — and with it the position its source
-        // reads from — for as long as the job runs. Nothing about the output says so, which is why what is
-        // asserted is that something came out the other channel.
+    void anItemWhoseOrderNeverArrivesIsKeptRatherThanHandedOff() throws Exception {
+        // The stray item names an order that never arrives, so it waits in the assembler's state - and goes
+        // on waiting. Its order may still arrive tomorrow, and the state it waits in is written through to
+        // a store, so nothing here has to choose between keeping it and letting the frontier move: the
+        // frontier moves regardless, and the item is still there when the order shows up.
         //
-        // The sources here go on running after their rows, because a job that ends is a job whose vertices
-        // are never idle: letting go of what is held is done when nothing is arriving, and a tasklet whose
-        // inputs are all finished goes straight to completing. A real pipeline is never in that state, and
-        // a finite one here would witness the mechanism only by never reaching it.
+        // Giving up on it instead would mean deciding, from this side, that a row nobody has seen does not
+        // exist - and being wrong about that drops a row from a document with every count reading healthy.
         //
-        // The one root here arrives late on purpose, and that is what makes the two items tell the rule
-        // apart. Both are held on arrival; the sweep then runs while both are held; and only then does the
-        // root turn one of them into part of a document, leaving the other still waiting for one that is
-        // not coming. A root arriving in the same breath as its child is never waited for at all, and a
-        // rule that gave up on everything it found held would pass this case more often than not.
+        // The sources go on running after their rows, because a job that ends is a job whose vertices are
+        // never idle, and anything that gave up on a held change would do it from the idle path.
         DAG dag = ordersWithItems(List.of(row("order_id", 1, "code", "A")),
                 List.of(row("item_id", 10, "order_id", 1, "sku", "s10"),
                         row("item_id", 99, "order_id", 999, "sku", "stray")),
@@ -171,30 +166,23 @@ class NestDagRunTest {
 
         Job job = member.getJet().newJob(dag);
         try {
-            awaitReleased();
+            awaitWellPastAnyProtection();
         } finally {
             job.cancel();
         }
 
-        assertThat(RELEASED)
-                .describedAs("the assembler the graph builds was supplied without a watch, so it never "
-                        + "stops holding a change for a root that is not coming")
-                .isNotEmpty();
-        assertThat(List.copyOf(RELEASED)).allSatisfy(released -> {
-            assertThat(released.child().ref().elementKey()).containsExactly(99);
-            assertThat(released.verdict()).isEqualTo(PendingVerdict.WALL_CLOCK_BACKSTOP);
-        });
+        assertThat(List.copyOf(RELEASED))
+                .describedAs("waited well past the window a backstop would have fired in, and the item is "
+                        + "still held: nothing gives up on a change for a parent that has not arrived")
+                .isEmpty();
     }
 
     /**
-     * Waits for the stray item to be let go of, which takes as long as it may be held plus however long
-     * until the next sweep of an idle vertex. Far longer than that here, so a machine that stalls costs
-     * seconds rather than a failure.
+     * Waits well past the window in which anything giving up on a held change would have done so, so that
+     * an empty reading afterwards means nothing gave up rather than that nothing had time to.
      */
-    private static void awaitReleased() throws InterruptedException {
-        for (int attempt = 0; attempt < 200 && RELEASED.isEmpty(); attempt++) {
-            Thread.sleep(50);
-        }
+    private static void awaitWellPastAnyProtection() throws InterruptedException {
+        Thread.sleep(PROTECTION.plusSeconds(1).toMillis());
     }
 
     // ---- the pipeline under test ------------------------------------------------------
