@@ -82,11 +82,6 @@ class ApiExceptionHandler {
             case "control.auth-failed", "control.unauthenticated" -> HttpStatus.UNAUTHORIZED;
             case "control.forbidden", "control.bootstrap-forbidden" -> HttpStatus.FORBIDDEN;
             case "control.bootstrap-closed" -> HttpStatus.CONFLICT;
-            case "source.id-mismatch" -> HttpStatus.BAD_REQUEST;
-            case "source.not-found" -> HttpStatus.NOT_FOUND;
-            case "source.already-exists", "source.in-use" -> HttpStatus.CONFLICT;
-            case "source.version-conflict" -> HttpStatus.PRECONDITION_FAILED;
-            case "source.precondition-required" -> HttpStatus.PRECONDITION_REQUIRED;
             case "connector.not-found" -> HttpStatus.NOT_FOUND;
             // A request refused at the HTTP boundary as structurally malformed is a client input error, like dsl.*.
             case "control.malformed-request" -> HttpStatus.BAD_REQUEST;

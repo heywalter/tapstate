@@ -45,8 +45,6 @@ class McpOperationExecutorTest {
         try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
             McpOperationExecutor executor = new McpOperationExecutor(
                     baseOf(server), "token", Map.of(), client);
-            Map<String, Object> source = Map.of(
-                    "id", "orders", "connector", "mysql", "config", Map.of());
             Map<String, Object> connection = Map.of(
                     "id", "orders", "connectorId", "mysql", "settings", Map.of());
             Map<String, Object> pipeline = Map.of("id", "orders");
@@ -56,9 +54,6 @@ class McpOperationExecutorTest {
             List<Map.Entry<io.tapstate.control.core.Operation, Map<String, Object>>> calls = List.of(
                     Map.entry(ControlOperations.CONNECTOR_LIST, Map.of()),
                     Map.entry(ControlOperations.CONNECTOR_GET, Map.of("id", "mysql")),
-                    Map.entry(ControlOperations.SOURCE_LIST, Map.of()),
-                    Map.entry(ControlOperations.SOURCE_GET, Map.of("id", "orders")),
-                    Map.entry(ControlOperations.SOURCE_DRAFT, source),
                     Map.entry(ControlOperations.CONNECTION_TEST, connection),
                     Map.entry(ControlOperations.CONNECTION_TEST_RESULT, Map.of("id", "orders")),
                     Map.entry(ControlOperations.CONNECTION_DISCOVER_SCHEMA, connection),
@@ -79,46 +74,12 @@ class McpOperationExecutorTest {
             }
 
             assertThat(paths).contains(
-                    "/api/connectors", "/api/connectors/mysql", "/api/sources:draft", "/api/sources",
-                    "/api/sources/orders", "/api/connections:test",
+                    "/api/connectors", "/api/connectors/mysql", "/api/connections:test",
                     "/api/connections/orders/test-result", "/api/connections:discover-schema",
                     "/api/connections/orders/schema", "/api/artifacts:validate", "/api/artifacts:apply",
                     "/api/pipelines/orders:start", "/api/pipelines/orders:stop",
                     "/api/pipelines/orders/status", "/api/pipelines/orders/metrics",
                     "/api/pipelines/orders/snapshot", "/api/pipelines/orders/logs?limit=200");
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    void sourceDraftRoutesOnePostWithoutAConnectorLookup() throws Exception {
-        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
-        AtomicReference<String> path = new AtomicReference<>();
-        AtomicInteger requests = new AtomicInteger();
-        HttpServer server = server(exchange -> {
-            requests.incrementAndGet();
-            path.set(exchange.getRequestURI().toString());
-            posted.set((Map<?, ?>) JsonReader.parse(new String(
-                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-            answer(exchange, 200, "{\"yaml\":\"version: tapstate/v1\\nkind: source\\n\"}");
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of(), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
-                    Map.of("id", "orders", "connector", "mysql",
-                            "config", Map.of("password", "draft-secret")));
-
-            assertThat(result.error()).isFalse();
-            assertThat(result.body()).containsEntry("yaml", "version: tapstate/v1\nkind: source\n");
-            assertThat(requests.get()).isEqualTo(1);
-            assertThat(path.get()).isEqualTo("/api/sources:draft");
-            assertThat(posted.get().get("id")).isEqualTo("orders");
-            assertThat(posted.get().get("connector")).isEqualTo("mysql");
-            assertThat(((Map<?, ?>) posted.get().get("config")).get("password"))
-                    .isEqualTo("draft-secret");
         } finally {
             server.stop(0);
         }
@@ -179,28 +140,6 @@ class McpOperationExecutorTest {
 
             assertThat(result.error()).isTrue();
             assertThat(result.body()).containsEntry("code", "control.malformed-request");
-        }
-    }
-
-    @Test
-    void sourceDraftPropagatesServerRejection() throws Exception {
-        AtomicInteger requests = new AtomicInteger();
-        HttpServer server = server(exchange -> {
-            requests.incrementAndGet();
-            answer(exchange, 503, "{\"message\":\"temporarily unavailable\"}");
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of(), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
-                    Map.of("id", "orders", "connector", "mysql", "config", Map.of()));
-
-            assertThat(result.error()).isTrue();
-            assertThat(result.body()).containsEntry("code", "mcp.server-rejected");
-            assertThat(requests).hasValue(1);
-        } finally {
-            server.stop(0);
         }
     }
 

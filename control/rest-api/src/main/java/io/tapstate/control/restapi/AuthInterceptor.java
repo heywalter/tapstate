@@ -38,14 +38,10 @@ import java.util.Optional;
  */
 final class AuthInterceptor implements HandlerInterceptor {
 
-    /**
-     * Request attribute the interceptor stashes the authenticated caller's subject under, so a handler can
-     * name the real caller when it audits a write. Set only after authentication and authorization pass, so
-     * a handler that reads it runs only for an authorized caller.
-     */
-    static final String PRINCIPAL_ATTRIBUTE = "io.tapstate.control.principal";
-
     private static final String BEARER_PREFIX = "Bearer ";
+
+    /** Request attribute populated after authentication for audited controllers. */
+    static final String PRINCIPAL_ATTRIBUTE = "io.tapstate.control.principal";
 
     private final OperationRegistry registry;
     private final CredentialAuthenticator credentials;
@@ -78,18 +74,11 @@ final class AuthInterceptor implements HandlerInterceptor {
         }
         VerifiedToken verified = credential.get();
         Authorization.require(verified, op);
-        // The caller is now authenticated and authorized; expose its subject so an audited handler attributes
-        // the operation to the session, never to anything the request body could forge.
         request.setAttribute(PRINCIPAL_ATTRIBUTE, verified.subject());
         return true;
     }
 
-    /**
-     * The authenticated subject for the current request — the principal an audited handler attributes its
-     * operation to. Set by this interceptor before any {@code /api} handler runs, so it is always present on
-     * the guarded surface; its absence means a handler was reached without the guard, which is a wiring bug
-     * (a bare invariant violation), not a user-facing error.
-     */
+    /** Returns the authenticated subject required by audited controllers. */
     static String authenticatedPrincipal(HttpServletRequest request) {
         if (request.getAttribute(PRINCIPAL_ATTRIBUTE) instanceof String subject) {
             return subject;

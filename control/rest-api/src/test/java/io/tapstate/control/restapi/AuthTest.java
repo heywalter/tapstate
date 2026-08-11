@@ -3,7 +3,6 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
-import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
@@ -26,8 +25,6 @@ import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
 import io.tapstate.control.core.Scope;
-import io.tapstate.control.core.SourceRepresentation;
-import io.tapstate.control.core.SourceService;
 import io.tapstate.control.core.TokenSecrets;
 import io.tapstate.control.core.TokenService;
 import io.tapstate.control.core.TokenSigner;
@@ -755,16 +752,6 @@ class AuthTest {
             return new PipelineLogQueryService(sink);
         }
 
-        @Bean
-        SourceService sourceService(InMemoryArtifactStore store) {
-            TapstateCatalog catalog = TapstateCatalog.load();
-            return new SourceService(catalog, store, new SourceRepresentation(catalog));
-        }
-
-        @Bean
-        AuditedSourceService auditedSourceService(SourceService sourceService, AuditGate auditGate) {
-            return new AuditedSourceService(sourceService, auditGate);
-        }
     }
 
     // ---- fakes ----

@@ -38,23 +38,6 @@ public final class ControlOperations {
     // read and unaudited. connection.test / connection.test-result answer "does it connect"; their pair
     // connection.discover-schema / connection.schema answer "what is inside" (the discovered source model).
 
-    // source domain
-    public static final Operation SOURCE_CREATE = new Operation(
-            "source.create", Scope.WRITE, true, ControlApiSchema.ref("source.create"),
-            "Create and persist one Source through the Server control API.", CLI_POC);
-    public static final Operation SOURCE_DRAFT = mcp(
-            "source.draft", Scope.READ, false,
-            "Render canonical YAML for a Source with a known connector through the Server's live connector "
-                    + "contract. This does not create an artifact or audit record.");
-    public static final Operation SOURCE_LIST = mcp(
-            "source.list", Scope.READ, false,
-            "List Sources with secret-redacted config and configured-secret field names.");
-    public static final Operation SOURCE_GET = mcp(
-            "source.get", Scope.READ, false,
-            "Get one Source with secret-redacted config and configured-secret field names.");
-    public static final Operation SOURCE_UPDATE = new Operation("source.update", Scope.WRITE, true, null, CLI_POC);
-    public static final Operation SOURCE_DELETE = new Operation("source.delete", Scope.WRITE, true, null, CLI_POC);
-
     public static final Operation CONNECTION_TEST = mcp(
             "connection.test", Scope.WRITE, true,
             "Test a connector configuration and persist the latest test result for later reads.");
@@ -132,12 +115,6 @@ public final class ControlOperations {
             ARTIFACT_VALIDATE,
             ARTIFACT_GET,
             ARTIFACT_LIST,
-            SOURCE_CREATE,
-            SOURCE_DRAFT,
-            SOURCE_LIST,
-            SOURCE_GET,
-            SOURCE_UPDATE,
-            SOURCE_DELETE,
             CONNECTION_TEST,
             CONNECTION_TEST_RESULT,
             CONNECTION_DISCOVER_SCHEMA,

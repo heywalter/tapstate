@@ -78,15 +78,15 @@ try:
     send({"jsonrpc": "2.0", "method": "notifications/initialized"})
     send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
     tools = receive()["result"]["tools"]
-    assert len(tools) == 11
-    assert "source_create" not in {tool["name"] for tool in tools}
+    assert len(tools) == 9
+    assert "source_draft" not in {tool["name"] for tool in tools}
 
     process.stdin.close()
     process.wait(timeout=5)
     assert process.returncode == 0
     stderr = process.stderr.read()
     assert "smoke-token" not in stderr
-    print("mcp smoke: initialize, 11 read tools, clean EOF, no credential leak")
+    print("mcp smoke: initialize, 9 read tools, clean EOF, no credential leak")
 finally:
     if process.poll() is None:
         process.kill()

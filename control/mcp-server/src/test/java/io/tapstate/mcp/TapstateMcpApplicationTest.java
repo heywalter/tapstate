@@ -45,7 +45,7 @@ class TapstateMcpApplicationTest {
             assertThat(context.isRunning()).isTrue();
             assertThat(context.getBean(McpOptions.class).allowWrite()).isTrue();
             assertThat(context.getBean(McpOperationExecutor.class)).isNotNull();
-            assertThat((List<?>) context.getBean("mcpTools")).hasSize(17);
+            assertThat((List<?>) context.getBean("mcpTools")).hasSize(14);
         }
     }
 }

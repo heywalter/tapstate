@@ -17,12 +17,6 @@ class ControlOperationsTest {
                         "artifact.validate",
                         "artifact.get",
                         "artifact.list",
-                        "source.create",
-                        "source.draft",
-                        "source.list",
-                        "source.get",
-                        "source.update",
-                        "source.delete",
                         "connection.test",
                         "connection.test-result",
                         "connection.discover-schema",
@@ -53,12 +47,6 @@ class ControlOperationsTest {
         assertThat(registry.resolve("artifact.validate").scope()).isEqualTo(Scope.READ);
         assertThat(registry.resolve("artifact.get").scope()).isEqualTo(Scope.READ);
         assertThat(registry.resolve("artifact.list").scope()).isEqualTo(Scope.READ);
-        assertThat(registry.resolve("source.create").scope()).isEqualTo(Scope.WRITE);
-        assertThat(registry.resolve("source.draft").scope()).isEqualTo(Scope.READ);
-        assertThat(registry.resolve("source.list").scope()).isEqualTo(Scope.READ);
-        assertThat(registry.resolve("source.get").scope()).isEqualTo(Scope.READ);
-        assertThat(registry.resolve("source.update").scope()).isEqualTo(Scope.WRITE);
-        assertThat(registry.resolve("source.delete").scope()).isEqualTo(Scope.WRITE);
         // connection.test persists its result for later query, so it is a state-mutating write.
         assertThat(registry.resolve("connection.test").scope()).isEqualTo(Scope.WRITE);
         // connection.test-result reads back the latest persisted result; it mutates nothing, so it is read.
@@ -97,9 +85,6 @@ class ControlOperationsTest {
         for (String id :
                 List.of(
                         "artifact.apply",
-                        "source.create",
-                        "source.update",
-                        "source.delete",
                         "connection.test",
                         "connection.discover-schema",
                         "connector.register",
@@ -117,9 +102,6 @@ class ControlOperationsTest {
                 "artifact.get",
                 "artifact.list",
                 "artifact.validate",
-                "source.draft",
-                "source.list",
-                "source.get",
                 "connection.test-result",
                 "connection.schema",
                 "connector.list",
@@ -140,7 +122,7 @@ class ControlOperationsTest {
         // A scope statement about the registry alone: the CLI face opens every registered operation and
         // clips none of them below POC. Whether each one has a verb behind it is not knowable from here
         // — control-core cannot see the CLI — and is gated where both are visible, in arch-tests.
-        assertThat(registry.exposedOn(Frontend.CLI, Maturity.POC)).hasSize(32);
+        assertThat(registry.exposedOn(Frontend.CLI, Maturity.POC)).hasSize(26);
         assertThat(registry.all()).allSatisfy(op ->
                 assertThat(op.exposure()).as(op.id()).containsEntry(Frontend.CLI, Maturity.POC));
     }
@@ -151,7 +133,6 @@ class ControlOperationsTest {
                 .extracting(Operation::id)
                 .containsExactlyInAnyOrder(
                         "connector.list", "connector.get",
-                        "source.list", "source.get", "source.draft",
                         "connection.test", "connection.test-result",
                         "connection.discover-schema", "connection.schema",
                         "artifact.validate", "artifact.apply",

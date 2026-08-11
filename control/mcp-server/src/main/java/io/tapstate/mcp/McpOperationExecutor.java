@@ -40,9 +40,6 @@ final class McpOperationExecutor {
             return switch (operation.id()) {
                 case "connector.list" -> get("/api/connectors");
                 case "connector.get" -> get("/api/connectors/" + segment(required(args, "id")));
-                case "source.list" -> get("/api/sources");
-                case "source.get" -> get("/api/sources/" + segment(required(args, "id")));
-                case "source.draft" -> post("/api/sources:draft", args, RequestBudget.HEAVY);
                 case "connection.test" -> connectionWrite(args, "/api/connections:test");
                 case "connection.test-result" -> get(
                         "/api/connections/" + segment(required(args, "id")) + "/test-result");

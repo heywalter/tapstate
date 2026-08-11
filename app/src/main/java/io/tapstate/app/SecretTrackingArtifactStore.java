@@ -6,7 +6,6 @@ import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.logging.SecretRedactor;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.SourceResource;
-import io.tapstate.spi.store.ArtifactMutation;
 import io.tapstate.spi.store.ArtifactStore;
 
 import java.util.ArrayList;
@@ -20,7 +19,7 @@ import java.util.function.Supplier;
 
 /**
  * Keeps the process-wide log redactor aligned with the Sources in the authoritative artifact store.
- * Mutation methods update the registry only after the delegated write succeeds.
+ * Batch application updates the registry only after the delegated write succeeds.
  */
 final class SecretTrackingArtifactStore implements ArtifactStore {
 
@@ -34,34 +33,6 @@ final class SecretTrackingArtifactStore implements ArtifactStore {
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.redactor = Objects.requireNonNull(redactor, "redactor");
         delegate.list().forEach(this::track);
-    }
-
-    @Override
-    public synchronized ArtifactMutation create(Resource artifact) {
-        ArtifactMutation result = delegate.create(artifact);
-        if (result == ArtifactMutation.CREATED) {
-            track(artifact);
-        }
-        return result;
-    }
-
-    @Override
-    public synchronized ArtifactMutation replace(
-            String id, String expectedContentHash, Resource replacement) {
-        ArtifactMutation result = delegate.replace(id, expectedContentHash, replacement);
-        if (result == ArtifactMutation.REPLACED) {
-            track(replacement);
-        }
-        return result;
-    }
-
-    @Override
-    public synchronized ArtifactMutation delete(String id, String expectedContentHash) {
-        ArtifactMutation result = delegate.delete(id, expectedContentHash);
-        if (result == ArtifactMutation.DELETED) {
-            redactor.remove(id);
-        }
-        return result;
     }
 
     @Override

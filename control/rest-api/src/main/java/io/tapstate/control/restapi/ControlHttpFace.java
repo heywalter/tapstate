@@ -1,19 +1,13 @@
 package io.tapstate.control.restapi;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.AuditGate;
 import io.tapstate.control.core.OperationRegistry;
-import io.tapstate.control.core.SourceDraft;
-import io.tapstate.control.core.SourceTableView;
-import io.tapstate.control.core.SourceView;
 import io.tapstate.control.core.TokenAdminService;
 import io.tapstate.control.core.TokenService;
-import org.springframework.boot.jackson.autoconfigure.JsonMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
-import tools.jackson.databind.DeserializationFeature;
 
 /**
  * The public assembly entry point for the whole HTTP control face: the path-prefix + interceptor
@@ -33,7 +27,7 @@ import tools.jackson.databind.DeserializationFeature;
 @Import({RestApiConfiguration.class, ArtifactController.class, ConnectionController.class,
         ConnectorController.class, PipelineController.class, PipelineObservationController.class,
         PipelineLogsController.class, PipelineStreamConfiguration.class, ClusterController.class,
-        HealthController.class, SourceController.class, AuthController.class, TokenController.class,
+        HealthController.class, AuthController.class, TokenController.class,
         ApiExceptionHandler.class})
 public class ControlHttpFace {
 
@@ -47,16 +41,4 @@ public class ControlHttpFace {
         return new TokenAdminService(tokens, auditGate);
     }
 
-    @Bean
-    JsonMapperBuilderCustomizer sourceJsonContract() {
-        return builder -> builder
-                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .addMixIn(SourceView.class, NonNullSourceJson.class)
-                .addMixIn(SourceTableView.class, NonNullSourceJson.class)
-                .addMixIn(SourceDraft.SourceSrs.class, NonNullSourceJson.class);
-    }
-
-    @JsonInclude(JsonInclude.Include.NON_NULL)
-    private abstract static class NonNullSourceJson {
-    }
 }

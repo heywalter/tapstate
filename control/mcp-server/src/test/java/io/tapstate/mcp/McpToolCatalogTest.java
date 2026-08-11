@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class McpToolCatalogTest {
 
     private static final List<String> READ_TOOLS = List.of(
-            "connector_list", "connector_get", "source_list", "source_get", "source_draft",
+            "connector_list", "connector_get",
             "connection_test_result", "connection_schema", "artifact_validate",
             "pipeline_status", "pipeline_metrics", "pipeline_snapshot", "pipeline_logs");
 
@@ -28,7 +28,7 @@ class McpToolCatalogTest {
             "pipeline_start", "pipeline_stop");
 
     @Test
-    void defaultSurfaceContainsExactlyTheTwelveReadTools() {
+    void defaultSurfaceContainsExactlyTheNineReadTools() {
         assertThat(McpToolCatalog.operations(false).stream().map(McpToolCatalog::toolName))
                 .containsExactlyInAnyOrderElementsOf(READ_TOOLS);
     }

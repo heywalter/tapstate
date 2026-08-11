@@ -12,7 +12,6 @@ class ControlApiSchemaTest {
 
     private static final Set<String> MCP_OPERATIONS = Set.of(
             "connector.list", "connector.get",
-            "source.list", "source.get", "source.draft",
             "connection.test", "connection.test-result", "connection.discover-schema", "connection.schema",
             "artifact.validate", "artifact.apply",
             "pipeline.start", "pipeline.stop", "pipeline.status", "pipeline.metrics",
@@ -46,32 +45,4 @@ class ControlApiSchemaTest {
         }
     }
 
-    @Test
-    void sourceDraftDescriptionMakesTheServerOwnTheLiveConnectorContract() {
-        assertThat(ControlOperations.SOURCE_DRAFT.description())
-                .contains("known connector", "live connector contract", "canonical YAML");
-    }
-
-    @Test
-    void sourceDraftLeavesOnlyConnectorConfigOpenForTheLiveContract() {
-        Map<?, ?> definitions = (Map<?, ?>) ControlApiSchema.document().get("$defs");
-        Map<?, ?> request = (Map<?, ?>) definitions.get("SourceDraftRequest");
-        Map<?, ?> properties = (Map<?, ?>) request.get("properties");
-        Map<?, ?> config = (Map<?, ?>) properties.get("config");
-
-        assertThat(request.get("additionalProperties")).isEqualTo(false);
-        assertThat(request.get("required")).isEqualTo(java.util.List.of("id", "connector", "config"));
-        assertThat(properties.keySet().stream().map(String::valueOf).toList()).containsExactlyInAnyOrder(
-                "id", "metadata", "connector", "config", "mode", "tables",
-                "options", "srs", "experimental", "clearSecrets");
-        assertThat(config.get("type")).isEqualTo("object");
-        assertThat(config.get("additionalProperties")).isEqualTo(true);
-        assertThat(definitions.get("SourceDraftResult")).isEqualTo(Map.of(
-                "type", "object",
-                "properties", Map.of("yaml", Map.of(
-                        "type", "string", "minLength", 1,
-                        "description", "Canonical tapstate/v1 Source YAML")),
-                "additionalProperties", false,
-                "required", java.util.List.of("yaml")));
-    }
 }
