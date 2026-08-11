@@ -98,6 +98,21 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     private final Map<Object, Map<String, ChainPosition>> deleted = new LinkedHashMap<>();
 
+    /** How often a document may go out, and whether versions of it may be merged into one send. */
+    private final NestSendPolicy sending;
+
+    /**
+     * The documents with a window open over them: when the window opened, and what a send folded into it is
+     * keeping the frontier below. Only ever as many entries as there are roots changed within one window of
+     * each other, and the sweep that ends them is what keeps it that way.
+     *
+     * <p>What is kept per entry is the position and not the state. Holding the assembly itself would spare a
+     * read at the end of the window and put every recently changed document in the heap, outside the budget
+     * that decides what stays in memory - a second, invisible copy of exactly what that budget is set to
+     * bound.
+     */
+    private final Map<Object, Window> windows = new LinkedHashMap<>();
+
     /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream) {
@@ -144,15 +159,24 @@ public final class AssemblerProcessor extends AbstractProcessor {
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
             ReplayFloor floor, NestSettings settings, NestClock clock) {
+        this(vertex, slots, store, outputStream, axes, chainsByOrdinal, floor, settings, clock,
+                NestSendPolicy.within(0L));
+    }
+
+    /** All of it, sending as {@code sending} allows rather than as each drain settles. */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
+            ReplayFloor floor, NestSettings settings, NestClock clock, NestSendPolicy sending) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
-        // Nothing here lowers the bound. An orphan waiting for its ancestor is in the document's own
-        // state, written through as the drain settles, so it survives a restart and comes out when the
-        // ancestor arrives. What would lower the bound is a document changed and not yet emitted
-        // anywhere - which cannot happen while every change is emitted in the drain that applies it.
-        this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, LevelBounds.HOLDS_NOTHING);
+        this.sending = Objects.requireNonNull(sending, "sending");
+        // What lowers the bound is a document changed and waiting for its window: it survives a restart in
+        // the state, and nothing will ever send it, because no further event is due for that root. An
+        // orphan waiting for its ancestor is the other case and is not counted - it is in the document's
+        // own state, written through as the drain settles, and comes out when the ancestor arrives.
+        this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, this::lowestUnsentOn);
         this.floor = Objects.requireNonNull(floor, "floor");
         this.elementLimit =
                 Objects.requireNonNull(settings, "settings").elementsAllowedIn(vertex.mapName());
@@ -177,6 +201,12 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     @Override
     public boolean tryProcess() {
+        if (!flush()) {
+            return false;
+        }
+        if (!sendWhatWindowsHaveRunOutOn()) {
+            return false;
+        }
         Iterator<Map.Entry<Object, Map<String, ChainPosition>>> candidates = deleted.entrySet().iterator();
         while (candidates.hasNext()) {
             Map.Entry<Object, Map<String, ChainPosition>> candidate = candidates.next();
@@ -262,6 +292,17 @@ public final class AssemblerProcessor extends AbstractProcessor {
             for (Object item; (item = inbox.peek()) != null; ) {
                 handle(edge, item, touched);
                 inbox.remove();
+                // Under append every change is a record of its own, so a drain may not be merged into one
+                // document any more than a window may: settling here rather than at the end is what makes
+                // the count of records that go out the count of changes that arrived.
+                if (!sending.foldingAllowed()) {
+                    settle(touched);
+                    touched.clear();
+                    if (!flush()) {
+                        return;
+                    }
+                    continue;
+                }
                 // A wide drain writes back what it holds rather than holding a document per key to the
                 // end. A root touched again afterwards is read back and goes out a second time in the
                 // same batch, which costs a write and is otherwise invisible: what goes out is the whole
@@ -277,7 +318,10 @@ public final class AssemblerProcessor extends AbstractProcessor {
         } finally {
             settle(touched);
         }
-        flush();
+        // Here as well as on the idle path, because a vertex fed steadily on one key never reaches the idle
+        // path at all - and the document whose window ran out while that was going on is the one nothing
+        // else is coming for.
+        sendWhatWindowsHaveRunOutOn();
     }
 
     /**
@@ -361,10 +405,14 @@ public final class AssemblerProcessor extends AbstractProcessor {
         touched.forEach((key, document) -> {
             document.assembly.render(slots).ifPresentOrElse(
                     rendered -> {
-                        outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null)
-                                .withPositions(document.assembly.covered()));
-                        document.assembly.documentSent();
                         deleted.remove(key);
+                        if (mayGoOutNow(key)) {
+                            outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null)
+                                    .withPositions(document.assembly.covered()));
+                            document.assembly.documentSent();
+                        } else {
+                            windows.get(key).holds(document.ts, document.assembly.lowestUnsentByChain());
+                        }
                     },
                     () -> {
                         if (document.rootDeleted) {
@@ -373,6 +421,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
                                     .withPositions(covered));
                             document.assembly.deletionSent();
                             deleted.put(key, covered);
+                            // The window goes with it. What it was holding back names a key that is gone,
+                            // and the row bringing that key back is a change nothing should delay.
+                            windows.remove(key);
                         }
                     });
             store.save(key, document.assembly);
@@ -384,6 +435,107 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 keeping.remove(key);
             }
         });
+    }
+
+    /**
+     * Whether a document that has just changed may go out now, opening or re-opening its window if it may.
+     *
+     * <p>Leading edge: a document nobody has been writing to goes out on the spot and opens the window
+     * behind it, so a root changing less often than the window pays nothing for it at all. Trailing edge
+     * would delay every change by the window to merge the ones that mostly are not there.
+     */
+    private boolean mayGoOutNow(Object key) {
+        if (sending.windowMillis() <= 0) {
+            return true;
+        }
+        long now = clock.millis();
+        Window window = windows.get(key);
+        if (window == null) {
+            windows.put(key, new Window(now));
+            return true;
+        }
+        if (now - window.openedAt < sending.windowMillis()) {
+            return false;
+        }
+        window.reopen(now);
+        return true;
+    }
+
+    /**
+     * Sends every document whose window has run out with something folded into it, and ends the windows
+     * that ran out with nothing. Without this a folded change waits for the next change to that same root,
+     * which for the root that just went quiet is never: the sink keeps the version before it, the job stays
+     * RUNNING, and nothing counts an error.
+     *
+     * <p>Reading the state back is the cost of not keeping it here, and it is bounded by what it is for:
+     * once per window per document that actually changed, never per idle turn. A window that ran out with
+     * nothing folded into it is dropped without reading anything.
+     */
+    private boolean sendWhatWindowsHaveRunOutOn() {
+        return sendFolded(true);
+    }
+
+    /**
+     * Sends what every window is still holding, run out or not. Nothing else will run: the inputs are
+     * done, so no drain and no idle turn is coming, and a version folded into a window that never ends is
+     * one this level took in and nobody will ever see. A finite run - a backfill, a test, a pipeline
+     * stopped on purpose - would otherwise end with its last version of every recently changed document
+     * missing, and the sink holding the version before it with nothing reported.
+     */
+    @Override
+    public boolean complete() {
+        return sendFolded(false);
+    }
+
+    private boolean sendFolded(boolean onlyWhatHasRunOut) {
+        if (windows.isEmpty()) {
+            return flush();
+        }
+        long now = clock.millis();
+        Iterator<Map.Entry<Object, Window>> open = windows.entrySet().iterator();
+        while (open.hasNext()) {
+            Map.Entry<Object, Window> entry = open.next();
+            Window window = entry.getValue();
+            if (onlyWhatHasRunOut && now - window.openedAt < sending.windowMillis()) {
+                continue;
+            }
+            if (window.unsent == null) {
+                open.remove();
+                continue;
+            }
+            RootAssembly assembly = store.load(entry.getKey());
+            Optional<Map<String, Object>> rendered =
+                    assembly == null ? Optional.empty() : assembly.render(slots);
+            if (rendered.isEmpty()) {
+                open.remove();
+                continue;
+            }
+            outgoing.add(Envelope.insert(window.ts, outputStream, rendered.get(), null)
+                    .withPositions(assembly.covered()));
+            assembly.documentSent();
+            store.save(entry.getKey(), assembly);
+            window.reopen(now);
+        }
+        return flush();
+    }
+
+    /**
+     * The lowest position on {@code chain} that a window is holding back, or null when none is. This is the
+     * whole of what this level keeps the frontier below: everything else it holds is written through with
+     * the state and comes back out on its own.
+     */
+    private SourceOrder lowestUnsentOn(String chain) {
+        SourceOrder lowest = null;
+        for (Window window : windows.values()) {
+            if (window.unsent == null) {
+                continue;
+            }
+            ChainPosition held = window.unsent.get(chain);
+            if (held != null && (lowest == null || held.order().compareTo(lowest) < 0)) {
+                lowest = held.order();
+            }
+        }
+        return lowest;
     }
 
     /**
@@ -469,6 +621,37 @@ public final class AssemblerProcessor extends AbstractProcessor {
 
         private Touched(RootAssembly assembly) {
             this.assembly = assembly;
+        }
+    }
+
+    /** The window open over one document: when it opened, and what it is holding back if anything. */
+    private static final class Window {
+
+        private long openedAt;
+
+        /**
+         * The lowest position per chain of what a send folded into this window is keeping from the
+         * frontier, or null when nothing has been folded in. Null rather than an empty map: an empty map
+         * would read as "holding nothing on any chain", which is true of both, and the two are told apart
+         * everywhere else by which one ends the window.
+         */
+        private Map<String, ChainPosition> unsent;
+
+        /** The event time of the last change folded in, which is what the document goes out carrying. */
+        private long ts;
+
+        private Window(long openedAt) {
+            this.openedAt = openedAt;
+        }
+
+        private void holds(long ts, Map<String, ChainPosition> lowestUnsent) {
+            this.ts = ts;
+            this.unsent = lowestUnsent;
+        }
+
+        private void reopen(long now) {
+            this.openedAt = now;
+            this.unsent = null;
         }
     }
 }

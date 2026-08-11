@@ -184,8 +184,13 @@ public final class NestDag {
         NestDeadLetter deadLetter = binding.deadLetter();
         List<EmbedSlot> slots = topology.slots();
         ChainAxes axes = frontier == null ? null : frontier.axes();
+        // The window is named per namespace in the settings, which is where everything a deployment sets
+        // about a nest is named. An append root takes no window at all, and no folding either.
+        NestSendPolicy sending = topology.foldingAllowed()
+                ? NestSendPolicy.within(binding.settings().sendWindowIn(spec.mapName()))
+                : NestSendPolicy.everyChange();
         return ProcessorMetaSupplier.of(new NestVertexSupplier(spec, slots, stores, deadLetter, outputStream,
-                axes, chainsByOrdinal, binding.replayFloor(), binding.settings(), binding.clock()));
+                axes, chainsByOrdinal, binding.replayFloor(), binding.settings(), binding.clock(), sending));
     }
 
     /** Reads the key off the fields a row carries it in. */
@@ -222,6 +227,7 @@ public final class NestDag {
         private final ReplayFloorFactory replayFloor;
         private final NestSettings settings;
         private final NestClock clock;
+        private final NestSendPolicy sending;
         private transient ReplayFloor floor;
         private transient NestBinding.NestStores bound;
         private transient NestDeadLetter boundDeadLetter;
@@ -229,8 +235,9 @@ public final class NestDag {
         private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
                 NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
                 Map<Integer, List<String>> chainsByOrdinal, ReplayFloorFactory replayFloor,
-                NestSettings settings, NestClock clock) {
+                NestSettings settings, NestClock clock, NestSendPolicy sending) {
             this.clock = clock;
+            this.sending = sending;
             this.spec = spec;
             this.slots = slots;
             this.stores = stores;
@@ -259,7 +266,7 @@ public final class NestDag {
             for (int i = 0; i < count; i++) {
                 processors.add(spec.isAssembler()
                         ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
-                                axes, chainsByOrdinal, floor, settings, clock)
+                                axes, chainsByOrdinal, floor, settings, clock, sending)
                         : new ResolverProcessor(spec, bound.forResolver(spec), boundDeadLetter, axes,
                                 chainsByOrdinal, floor, clock, settings));
             }

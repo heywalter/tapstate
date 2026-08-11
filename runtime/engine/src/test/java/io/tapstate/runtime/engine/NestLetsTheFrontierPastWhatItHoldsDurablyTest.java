@@ -118,13 +118,12 @@ class NestLetsTheFrontierPastWhatItHoldsDurablyTest {
 
         // The customers chain reaching the top proves the far-above bounds were delivered and acted on,
         // so the claims chain arriving there is this level's answer rather than an accident of timing.
-        await(() -> SEEN.contains(bound(CUSTOMERS, FAR_ABOVE))
-                && SEEN.contains(bound(CLAIMS, FAR_ABOVE)));
+        await(() -> reached(CUSTOMERS, FAR_ABOVE) && reached(CLAIMS, FAR_ABOVE));
 
-        assertThat(seen())
+        assertThat(reached(CLAIMS, FAR_ABOVE))
                 .describedAs("the claim is held in state that is written through to a store, so it survives "
                         + "a restart on its own and the frontier has no reason to wait beneath it")
-                .contains(bound(CLAIMS, FAR_ABOVE));
+                .isTrue();
         assertThat(LET_GO)
                 .describedAs("the bound went past while the claim was still held - a level that had thrown "
                         + "the claim away would move the bound too, and would have lost a row to do it")
@@ -135,12 +134,12 @@ class NestLetsTheFrontierPastWhatItHoldsDurablyTest {
     void theBoundCrossesJustTheSameWhenNothingIsHeldAtAll() {
         run(true);
 
-        await(() -> SEEN.contains(bound(CLAIMS, FAR_ABOVE)));
+        await(() -> reached(CLAIMS, FAR_ABOVE));
 
-        assertThat(seen())
+        assertThat(reached(CLAIMS, FAR_ABOVE))
                 .describedAs("the policy arrived, so the claim reached its document; the answer is the same "
                         + "as when it was held, which is the point")
-                .contains(bound(CLAIMS, FAR_ABOVE));
+                .isTrue();
         assertThat(LET_GO).isEmpty();
     }
 
@@ -271,6 +270,23 @@ class NestLetsTheFrontierPastWhatItHoldsDurablyTest {
 
     private static String bound(String chain, long value) {
         return chain + ":" + value;
+    }
+
+    /**
+     * Whether a bound on {@code chain} has reached {@code atLeast}, rather than whether that exact value was
+     * ever republished. A level promises what it has earned and skips the rest: while it is holding a
+     * document back it answers with the value beneath what it holds, and by the time it lets go the source
+     * has raised its own bound past the one being waited for. Waiting for the exact number would be waiting
+     * for a coincidence of timing rather than for the frontier to cross.
+     */
+    private static boolean reached(String chain, long atLeast) {
+        String prefix = chain + ":";
+        for (String seen : seen()) {
+            if (seen.startsWith(prefix) && Long.parseLong(seen.substring(prefix.length())) >= atLeast) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** What has arrived so far, taken at one instant: the job goes on raising bounds while this reads. */

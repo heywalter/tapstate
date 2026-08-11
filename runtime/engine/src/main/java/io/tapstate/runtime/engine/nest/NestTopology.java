@@ -30,9 +30,14 @@ import java.util.function.Function;
  *
  * <p>The tree is checked while it is compiled, and everything an author can get wrong is refused with a
  * code. A tree that compiles is one the runtime can assume is well formed.
+ *
+ * @param foldingAllowed whether two versions of one document may go out as one. False under an append
+ *        root, where every send is a new record and merging two versions loses one rather than saving a
+ *        write. It is read off the tree here because that is where the root's mode is known, and it
+ *        decides how the assembler sends rather than what it assembles.
  */
-public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, List<EmbedSlot> slots)
-        implements Serializable {
+public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, List<EmbedSlot> slots,
+        boolean foldingAllowed) implements Serializable {
 
     /**
      * How many resolver vertices one nest may compile to. Each takes a thread of its own rather than
@@ -72,7 +77,9 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         NestRoot root = nest.root();
         List<Embed> declared = childrenOf(root.embed());
         if (declared.isEmpty()) {
-            return new NestTopology(List.of(), List.of(), List.of());
+            // A passthrough assembles nothing and so sends nothing of its own: how a document would be
+            // folded is not a question it has.
+            return new NestTopology(List.of(), List.of(), List.of(), true);
         }
 
         List<Node> top = new ArrayList<>();
@@ -209,7 +216,8 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
             streams.add(new NestStream(node.embed().from(), node.pathId(), leaf ? depth - 1 : depth,
                     entry, node.arrayKey()));
         }
-        return new NestTopology(vertices, streams, slotsOf(top));
+        return new NestTopology(vertices, streams, slotsOf(top),
+                !WriteMode.APPEND.yaml().equals(root.mode()));
     }
 
     private static NestVertex vertexOf(String pipelineId, String nodeId, Node node, List<String> parentIdentity) {

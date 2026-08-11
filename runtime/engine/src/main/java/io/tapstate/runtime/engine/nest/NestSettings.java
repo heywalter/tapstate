@@ -115,28 +115,46 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_TOMBSTONE_LIMIT = 100_000L;
 
+    /**
+     * How long after a document goes out before it may go out again, when nothing says otherwise.
+     *
+     * <p>The one number here that is not a capacity. It rations sends rather than bounding memory, and it is
+     * here rather than beside the map configuration because it belongs to the same decision as the rest: how
+     * much a level may keep and how often it may spend it are set against each other, and a deployment that
+     * shrank the memory budget without knowing the send rate would be setting one half of a pair.
+     *
+     * <p>Short enough that a document is never visibly stale - a reader polling anything sees a version at
+     * most this old - and long enough to be worth having: a root taking a hundred changes a second is
+     * rewritten twenty times instead of a hundred, and one taking ten thousand is rewritten twenty times as
+     * well. That second case is what this is for. A root changing less often than this pays nothing at all,
+     * because the first change of a quiet window goes out on the spot.
+     */
+    public static final long DEFAULT_SEND_WINDOW_MILLIS = 50L;
+
     private final Map<String, Long> elementLimits;
     private final Map<String, Long> pendingLimits;
     private final Map<String, Long> tombstoneLimits;
+    private final Map<String, Long> sendWindows;
     private final long entriesHeldInMemory;
 
     private NestSettings(Map<String, Long> elementLimits, Map<String, Long> pendingLimits,
-            Map<String, Long> tombstoneLimits, long entriesHeldInMemory) {
+            Map<String, Long> tombstoneLimits, Map<String, Long> sendWindows, long entriesHeldInMemory) {
         this.elementLimits = Map.copyOf(elementLimits);
         this.pendingLimits = Map.copyOf(pendingLimits);
         this.tombstoneLimits = Map.copyOf(tombstoneLimits);
+        this.sendWindows = Map.copyOf(sendWindows);
         this.entriesHeldInMemory = entriesHeldInMemory;
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of(), Map.of(), Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
+        return new NestSettings(Map.of(), Map.of(), Map.of(), Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
     }
 
     /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
     public NestSettings withElementLimit(String namespace, long limit) {
         return new NestSettings(with(elementLimits, namespace, limit, "elements"), pendingLimits,
-                tombstoneLimits, entriesHeldInMemory);
+                tombstoneLimits, sendWindows, entriesHeldInMemory);
     }
 
     /**
@@ -145,7 +163,7 @@ public final class NestSettings implements Serializable {
      */
     public NestSettings withPendingLimit(String namespace, long limit) {
         return new NestSettings(elementLimits, with(pendingLimits, namespace, limit, "pending changes"),
-                tombstoneLimits, entriesHeldInMemory);
+                tombstoneLimits, sendWindows, entriesHeldInMemory);
     }
 
     /**
@@ -154,7 +172,27 @@ public final class NestSettings implements Serializable {
      */
     public NestSettings withTombstoneLimit(String namespace, long limit) {
         return new NestSettings(elementLimits, pendingLimits,
-                with(tombstoneLimits, namespace, limit, "records of deletion"), entriesHeldInMemory);
+                with(tombstoneLimits, namespace, limit, "records of deletion"), sendWindows,
+                entriesHeldInMemory);
+    }
+
+    /**
+     * These settings, with each document of {@code namespace} going out at most once every {@code millis}.
+     *
+     * <p>Zero is allowed and means no window: every change that produces a document sends one. It is the
+     * setting to reach for when a reader is being timed rather than fed, and it is the one that costs the
+     * most - the send rate of a hot root becomes its change rate, which is the multiplication this exists
+     * to bound.
+     */
+    public NestSettings withSendWindow(String namespace, long millis) {
+        Objects.requireNonNull(namespace, "namespace");
+        if (millis < 0) {
+            throw new IllegalArgumentException(
+                    "a window cannot be shorter than no window: " + millis + " for " + namespace);
+        }
+        Map<String, Long> widened = new LinkedHashMap<>(sendWindows);
+        widened.put(namespace, millis);
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, widened, entriesHeldInMemory);
     }
 
     /**
@@ -176,7 +214,7 @@ public final class NestSettings implements Serializable {
                     Map.of("entries", entries,
                             "partitions", (long) NestMaps.SMALLEST_MEANINGFUL_MEMORY_BUDGET), null);
         }
-        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, entries);
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows, entries);
     }
 
     /** How many entries each namespace keeps in memory before the rest is left to the layer behind it. */
@@ -203,6 +241,14 @@ public final class NestSettings implements Serializable {
      */
     public long tombstonesAllowedIn(String namespace) {
         return tombstoneLimits.getOrDefault(namespace, DEFAULT_TOMBSTONE_LIMIT);
+    }
+
+    /**
+     * How long after a document of {@code namespace} goes out before the next version of it may, with zero
+     * meaning every version goes out as it is assembled.
+     */
+    public long sendWindowIn(String namespace) {
+        return sendWindows.getOrDefault(namespace, DEFAULT_SEND_WINDOW_MILLIS);
     }
 
     private static Map<String, Long> with(Map<String, Long> limits, String namespace, long limit,

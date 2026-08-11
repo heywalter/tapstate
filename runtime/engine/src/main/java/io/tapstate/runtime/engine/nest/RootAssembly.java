@@ -312,6 +312,25 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
+     * The lowest position per chain of everything a document going out now would carry. The mirror of
+     * {@link #covered()}: that says what a send releases, this says what not sending yet has to keep the
+     * frontier below - a document that has changed and is waiting to go out is a change that survives a
+     * restart and that nothing will ever send again, since no further event is due for that root.
+     *
+     * <p><b>What is waiting for an ancestor is deliberately absent.</b> It travels to the store inside this
+     * state and comes back out when its ancestor arrives, so something does finish it and the frontier may
+     * pass it. Counting it here would pin the frontier on a foreign key pointing at a row that never
+     * arrives, for as long as the job runs.
+     */
+    public Map<String, ChainPosition> lowestUnsentByChain() {
+        Map<String, ChainPosition> lowest = new LinkedHashMap<>(fromRoot.lowest);
+        for (NestElement held : heldElements) {
+            lowest(lowest, held.positions());
+        }
+        return lowest;
+    }
+
+    /**
      * What the key row of a deleted root covers: the root's own change and nothing else. A key row carries
      * no element, so whatever was absorbed alongside the deletion has still been shown to nobody.
      */
