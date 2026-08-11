@@ -30,11 +30,7 @@ import io.tapstate.runtime.engine.nest.NestBinding;
 import io.tapstate.runtime.engine.nest.NestClock;
 import io.tapstate.runtime.engine.nest.NestSettings;
 import io.tapstate.runtime.engine.nest.NestStateLedger;
-import io.tapstate.runtime.engine.nest.NestStreamFacts;
 import io.tapstate.runtime.engine.nest.NestTable;
-import io.tapstate.runtime.engine.nest.PendingProtection;
-import io.tapstate.runtime.engine.nest.PendingVerdict;
-import io.tapstate.runtime.engine.nest.PendingWatch;
 import io.tapstate.runtime.engine.nest.ReleasedChild;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.WriteResult;
@@ -71,13 +67,16 @@ class NestDagRunTest {
     /** How many times the read side of the durable frontier was bound. Static for the same reason. */
     private static final AtomicInteger FLOORS_BOUND = new AtomicInteger();
 
-    /** What a level stopped holding for a root that was not coming. Static for the same reason. */
+    /** What a level handed over rather than placing in a document. Static for the same reason. */
     private static final List<ReleasedChild> RELEASED = Collections.synchronizedList(new ArrayList<>());
 
-    /** How long a change may be held here before the backstop ends the wait. */
-    private static final Duration PROTECTION = Duration.ofSeconds(2);
+    /**
+     * How long a change is left waiting before the reading is taken. Long enough for the idle path to run
+     * many times over, so that nothing handed over means nothing gives up rather than nothing had time to.
+     */
+    private static final Duration LEFT_WAITING = Duration.ofSeconds(2);
 
-    /** How long the root row is held back from the source that carries it, well inside {@link #PROTECTION}. */
+    /** How long the root row is held back from the source that carries it, well inside {@link #LEFT_WAITING}. */
     private static final Duration LATE_ROOT = Duration.ofMillis(500);
 
     private HazelcastInstance member;
@@ -166,23 +165,23 @@ class NestDagRunTest {
 
         Job job = member.getJet().newJob(dag);
         try {
-            awaitWellPastAnyProtection();
+            awaitWellPastAnyGivingUp();
         } finally {
             job.cancel();
         }
 
         assertThat(List.copyOf(RELEASED))
-                .describedAs("waited well past the window a backstop would have fired in, and the item is "
-                        + "still held: nothing gives up on a change for a parent that has not arrived")
+                .describedAs("left waiting long past any window something could have given up in, and the "
+                        + "item is still held: nothing gives up on a change for a parent that has not arrived")
                 .isEmpty();
     }
 
     /**
-     * Waits well past the window in which anything giving up on a held change would have done so, so that
-     * an empty reading afterwards means nothing gave up rather than that nothing had time to.
+     * Leaves a change waiting long past the window in which anything giving up on it would have done so, so
+     * that an empty reading afterwards means nothing gave up rather than that nothing had time to.
      */
-    private static void awaitWellPastAnyProtection() throws InterruptedException {
-        Thread.sleep(PROTECTION.plusSeconds(1).toMillis());
+    private static void awaitWellPastAnyGivingUp() throws InterruptedException {
+        Thread.sleep(LEFT_WAITING.plusSeconds(1).toMillis());
     }
 
     // ---- the pipeline under test ------------------------------------------------------
@@ -230,16 +229,7 @@ class NestDagRunTest {
                 ref -> List.of(((FromRef.Literal) ref).ref()),
                 new NestBinding(tables::get, HeapNestStores.onHeap(),
                         (from, released) -> RELEASED.add(released), new CountingFloors(),
-                        NestStateLedger.NONE, NestSettings.defaults(),
-                        // A backstop of seconds rather than hours, so what would be given up on after a
-                        // working morning is given up on inside a job that lasts a moment. It is the wait
-                        // that is shortened here and nothing else: what decides the wait is over is the
-                        // same rule. Not nothing at all, which is what this was: a backstop of zero ends
-                        // the wait for every change a sweep finds held, one whose root is on its way
-                        // included, and then the two are told apart only by which of them the sweep
-                        // happens to land between.
-                        new PendingWatch(new PendingProtection(PROTECTION), NestStreamFacts.UNKNOWN,
-                                NestClock.SYSTEM)));
+                        NestStateLedger.NONE, NestSettings.defaults(), NestClock.SYSTEM));
 
         return PipelineDagBuilder.build(pipeline, bindings);
     }

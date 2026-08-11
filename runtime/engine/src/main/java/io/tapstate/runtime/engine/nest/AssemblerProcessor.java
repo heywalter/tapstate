@@ -50,11 +50,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     private static final long SWEEP_INTERVAL_MILLIS = 1_000L;
 
-    /** Where a vertex built without a watch would send what it let go of, since it lets go of nothing. */
-    private static final NestDeadLetter NOTHING_IS_LET_GO_OF = (from, released) -> {
-        throw new IllegalStateException("an assembler with no watch let go of " + released);
-    };
-
     private final NestVertex vertex;
     private final List<EmbedSlot> slots;
     private final NestStore<RootAssembly> store;
@@ -62,7 +57,6 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final Deque<Object> outgoing = new ArrayDeque<>();
     private final LevelBounds bounds;
     private final ReplayFloor floor;
-    private final NestDeadLetter deadLetter;
 
     /**
      * How many elements any one document may hold. Read once: it is chosen where the job is built, not
@@ -91,18 +85,11 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private Long forgottenAt;
 
     /**
-     * What the sweeps here measure their own interval against — the clock a wait is timed by where there is
-     * one, so a test driving that clock drives these too, and the system clock where there is not.
+     * What the sweeps here measure their own interval against. It is only ever read to decide whether
+     * enough time has passed to look again — nothing this vertex holds is ever given up because a clock
+     * reached some time.
      */
     private final NestClock clock;
-
-    /**
-     * Where the clock comes from, and nothing else any more: what a change waited is still stamped on it
-     * as it is taken in, because a change that turns out to be unassemblable says how long it had been
-     * waiting when it is handed to the dead-letter. Null where the caller supplied none, which is a vertex
-     * that times nothing.
-     */
-    private final PendingWatch watch;
 
     /**
      * Roots whose deletion has gone downstream and whose record is still kept, against what that deletion
@@ -150,34 +137,17 @@ public final class AssemblerProcessor extends AbstractProcessor {
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
             ReplayFloor floor, NestSettings settings) {
-        this(vertex, slots, store, outputStream, NOTHING_IS_LET_GO_OF, null, axes, chainsByOrdinal, floor,
-                settings);
+        this(vertex, slots, store, outputStream, axes, chainsByOrdinal, floor, settings, NestClock.SYSTEM);
     }
 
-    /**
-     * An assembler held to {@code watch} over how long a document may go on holding a change for a root
-     * that never arrives, with nowhere else to promise anything.
-     */
+    /** All of it, sweeping on {@code clock} rather than on the system's. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
-            String outputStream, NestDeadLetter deadLetter, PendingWatch watch) {
-        this(vertex, slots, store, outputStream, deadLetter, watch, null, null, ReplayFloor.NONE,
-                NestSettings.defaults());
-    }
-
-    /**
-     * All of it. The dead letter and the watch travel together and neither is optional here: a vertex that
-     * may stop holding a change has to have somewhere to hand it, and one that never stops holding pins its
-     * source's read position for as long as the job runs.
-     */
-    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
-            String outputStream, NestDeadLetter deadLetter, PendingWatch watch, ChainAxes axes,
-            Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor, NestSettings settings) {
+            String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
+            ReplayFloor floor, NestSettings settings, NestClock clock) {
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
         this.outputStream = Objects.requireNonNull(outputStream, "outputStream");
-        this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
-        this.watch = watch;
         // Nothing here lowers the bound. An orphan waiting for its ancestor is in the document's own
         // state, written through as the drain settles, so it survives a restart and comes out when the
         // ancestor arrives. What would lower the bound is a document changed and not yet emitted
@@ -188,7 +158,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 Objects.requireNonNull(settings, "settings").elementsAllowedIn(vertex.mapName());
         this.pendingLimit = settings.pendingAllowedIn(vertex.mapName());
         this.tombstoneLimit = settings.tombstonesAllowedIn(vertex.mapName());
-        this.clock = watch == null ? NestClock.SYSTEM : watch.clock();
+        this.clock = Objects.requireNonNull(clock, "clock");
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
         }
@@ -344,7 +314,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private void handle(NestInbound edge, Object item, Map<Object, Touched> touched) {
         if (edge.isCascade()) {
             KeyedElement arrived = (KeyedElement) item;
-            touched(arrived.key(), touched).assembly.take(arrived.element(), now());
+            touched(arrived.key(), touched).assembly.take(arrived.element());
             return;
         }
         Envelope event = (Envelope) item;
@@ -367,16 +337,8 @@ public final class AssemblerProcessor extends AbstractProcessor {
         document.ts = event.ts();
         ElementRef ref = new ElementRef(edge.pathId(), null,
                 NestKeys.valuesOf(row, edge.elementKey()), null);
-        document.assembly.take(new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
-                event.positions(), event.ts()), now());
-    }
-
-    /**
-     * What time it is where a hold is timed from. A vertex built without a watch times nothing and lets
-     * nothing go, so what it records is the one value that says exactly that.
-     */
-    private long now() {
-        return watch == null ? RootAssembly.UNTIMED : watch.clock().millis();
+        document.assembly.take(
+                new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order, event.positions()));
     }
 
     /**

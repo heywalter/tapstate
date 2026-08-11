@@ -64,7 +64,7 @@ class WhatOneKeyHoldsPendingIsCountedByChangeTest {
     void aChangeAbsorbedWhileTheRootIsAbsentCountsAsPending() {
         RootAssembly assembly = new RootAssembly();
 
-        assembly.take(policy("P1", 5), TAKEN_IN);
+        assembly.take(policy("P1", 5));
 
         assertThat(assembly.pending())
                 .describedAs("a row under the root is attached on arrival and held all the same")
@@ -75,7 +75,7 @@ class WhatOneKeyHoldsPendingIsCountedByChangeTest {
     void aChangeWaitingForAnAncestorCountsAsPending() {
         RootAssembly assembly = new RootAssembly();
 
-        assembly.take(claimUnder("P1", "K1", 5), TAKEN_IN);
+        assembly.take(claimUnder("P1", "K1", 5));
 
         assertThat(assembly.pending()).isEqualTo(1);
     }
@@ -88,9 +88,9 @@ class WhatOneKeyHoldsPendingIsCountedByChangeTest {
     void everyChangeToOneElementIsHeldAndCountedOnItsOwn() {
         RootAssembly assembly = new RootAssembly();
 
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policy("P1", 6), TAKEN_IN);
-        assembly.take(policy("P1", 7), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policy("P1", 6));
+        assembly.take(policy("P1", 7));
 
         assertThat(assembly.elements())
                 .describedAs("the document is one policy wide however often that policy was written")
@@ -102,7 +102,7 @@ class WhatOneKeyHoldsPendingIsCountedByChangeTest {
     void aDocumentThatWentOutLeavesNothingPending() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("customer_id", "c1"), at(4));
-        assembly.take(policy("P1", 5), TAKEN_IN);
+        assembly.take(policy("P1", 5));
 
         assembly.render(SHAPE);
         assembly.documentSent();
@@ -112,11 +112,11 @@ class WhatOneKeyHoldsPendingIsCountedByChangeTest {
 
     private static NestElement policy(String id, long seq) {
         return new NestElement(element(POLICIES, null, id, id), row("policy_no", id), at(seq),
-                noPositions(), seq);
+                noPositions());
     }
 
     private static NestElement claimUnder(String policy, String id, long seq) {
         return new NestElement(element(CLAIMS, policy, id, id), row("claim_no", id), at(seq),
-                noPositions(), seq);
+                noPositions());
     }
 }

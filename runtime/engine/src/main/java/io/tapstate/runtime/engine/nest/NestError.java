@@ -130,13 +130,14 @@ public enum NestError implements TapstateErrorCode {
             "nest.migration-parking-limit-exceeded", Set.of("newRootKey", "bytes", "limit")),
 
     /**
-     * Running: an event held for a parent that never resolved has been released to the dead-letter
-     * channel so the frontier can move again. The pipeline keeps running, which is why this is a warning:
-     * the verdict says whether the parent was established absent or the wall-clock backstop gave up on it,
-     * and those mean very different things to whoever reads it.
+     * Running: an event can never be placed in a document, because the row it hangs from is known to be
+     * gone, and has gone to the dead-letter channel instead. The pipeline keeps running, which is why this
+     * is a warning: a dangling reference in the source is ordinary, and the event was never going to appear
+     * in any document. How long it had been waiting is what says which of the two this is - a reference
+     * that has dangled all along, or a parent deleted while its children were in flight.
      */
-    PENDING_PROTECTION_EXPIRED("nest.pending-protection-expired",
-            Set.of("chain", "bucket", "order", "verdict", "heldFor"), Severity.WARNING),
+    PARENT_ABSENT("nest.parent-absent",
+            Set.of("chain", "bucket", "order", "heldFor"), Severity.WARNING),
 
     /**
      * Running: a namespace's state is being served from the storage behind its memory rather than from the

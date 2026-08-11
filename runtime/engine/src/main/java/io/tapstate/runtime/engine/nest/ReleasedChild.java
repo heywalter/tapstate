@@ -3,13 +3,17 @@ package io.tapstate.runtime.engine.nest;
 import java.time.Duration;
 
 /**
- * A change let go of by the level that was holding it: the grounds it went on, and how long it had been
- * waiting when it did.
+ * A change handed back by the level that was holding it, and how long it had been waiting when that
+ * happened.
  *
- * <p>The duration is what it actually waited rather than what it was allowed to wait, because the two
- * differ for every release but one. Only a change ended by the backstop waited exactly the limit; a change
- * whose parent was established absent waited however long that took to establish, and reporting the limit
- * for it would describe a wait that never happened.
+ * <p>There is one ground for it and so no field saying which: the parent row this change hangs from is
+ * known to be gone — deleted while this waited, or already tombstoned when it arrived. A wait is never
+ * ended on a guess that a parent is not coming, so nothing here can be a change that would have been
+ * placed had it waited longer.
+ *
+ * <p>The duration is what it actually waited, which for a change that arrived after the deletion is no
+ * time at all. It is worth carrying because it says whether these rows are a long-standing dangling
+ * reference or a deletion that just happened.
  */
-public record ReleasedChild(NestElement child, PendingVerdict verdict, Duration heldFor) {
+public record ReleasedChild(NestElement child, Duration heldFor) {
 }

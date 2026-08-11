@@ -42,11 +42,10 @@ final class CountingNestDeadLetter implements NestDeadLetter {
         args.put("chain", chainOf(released));
         args.put("bucket", from.name());
         args.put("order", released.child().order());
-        args.put("verdict", released.verdict().verdict());
         args.put("heldFor", released.heldFor());
         // Built rather than thrown: the code names what happened and the pipeline goes on running, which
         // is what this severity means. Throwing it would stop a job over a reference pointing nowhere.
-        TapstateException coded = new TapstateException(NestError.PENDING_PROTECTION_EXPIRED, args, null);
+        TapstateException coded = new TapstateException(NestError.PARENT_ABSENT, args, null);
         LOG.warn("{} ({} handed over so far on this member)", coded.getMessage(), seen);
     }
 

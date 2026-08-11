@@ -61,7 +61,13 @@ public final class ResolverProcessor extends AbstractProcessor {
      */
     private final Map<Object, Map<String, ChainPosition>> deleted = new LinkedHashMap<>();
 
-    private final PendingWatch watch;
+    /**
+     * What time it is, which is stamped on a change as it starts waiting and read again when it is handed
+     * over unassemblable. Nothing is decided by it — the wait ends on the parent arriving or on the parent
+     * being known gone — it only says how long the wait was, which is what tells a dangling reference from
+     * a deletion that just happened.
+     */
+    private final NestClock clock;
 
     /** How many changes one key here may hold for a parent that has not arrived. */
     private final long pendingLimit;
@@ -74,7 +80,7 @@ public final class ResolverProcessor extends AbstractProcessor {
     /** A resolver held to what {@code settings} allows one of its keys to hold. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             NestSettings settings) {
-        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE, PendingWatch.defaults(), settings);
+        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE, NestClock.SYSTEM, settings);
     }
 
     /** A resolver that forgets a tombstone once {@code floor} says its deletion cannot come back. */
@@ -83,10 +89,10 @@ public final class ResolverProcessor extends AbstractProcessor {
         this(vertex, store, deadLetter, null, null, floor);
     }
 
-    /** A resolver held to {@code watch} over what it may go on holding for a parent that never arrives. */
+    /** A resolver timing its waits by {@code clock} rather than by the system's. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
-            PendingWatch watch) {
-        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE, watch);
+            NestClock clock) {
+        this(vertex, store, deadLetter, null, null, ReplayFloor.NONE, clock);
     }
 
     /**
@@ -102,20 +108,20 @@ public final class ResolverProcessor extends AbstractProcessor {
     /** The whole of it: a frontier passed on, and tombstones forgotten once it is safe to. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor) {
-        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, PendingWatch.defaults());
+        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, NestClock.SYSTEM);
     }
 
-    /** All of the above, and held to {@code watch} over how long it may wait for a parent. */
+    /** All of the above, timing its waits by {@code clock}. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
-            PendingWatch watch) {
-        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, watch, NestSettings.defaults());
+            NestClock clock) {
+        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, clock, NestSettings.defaults());
     }
 
-    /** The whole of it, held to both of what it may wait: how long for one change, and how many at once. */
+    /** The whole of it, held to what {@code settings} allows one of its keys to hold at once. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
-            PendingWatch watch, NestSettings settings) {
+            NestClock clock, NestSettings settings) {
         this.pendingLimit =
                 Objects.requireNonNull(settings, "settings").pendingAllowedIn(vertex.mapName());
         this.vertex = Objects.requireNonNull(vertex, "vertex");
@@ -127,7 +133,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         // bound is a change taken in and passed on nowhere durable, which this level never has.
         this.bounds = axes == null ? null : new LevelBounds(chainsByOrdinal, axes, LevelBounds.HOLDS_NOTHING);
         this.floor = Objects.requireNonNull(floor, "floor");
-        this.watch = Objects.requireNonNull(watch, "watch");
+        this.clock = Objects.requireNonNull(clock, "clock");
         if (vertex.isAssembler()) {
             throw new IllegalArgumentException("the assembler is not a resolver: " + vertex.name());
         }
@@ -298,7 +304,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         emit(new KeyedElement(parent, element(edge, event, row, parentIdentity(edge, parent), key)));
         if (NestKeys.isDeletion(event)) {
             deleted.put(key, event.positions());
-            for (ReleasedChild child : state.deleteMapping(order, watch.clock().millis())) {
+            for (ReleasedChild child : state.deleteMapping(order, clock.millis())) {
                 deadLetter.unassemblable(vertex, child);
             }
         } else {
@@ -312,13 +318,13 @@ public final class ResolverProcessor extends AbstractProcessor {
     /** One change from beneath, offered to the key its join field names. */
     private void route(Object key, NestElement element, Map<Object, ResolverState> touched) {
         ResolverState state = stateFor(key, touched);
-        switch (state.resolve(element, watch.clock().millis())) {
+        switch (state.resolve(element, clock.millis())) {
             case RESOLVED -> emit(new KeyedElement(state.parentKey(), element));
             // Held: it is in the state now, and the drain writes that through before this level promises
             // anything, so there is nothing further to do here and nothing to record about it.
             case HELD -> { }
-            case PARENT_ABSENT -> deadLetter.unassemblable(vertex,
-                    new ReleasedChild(element, PendingVerdict.PARENT_ABSENT, Duration.ZERO));
+            // Zero: this change arrived after the parent was already gone, so it waited no time at all.
+            case PARENT_ABSENT -> deadLetter.unassemblable(vertex, new ReleasedChild(element, Duration.ZERO));
         }
     }
 
@@ -335,7 +341,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         ElementRef ref = new ElementRef(edge.pathId(), parentIdentity,
                 NestKeys.valuesOf(row, edge.elementKey()), identity);
         return new NestElement(ref, NestKeys.isDeletion(event) ? null : row,
-                NestKeys.orderOf(event), event.positions(), event.ts());
+                NestKeys.orderOf(event), event.positions());
     }
 
     private ResolverState stateFor(Object key, Map<Object, ResolverState> touched) {

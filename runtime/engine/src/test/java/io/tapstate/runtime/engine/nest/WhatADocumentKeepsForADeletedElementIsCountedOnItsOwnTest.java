@@ -29,14 +29,13 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
     private static final List<String> POLICIES = List.of("policies");
     private static final List<String> CLAIMS = List.of("policies", "claims");
 
-    private static final long TAKEN_IN = 1_700_000_000_000L;
 
     @Test
     void aDeletedElementIsKeptAndCounted() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
+        assembly.take(policy("P1", 5));
 
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policyDeleted("P1", 6));
 
         assertThat(assembly.tombstones()).isEqualTo(1);
     }
@@ -45,7 +44,7 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
     void aLiveElementIsNotOne() {
         RootAssembly assembly = new RootAssembly();
 
-        assembly.take(policy("P1", 5), TAKEN_IN);
+        assembly.take(policy("P1", 5));
 
         assertThat(assembly.tombstones()).isZero();
     }
@@ -58,9 +57,9 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
     @Test
     void aDeletionIsNotCountedAmongTheElementsOfTheDocument() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
+        assembly.take(policy("P1", 5));
 
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policyDeleted("P1", 6));
 
         assertThat(assembly.elements())
                 .describedAs("what renders is nothing, and the width of a document is what renders")
@@ -76,8 +75,8 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
     void aDeletionIsNotCountedAmongWhatIsPending() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("customer_id", "c1"), at(4));
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policyDeleted("P1", 6));
 
         assembly.render(shape());
         assembly.documentSent();
@@ -91,11 +90,11 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
     @Test
     void deletionsAreCountedAtEveryDepth() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(claimUnder("P1", "K1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(claimUnder("P1", "K1", 6));
 
-        assembly.take(claimDeleted("P1", "K1", 7), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 8), TAKEN_IN);
+        assembly.take(claimDeleted("P1", "K1", 7));
+        assembly.take(policyDeleted("P1", 8));
 
         assertThat(assembly.tombstones())
                 .describedAs("a deletion four levels down occupies memory as much as one under the root")
@@ -105,10 +104,10 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
     @Test
     void anElementBroughtBackIsNoLongerCountedAsDeleted() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policyDeleted("P1", 6));
 
-        assembly.take(policy("P1", 7), TAKEN_IN);
+        assembly.take(policy("P1", 7));
 
         assertThat(assembly.tombstones()).isZero();
         assertThat(assembly.elements()).isEqualTo(1);
@@ -122,7 +121,7 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
     void aDeletionOfSomethingNeverSeenIsCountedToo() {
         RootAssembly assembly = new RootAssembly();
 
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policyDeleted("P1", 6));
 
         assertThat(assembly.tombstones()).isEqualTo(1);
     }
@@ -134,19 +133,19 @@ class WhatADocumentKeepsForADeletedElementIsCountedOnItsOwnTest {
 
     private static NestElement policy(String id, long seq) {
         return new NestElement(element(POLICIES, null, id, id), row("policy_no", id), at(seq),
-                noPositions(), seq);
+                noPositions());
     }
 
     private static NestElement policyDeleted(String id, long seq) {
-        return new NestElement(element(POLICIES, null, id, id), null, at(seq), noPositions(), seq);
+        return new NestElement(element(POLICIES, null, id, id), null, at(seq), noPositions());
     }
 
     private static NestElement claimUnder(String policy, String id, long seq) {
         return new NestElement(element(CLAIMS, policy, id, id), row("claim_no", id), at(seq),
-                noPositions(), seq);
+                noPositions());
     }
 
     private static NestElement claimDeleted(String policy, String id, long seq) {
-        return new NestElement(element(CLAIMS, policy, id, id), null, at(seq), noPositions(), seq);
+        return new NestElement(element(CLAIMS, policy, id, id), null, at(seq), noPositions());
     }
 }

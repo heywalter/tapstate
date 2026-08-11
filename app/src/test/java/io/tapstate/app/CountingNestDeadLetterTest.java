@@ -8,7 +8,6 @@ import io.tapstate.runtime.engine.nest.ElementRef;
 import io.tapstate.runtime.engine.nest.NestElement;
 import io.tapstate.runtime.engine.nest.NestInbound;
 import io.tapstate.runtime.engine.nest.NestVertex;
-import io.tapstate.runtime.engine.nest.PendingVerdict;
 import io.tapstate.runtime.engine.nest.ReleasedChild;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -36,9 +35,7 @@ class CountingNestDeadLetterTest {
                         new ElementRef(List.of("items"), 1, List.of(id), id),
                         Map.of("id", id),
                         new SourceOrder(1L, id),
-                        Map.of("item", new ChainPosition(new SourceOrder(1L, id), "t" + id)),
-                        id),
-                PendingVerdict.PARENT_ABSENT,
+                        Map.of("item", new ChainPosition(new SourceOrder(1L, id), "t" + id))),
                 Duration.ofMinutes(id));
     }
 

@@ -1,4 +1,4 @@
-# Canonical first-party error codes — the build-time stability lock (ADR-0024 D5-5).
+# Canonical first-party error codes — the build-time lock that keeps them stable.
 # Sorted, one <domain>.<symbol> per line. The ErrorCodeGatesTest diffs the scanned codes
 # against this file. Adding a code = append it here in the same change set; renaming or
 # removing one = a breaking change to an external contract (review + major version).
@@ -95,8 +95,8 @@ nest.key-change-tracking-requires-before-image
 nest.memory-budget-below-partition-count
 nest.memory-budget-changed-while-running
 nest.migration-parking-limit-exceeded
+nest.parent-absent
 nest.pending-limit-exceeded
-nest.pending-protection-expired
 nest.resolver-vertex-limit-exceeded
 nest.root-fanout-limit-exceeded
 nest.root-key-required

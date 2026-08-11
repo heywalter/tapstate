@@ -6,12 +6,10 @@ import io.tapstate.core.event.SourceOrder;
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * What one key of one embed knows: which parent row the rows under this key hang from, and the children
@@ -104,27 +102,6 @@ public final class ResolverState implements Serializable {
     }
 
     /**
-     * Lets go of the children {@code decide} says need not be held any longer, taking them out of what this
-     * key holds and returning each with the grounds it went on. What is returned must be routed by the
-     * caller, exactly as a deletion's drained bucket is: these changes were consumed and never emitted, so
-     * dropping them here loses rows that no assertion about a document could ever see.
-     */
-    public List<ReleasedChild> letGo(PendingRelease decide, long now) {
-        List<ReleasedChild> released = new ArrayList<>();
-        Iterator<Waiting> candidates = waiting.iterator();
-        while (candidates.hasNext()) {
-            Waiting candidate = candidates.next();
-            Duration held = Duration.ofMillis(now - candidate.arrivedAt());
-            Optional<PendingVerdict> verdict = decide.verdictOn(candidate.child(), held);
-            if (verdict.isPresent()) {
-                released.add(new ReleasedChild(candidate.child(), verdict.get(), held));
-                candidates.remove();
-            }
-        }
-        return released;
-    }
-
-    /**
      * Declares that rows under this key hang from {@code parentKey}, and releases whatever was waiting
      * for it. Returns the released children — empty when the declaration is refused as already
      * superseded, or when nothing was waiting.
@@ -154,8 +131,7 @@ public final class ResolverState implements Serializable {
         this.order = order;
         this.deleted = true;
         List<ReleasedChild> released = waiting.stream()
-                .map(held -> new ReleasedChild(held.child(), PendingVerdict.PARENT_ABSENT,
-                        Duration.ofMillis(now - held.arrivedAt())))
+                .map(held -> new ReleasedChild(held.child(), Duration.ofMillis(now - held.arrivedAt())))
                 .toList();
         waiting.clear();
         return released;

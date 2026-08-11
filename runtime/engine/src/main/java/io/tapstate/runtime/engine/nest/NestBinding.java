@@ -13,7 +13,7 @@ import java.util.function.Supplier;
  * where each vertex keeps its state, where changes that can never reach a document go, and how to read
  * back where a restart would resume.
  *
- * <p>All four are things the engine deliberately does not decide. Resolving an alias to a table would
+ * <p>These are things the engine deliberately does not decide. Resolving an alias to a table would
  * mean knowing the table universe; choosing a store would mean choosing between a heap and a disk;
  * choosing what happens to an unassemblable change is a product question, not a graph one; and the durable
  * position a restart resumes from lives in a store the engine ring is not allowed to reach for itself.
@@ -28,12 +28,12 @@ public record NestBinding(
         ReplayFloorFactory replayFloor,
         NestStateLedger ledger,
         NestSettings settings,
-        PendingWatch watch) implements Serializable {
+        NestClock clock) implements Serializable {
 
-    /** A binding on the default watch, which lets a change go only once the backstop ends its wait. */
+    /** A binding on the system clock, which is what everything but a test runs on. */
     public NestBinding(Function<String, NestTable> tables, NestStores stores, NestDeadLetter deadLetter,
             ReplayFloorFactory replayFloor, NestStateLedger ledger, NestSettings settings) {
-        this(tables, stores, deadLetter, replayFloor, ledger, settings, PendingWatch.defaults());
+        this(tables, stores, deadLetter, replayFloor, ledger, settings, NestClock.SYSTEM);
     }
 
     /**

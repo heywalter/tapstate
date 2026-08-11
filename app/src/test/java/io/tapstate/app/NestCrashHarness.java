@@ -230,7 +230,7 @@ public final class NestCrashHarness {
         Vertex assembled = NestDag.attach(dag, topology, "doc", "c", "doc",
                 alias -> List.of(byAlias.get(alias)),
                 new NestBinding(tables::get, NestBinding.onMap().bind(member),
-                        (from, released) -> report.line("letGo=" + from + ":" + released)),
+                        (from, released) -> report.line("unassemblable=" + from + ":" + released)),
                 vertex -> outbound.merge(vertex, 1, Integer::sum) - 1,
                 new NestFrontier(AXES, alias -> List.of(List.of(chainOfAlias.get(alias)))));
 

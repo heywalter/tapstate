@@ -39,13 +39,12 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
             List.of(new EmbedSlot("claims", EmbedAs.ARRAY, List.of()))));
 
     private static final String CHAIN = "policies-chain";
-    private static final long TAKEN_IN = 1_700_000_000_000L;
 
     @Test
     void aDeletionBelowTheFloorIsForgotten() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policyDeleted("P1", 6));
 
         long forgotten = assembly.forgetDeletionsBelow(floorAt(9));
 
@@ -60,8 +59,8 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     @Test
     void aDeletionAtTheFloorIsKept() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policyDeleted("P1", 6));
 
         long forgotten = assembly.forgetDeletionsBelow(floorAt(6));
 
@@ -72,8 +71,8 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     @Test
     void aDeletionOnAChainWithNoKnownFloorIsKept() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policyDeleted("P1", 6));
 
         long forgotten = assembly.forgetDeletionsBelow(ReplayFloor.NONE);
 
@@ -86,9 +85,8 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     @Test
     void aDeletionThatCameWithNoPositionOfItsOwnIsKept() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(new NestElement(element(POLICIES, null, "P1", "P1"), null, at(6), noPositions(), 6),
-                TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(new NestElement(element(POLICIES, null, "P1", "P1"), null, at(6), noPositions()));
 
         long forgotten = assembly.forgetDeletionsBelow(floorAt(9));
 
@@ -102,7 +100,7 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     void aLiveElementIsNeverForgotten() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("customer_id", "c1"), at(4));
-        assembly.take(policy("P1", 5), TAKEN_IN);
+        assembly.take(policy("P1", 5));
 
         long forgotten = assembly.forgetDeletionsBelow(floorAt(9));
 
@@ -118,9 +116,9 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     @Test
     void aDeletionStillHoldingASubtreeIsKept() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(claimUnder("P1", "K1", 6), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 7), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(claimUnder("P1", "K1", 6));
+        assembly.take(policyDeleted("P1", 7));
 
         long forgotten = assembly.forgetDeletionsBelow(floorAt(9));
 
@@ -134,10 +132,10 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     @Test
     void aSubtreeOfDeletionsCollapsesFromTheBottom() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(claimUnder("P1", "K1", 6), TAKEN_IN);
-        assembly.take(claimDeleted("P1", "K1", 7), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 8), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(claimUnder("P1", "K1", 6));
+        assembly.take(claimDeleted("P1", "K1", 7));
+        assembly.take(policyDeleted("P1", 8));
 
         long forgotten = assembly.forgetDeletionsBelow(floorAt(9));
 
@@ -154,10 +152,10 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     @Test
     void aChildArrivingUnderADeletedParentKeepsThatDeletionFromBeingForgotten() {
         RootAssembly assembly = new RootAssembly();
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policyDeleted("P1", 6));
 
-        assembly.take(claimUnder("P1", "K1", 7), TAKEN_IN);
+        assembly.take(claimUnder("P1", "K1", 7));
         long forgotten = assembly.forgetDeletionsBelow(floorAt(9));
 
         assertThat(forgotten).isZero();
@@ -174,12 +172,12 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     void aForgottenDeletionTakesTheNameItAnsweredToWithIt() {
         RootAssembly assembly = new RootAssembly();
         assembly.applyRoot(row("customer_id", "c1"), at(4));
-        assembly.take(policy("P1", 5), TAKEN_IN);
-        assembly.take(policyDeleted("P1", 6), TAKEN_IN);
+        assembly.take(policy("P1", 5));
+        assembly.take(policyDeleted("P1", 6));
         assembly.forgetDeletionsBelow(floorAt(9));
 
-        assembly.take(claimUnder("P1", "K1", 20), TAKEN_IN);
-        assembly.take(policy("P1", 21), TAKEN_IN);
+        assembly.take(claimUnder("P1", "K1", 20));
+        assembly.take(policy("P1", 21));
 
         Map<String, Object> document = assembly.render(SHAPE).orElseThrow();
         assertThat(listAt(document, "policies"))
@@ -200,20 +198,18 @@ class ADocumentForgetsOnlyTheDeletionsReplayCannotBringBackTest {
     }
 
     private static NestElement policy(String id, long seq) {
-        return new NestElement(element(POLICIES, null, id, id), row("policy_no", id), at(seq),
-                from(seq), seq);
+        return new NestElement(element(POLICIES, null, id, id), row("policy_no", id), at(seq), from(seq));
     }
 
     private static NestElement policyDeleted(String id, long seq) {
-        return new NestElement(element(POLICIES, null, id, id), null, at(seq), from(seq), seq);
+        return new NestElement(element(POLICIES, null, id, id), null, at(seq), from(seq));
     }
 
     private static NestElement claimUnder(String policy, String id, long seq) {
-        return new NestElement(element(CLAIMS, policy, id, id), row("claim_no", id), at(seq),
-                from(seq), seq);
+        return new NestElement(element(CLAIMS, policy, id, id), row("claim_no", id), at(seq), from(seq));
     }
 
     private static NestElement claimDeleted(String policy, String id, long seq) {
-        return new NestElement(element(CLAIMS, policy, id, id), null, at(seq), from(seq), seq);
+        return new NestElement(element(CLAIMS, policy, id, id), null, at(seq), from(seq));
     }
 }

@@ -7,6 +7,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -26,7 +27,7 @@ class ResolverStateTest {
         return new NestElement(
                 element(List.of("items"), "P1", pairs[1], null),
                 row(pairs), at(seq),
-                Map.of(chain, new ChainPosition(at(seq), token)), seq);
+                Map.of(chain, new ChainPosition(at(seq), token)));
     }
 
     @Test
@@ -110,11 +111,13 @@ class ResolverStateTest {
 
         // The parent is known deleted, so the bucket empties now rather than waiting for a timeout: those
         // children can never resolve, and holding them would pin the frontier for nothing.
-        List<ReleasedChild> released = state.deleteMapping(at(10), ARRIVED);
+        List<ReleasedChild> released = state.deleteMapping(at(10), ARRIVED + 90_000);
         assertThat(released).extracting(ReleasedChild::child).containsExactly(orphaned);
-        assertThat(released).extracting(ReleasedChild::verdict)
-                .describedAs("a parent that is known deleted is absent for certain, never a guess")
-                .containsExactly(PendingVerdict.PARENT_ABSENT);
+        assertThat(released).extracting(ReleasedChild::heldFor)
+                .describedAs("measured from when this change started waiting, not from when the row was "
+                        + "deleted - it is the whole of what tells a long-dangling reference from a parent "
+                        + "deleted while its children were still arriving")
+                .containsExactly(Duration.ofMinutes(1).plusSeconds(30));
         assertThat(state.waiting()).isEmpty();
     }
 

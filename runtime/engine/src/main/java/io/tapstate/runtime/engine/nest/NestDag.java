@@ -185,7 +185,7 @@ public final class NestDag {
         List<EmbedSlot> slots = topology.slots();
         ChainAxes axes = frontier == null ? null : frontier.axes();
         return ProcessorMetaSupplier.of(new NestVertexSupplier(spec, slots, stores, deadLetter, outputStream,
-                axes, chainsByOrdinal, binding.replayFloor(), binding.settings(), binding.watch()));
+                axes, chainsByOrdinal, binding.replayFloor(), binding.settings(), binding.clock()));
     }
 
     /** Reads the key off the fields a row carries it in. */
@@ -221,16 +221,15 @@ public final class NestDag {
         private final Map<Integer, List<String>> chainsByOrdinal;
         private final ReplayFloorFactory replayFloor;
         private final NestSettings settings;
-        private final PendingWatch watch;
+        private final NestClock clock;
         private transient ReplayFloor floor;
         private transient NestBinding.NestStores bound;
-        private transient PendingWatch boundWatch;
 
         private NestVertexSupplier(NestVertex spec, List<EmbedSlot> slots, NestBinding.NestStores stores,
                 NestDeadLetter deadLetter, String outputStream, ChainAxes axes,
                 Map<Integer, List<String>> chainsByOrdinal, ReplayFloorFactory replayFloor,
-                NestSettings settings, PendingWatch watch) {
-            this.watch = watch;
+                NestSettings settings, NestClock clock) {
+            this.clock = clock;
             this.spec = spec;
             this.slots = slots;
             this.stores = stores;
@@ -248,9 +247,6 @@ public final class NestDag {
             // Metered from here and nowhere else: this is the one place a job is what the stores are
             // being bound for, and a reading can only be left from a thread running its processors.
             bound = stores.bind(context.hazelcastInstance(), JetNestStateGauge::new);
-            // Whether a stream has finished its initial read is a fact of a store, not of the graph, so
-            // it can only be asked from the member the vertex will run on.
-            boundWatch = watch.boundTo(context.hazelcastInstance());
         }
 
         @Override
@@ -259,9 +255,9 @@ public final class NestDag {
             for (int i = 0; i < count; i++) {
                 processors.add(spec.isAssembler()
                         ? new AssemblerProcessor(spec, slots, bound.forAssembler(spec), outputStream,
-                                deadLetter, boundWatch, axes, chainsByOrdinal, floor, settings)
+                                axes, chainsByOrdinal, floor, settings, clock)
                         : new ResolverProcessor(spec, bound.forResolver(spec), deadLetter, axes,
-                                chainsByOrdinal, floor, boundWatch, settings));
+                                chainsByOrdinal, floor, clock, settings));
             }
             return processors;
         }
