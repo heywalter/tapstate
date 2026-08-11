@@ -284,6 +284,42 @@ class PipelineDagBuilderTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
+    @Test
+    void a_source_without_vertex_keys_is_an_invariant_violation() {
+        PipelineResource pipeline = new PipelineResource(
+                "p", null, List.of("orders_src"), null, null,
+                serve(FromRef.literal("orders_src"), sync("sync_1", "orders_dest")), null, null);
+        DagBindings bindings = new DagBindings(
+                srcId -> stubMeta(),
+                step -> (SupplierEx<TransformPort>) () -> ev -> List.of(ev),
+                syncElement -> stubWriter(),
+                ref -> List.of(),
+                sourceId -> List.of(),
+                null);
+
+        assertThatThrownBy(() -> PipelineDagBuilder.build(pipeline, bindings))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("orders_src");
+    }
+
+    @Test
+    void a_null_source_vertex_key_result_is_an_invariant_violation() {
+        PipelineResource pipeline = new PipelineResource(
+                "p", null, List.of("orders_src"), null, null,
+                serve(FromRef.literal("orders_src"), sync("sync_1", "orders_dest")), null, null);
+        DagBindings bindings = new DagBindings(
+                srcId -> stubMeta(),
+                step -> (SupplierEx<TransformPort>) () -> ev -> List.of(ev),
+                syncElement -> stubWriter(),
+                ref -> List.of(),
+                sourceId -> null,
+                null);
+
+        assertThatThrownBy(() -> PipelineDagBuilder.build(pipeline, bindings))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("orders_src");
+    }
+
     // ---- fixtures ----------------------------------------------------------------------
 
     /** A binder whose leaves are structural stubs; {@code upstreams} is a canned lookup. */

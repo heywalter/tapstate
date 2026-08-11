@@ -176,9 +176,18 @@ public final class PipelineDagBuilder {
         PipelineChains chains = frontier == null ? null : new PipelineChains();
 
         for (String sourceId : pipeline.sources()) {
-            byKey.put(sourceId, dag.newVertex(sourceId, bindings.sourceVertices().apply(sourceId)));
-            if (chains != null) {
-                chains.source(sourceId, frontier.chainOf(sourceId));
+            List<String> sourceKeys = bindings.sourceKeys().apply(sourceId);
+            if (sourceKeys == null || sourceKeys.isEmpty()) {
+                throw new IllegalStateException("source '" + sourceId + "' has no source vertex keys");
+            }
+            for (String sourceKey : sourceKeys) {
+                byKey.put(sourceKey, dag.newVertex(sourceKey, bindings.sourceVertices().apply(sourceKey)));
+                // Per vertex rather than per source: a source reading several tables reads several chains,
+                // and a bound carrying one of their names for all of them would say how far one table had
+                // travelled about changes of a table nobody had read.
+                if (chains != null) {
+                    chains.source(sourceKey, frontier.chainOf(sourceKey));
+                }
             }
         }
         // The numbering comes from the binding rather than from what was accumulated here, because the

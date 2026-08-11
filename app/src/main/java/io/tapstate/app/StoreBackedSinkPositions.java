@@ -1,6 +1,8 @@
 package io.tapstate.app;
 
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.model.PipelineResource;
+import io.tapstate.core.model.SourceResource;
 import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.StorePort;
 import java.util.LinkedHashMap;
@@ -11,16 +13,18 @@ import java.util.function.Function;
 
 /**
  * The read side of the durable sink-acked position, for the observation read face: given a pipeline id it
- * yields, per table the pipeline's sources read, the opaque source position that pipeline's sink has durably
- * acked. It resolves each source to its table and mining chain the same way the sink-ack writer does -- the
- * shared source resolution -- so the position a sink advances under a chain is the position this reads back
- * for that table. A single pipeline-level acked position keys onto the table its chain carries, so a
- * pipeline reading several tables reports each table's own acked position rather than one value repeated.
+ * yields, per selected table the pipeline's sources read, the opaque source position that pipeline's sink has
+ * durably acked. It resolves each source to its tables and mining chain the same way the sink-ack writer does
+ * -- the shared source resolution -- so the position a sink advances under a chain is the position this reads
+ * back for every selected table. A single pipeline-level acked position is projected to each selected table
+ * until the persistence contract grows per-table sink offsets.
  *
  * <p>Present-only, so the projection stays honest: a table whose sink has not acked yet, a chain that holds
  * no consumer record for the pipeline, and a pipeline whose artifact is no longer stored all yield no entry
  * -- absence reads as "not acked yet", never a sentinel. Bound at the assembly point as the observation
  * publisher's position source, the one place with both the table names and the store to read them from.
+ * A multi-table source has one chain-level consumer offset, so that position is projected to every selected
+ * table until the persistence contract grows per-table sink offsets.
  */
 final class StoreBackedSinkPositions implements Function<String, Map<String, String>> {
 
@@ -39,10 +43,19 @@ final class StoreBackedSinkPositions implements Function<String, Map<String, Str
         }
         Map<String, String> positions = new LinkedHashMap<>();
         for (String sourceId : pipeline.get().sources()) {
-            SourceCaptureResolution resolution =
-                    SourceCaptureResolution.of(StoredArtifacts.requireSource(storePort.artifacts(), sourceId));
+            SourceResource source = StoredArtifacts.requireSource(storePort.artifacts(), sourceId);
+            SourceCaptureResolution resolution;
+            try {
+                resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
+            } catch (TapstateException unresolved) {
+                if (unresolved.code() == ActuationError.SOURCE_SCHEMA_NOT_DISCOVERED) {
+                    // The read face treats a not-yet-resolvable selection as absent while discovery catches up.
+                    continue;
+                }
+                throw unresolved;
+            }
             ackedSrcpos(resolution.chainId().value(), pipelineId)
-                    .ifPresent(srcpos -> positions.put(resolution.table(), srcpos));
+                    .ifPresent(srcpos -> resolution.tables().forEach(table -> positions.put(table, srcpos)));
         }
         return positions;
     }

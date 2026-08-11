@@ -3,9 +3,18 @@
 # against this file. Adding a code = append it here in the same change set; renaming or
 # removing one = a breaking change to an external contract (review + major version).
 # @Deprecated codes stay listed as tombstones until intentionally retired.
+actuation.from-regex-empty
+actuation.from-regex-invalid
 actuation.not-a-pipeline
 actuation.pipeline-not-found
+actuation.source-schema-not-discovered
+actuation.source-table-ambiguous
+actuation.source-table-not-discovered
+actuation.source-table-regex-invalid
+actuation.source-table-selection-empty
+actuation.source-table-spec-unsupported
 boot.hazelcast-unavailable
+capture.event-table-not-selected
 capture.start-from-unparsable
 cli.artifact-exists
 cli.connect-failed

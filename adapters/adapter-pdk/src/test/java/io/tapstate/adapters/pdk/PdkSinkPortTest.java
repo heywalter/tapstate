@@ -102,6 +102,25 @@ class PdkSinkPortTest {
     }
 
     @Test
+    void appendModeRejectsAMultiTableBatchBeforeAnyConnectorWrite(@TempDir Path dir) throws Exception {
+        Path jar = Synthetic.throwingWriteSink(dir);
+        PdkSinkPort port = new PdkSinkPort(provisioner(jar, "synthetic.ThrowingWrite"));
+        try (SinkWriter writer = port.open(config(WriteMode.APPEND, DdlPolicy.IGNORE),
+                Map.of("t1", target(), "t2", new TargetTable("t2", List.of())))) {
+            assertThatThrownBy(() -> await(writer, List.of(
+                    Envelope.insert(1L, "t1", Map.of("id", 1), null),
+                    Envelope.insert(2L, "t2", Map.of("id", 2), null))))
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseInstanceOf(TapstateException.class)
+                    .satisfies(e -> {
+                        TapstateException failure = (TapstateException) e.getCause();
+                        assertThat(failure.code()).isEqualTo(ConnectorError.WRITE_FAILED);
+                        assertThat(failure).hasMessageContaining("before any connector write");
+                    });
+        }
+    }
+
+    @Test
     void upsertModePassesRowEventsThroughUnchanged(@TempDir Path dir) throws Exception {
         // In upsert mode an update stays an update; the inserts-only sink rejects it, proving no reforge.
         Path jar = Synthetic.insertsOnlySink(dir);
@@ -158,6 +177,21 @@ class PdkSinkPortTest {
         PdkSinkPort port = new PdkSinkPort(provisioner(jar, "synthetic.FieldCounting"));
         try (SinkWriter writer = port.open(configWithTarget(target()))) {
             assertThat(await(writer, List.of(insert(1))).written()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void oneConnectorSessionRoutesEachSourceTableBatchToItsOwnTargetModel(@TempDir Path dir) throws Exception {
+        Path jar = Synthetic.keyCountingSink(dir);
+        PdkSinkPort port = new PdkSinkPort(provisioner(jar, "synthetic.KeyCounting"));
+        TargetTable second = new TargetTable("t2", List.of(
+                new TargetField("tenant", "int", true), new TargetField("id", "int", true)));
+        try (SinkWriter writer = port.open(config(WriteMode.UPSERT, DdlPolicy.FAIL),
+                Map.of("t1", target(), "t2", second))) {
+            assertThat(await(writer, List.of(
+                    Envelope.insert(1L, "t1", Map.of("id", 1), null),
+                    Envelope.insert(2L, "t2", Map.of("tenant", 7, "id", 2), null))).written())
+                    .isEqualTo(3);
         }
     }
 

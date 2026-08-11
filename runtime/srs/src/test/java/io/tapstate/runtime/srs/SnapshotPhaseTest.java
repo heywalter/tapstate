@@ -39,6 +39,11 @@ class SnapshotPhaseTest {
         return new CaptureConfig("mysql", Map.of(), List.of("orders"));
     }
 
+    /** A read whose source selects two streams, which one bounded batch covers together. */
+    private static CaptureConfig multiTableConfig() {
+        return new CaptureConfig("mysql", Map.of(), List.of("orders", "customers"));
+    }
+
     private static Envelope row(int id) {
         return Envelope.read(id, "orders", Map.of("id", id), Map.of());
     }
@@ -50,7 +55,7 @@ class SnapshotPhaseTest {
         List<Envelope> sink = new ArrayList<>();
 
         long count = SnapshotPhase.run(
-                port, config(), "chain", "orders", new SourcePosition("p0"),
+                port, config(), "chain", List.of("orders"), new SourcePosition("p0"),
                 1L, new RecordingMeta(new ArrayList<>()), sink::add);
 
         // Straight through in batch order, each row stamped with the generation and otherwise untouched.
@@ -88,7 +93,7 @@ class SnapshotPhaseTest {
         FakeBatch batch = new FakeBatch(List.of(row(1)));
 
         SnapshotPhase.run(
-                new FakePort(batch), config(), "chain", "orders", new SourcePosition("p0"),
+                new FakePort(batch), config(), "chain", List.of("orders"), new SourcePosition("p0"),
                 1L, new RecordingMeta(new ArrayList<>()), e -> {});
 
         assertThat(batch.closed).isTrue();
@@ -101,7 +106,7 @@ class SnapshotPhaseTest {
         Consumer<Envelope> sink = e -> trace.add("event");
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
                 new SourcePosition("binlog.000042:1024"), 1L, meta, sink);
 
         // The cdc-start position is the source log position sampled at snapshot start: recorded before the
@@ -116,7 +121,7 @@ class SnapshotPhaseTest {
         List<Envelope> sink = new ArrayList<>();
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
                 new SourcePosition("p0"), 4L, new RecordingMeta(new ArrayList<>()), sink::add);
 
         // A snapshot row has no position in the change stream, so nothing else can say where it sits
@@ -132,7 +137,7 @@ class SnapshotPhaseTest {
         RecordingMeta meta = new RecordingMeta(new ArrayList<>());
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
                 new SourcePosition("binlog.000042:1024"), 4L, meta, e -> { });
 
         assertThat(meta.cdcStart).isEqualTo("binlog.000042:1024");
@@ -149,7 +154,7 @@ class SnapshotPhaseTest {
         List<Envelope> sink = new ArrayList<>();
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
                 new SourcePosition("binlog.000042:1024"), 2L, meta, sink::add);
 
         // This is the whole reason the two generations are kept apart. Rows of a rerun that took the
@@ -169,7 +174,7 @@ class SnapshotPhaseTest {
         List<Envelope> sink = new ArrayList<>();
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
                 new SourcePosition("binlog.000099:1"), 2L, meta, sink::add);
 
         assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(2L));
@@ -184,7 +189,7 @@ class SnapshotPhaseTest {
         List<Envelope> sink = new ArrayList<>();
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
                 new SourcePosition("p0"), 2L, meta, sink::add);
 
         assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(2L));
@@ -197,7 +202,7 @@ class SnapshotPhaseTest {
         Consumer<Envelope> sink = e -> trace.add("event");
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
                 new SourcePosition("binlog.000042:1024"), 1L, meta, sink);
 
         // The two marks answer different questions and must not be conflated: the cdc-start position is
@@ -207,6 +212,41 @@ class SnapshotPhaseTest {
         // second: the presence of a cdc-start position means started, never finished.
         assertThat(trace).containsExactly("cdc-start", "event", "event", "snapshot-complete");
         assertThat(meta.completed).containsExactly("chain/orders");
+    }
+
+    @Test
+    void marksEveryTableOfTheSelectionCompleteBecauseOneDrainReadsThemAll() {
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>());
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), multiTableConfig(), "chain",
+                List.of("orders", "customers"), new SourcePosition("p0"), 1L, meta, e -> { });
+
+        // One bounded read covers every selected stream, so when it returns to exhaustion each of them has
+        // been read to exhaustion. Marking only the first would leave the rest looking un-drained -- which a
+        // reader answers "no" to "has this table's snapshot finished?" with, about a table that has.
+        assertThat(meta.completed).containsExactlyInAnyOrder("chain/orders", "chain/customers");
+    }
+
+    @Test
+    void oneTableOfTheSelectionStillUndrainedKeepsTheGenerationForAllOfThem() {
+        // The seam was recorded under generation 1 and the ring running now is a rebuild -- generation 2.
+        // One of the two selected tables drained before the interruption; the other did not.
+        SrsMeta interrupted = new SrsMeta("chain", null, List.of(), "binlog.000042:1024", List.of(), null,
+                List.of("orders"), 2L, 1L);
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>(), interrupted);
+        List<Envelope> sink = new ArrayList<>();
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), multiTableConfig(), "chain",
+                List.of("orders", "customers"), new SourcePosition("binlog.000042:1024"), 2L, meta, sink::add);
+
+        // The whole selection is re-read by the one drain, the already-drained table included. Judging the
+        // resume on that table alone would call this a fresh re-mine and stamp its rows with the generation
+        // running now -- which beats every change generation 1 already applied to them and rolls each of
+        // those rows back to its snapshot value, silently, exactly what pinning exists to prevent.
+        assertThat(meta.pinnedEpoch).isEqualTo(1L);
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(1L));
     }
 
     @Test
@@ -221,7 +261,7 @@ class SnapshotPhaseTest {
         RecordingMeta meta = new RecordingMeta(new ArrayList<>());
 
         assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
                 new SourcePosition("p0"), 1L, meta, failingOnSecond))
                 .isInstanceOf(IllegalStateException.class);
 
@@ -241,7 +281,7 @@ class SnapshotPhaseTest {
         };
 
         assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(batch), config(), "chain", "orders", new SourcePosition("p0"),
+                new FakePort(batch), config(), "chain", List.of("orders"), new SourcePosition("p0"),
                 1L, new RecordingMeta(new ArrayList<>()), failing))
                 .isInstanceOf(IllegalStateException.class);
 
@@ -254,7 +294,7 @@ class SnapshotPhaseTest {
         List<String> trace = new ArrayList<>();
 
         assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of())), config(), "chain", "orders",
+                new FakePort(new FakeBatch(List.of())), config(), "chain", List.of("orders"),
                 new SourcePosition("p0"), 1L, new RecordingMeta(trace), null))
                 .isInstanceOf(NullPointerException.class);
 

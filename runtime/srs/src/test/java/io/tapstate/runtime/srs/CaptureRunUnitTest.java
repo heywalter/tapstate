@@ -131,6 +131,7 @@ class CaptureRunUnitTest {
         // so nothing is provisioned, no cdc-start is recorded, and no tail is attached.
         assertThat(passthrough).extracting(e -> e.after().get("id")).containsExactly(1, 2, 3);
         assertThat(run.snapshotCount()).isEqualTo(3);
+        assertThat(run.snapshotCounts()).containsEntry("orders", 3L);
         assertThat(run.chainId()).isEmpty();
         assertThat(run.ringSource()).isEmpty();
         assertThat(run.cdcSubscription()).isEmpty();
@@ -237,16 +238,28 @@ class CaptureRunUnitTest {
     }
 
     @Test
-    void rejectsAMultiTableSharedRingRunAsBeyondSingleTableScope() {
+    void routesAMultiTableSharedRingRunToOneSubscriptionAndTwoRings() throws Exception {
         InMemoryMeta meta = new InMemoryMeta();
         CaptureConfig multi = new CaptureConfig("mysql", Map.of(), List.of("orders", "customers"));
-        CaptureRunSpec spec = new CaptureRunSpec(multi, ReadMode.CDC_ONLY, "k-multi", true, "src-1", "pipe-1",
+        CaptureRunSpec spec = new CaptureRunSpec(multi, ReadMode.SNAPSHOT_AND_CDC, "k-multi", true, "src-1", "pipe-1",
                 StartFrom.earliest(), new SourcePosition("cdc-start-0"), null, 0L, monotonicWatermark());
+        List<Envelope> snapshots = List.of(
+                Envelope.read(1, "orders", Map.of("id", 1), Map.of()),
+                Envelope.read(2, "customers", Map.of("id", 2), Map.of()));
+        List<Envelope> changes = List.of(
+                Envelope.insert(1, "orders", Map.of("id", 1), Map.of()),
+                Envelope.insert(2, "customers", Map.of("id", 2), Map.of()));
+        List<Envelope> passthrough = new ArrayList<>();
 
-        // L1 capture is single-table: a multi-table shared-ring run is rejected before any chain is opened.
-        assertThatThrownBy(() -> runUnit(new FakeSource(List.of(), List.of()), meta).start(spec, e -> { }))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThat(meta.created).isEmpty();
+        CaptureRun run = runUnit(new FakeSource(snapshots, changes), meta).start(spec, passthrough::add);
+
+        assertThat(run.chainId()).isPresent();
+        assertThat(run.cdcSubscription()).isPresent();
+        assertThat(run.snapshotCounts()).containsExactlyInAnyOrderEntriesOf(Map.of("orders", 1L, "customers", 1L));
+        assertThat(passthrough).extracting(Envelope::src).containsExactly("orders", "customers");
+        String chainId = run.chainId().orElseThrow().value();
+        assertThat(hz.getRingbuffer(SrsRingbuffer.ringName(chainId, "orders")).tailSequence()).isEqualTo(0L);
+        assertThat(hz.getRingbuffer(SrsRingbuffer.ringName(chainId, "customers")).tailSequence()).isEqualTo(0L);
     }
 
     @Test
@@ -268,6 +281,58 @@ class CaptureRunUnitTest {
         } finally {
             hz.getUserContext().remove(CaptureRunUnit.SRS_META_USER_CONTEXT_KEY);
         }
+    }
+
+    @Test
+    void readCursorPublishersAdvanceIndependentTableCursors() {
+        InMemoryMeta meta = new InMemoryMeta();
+        meta.create("chain-pub", null);
+        hz.getUserContext().put(CaptureRunUnit.SRS_META_USER_CONTEXT_KEY, meta);
+        try {
+            CaptureRunUnit.readCursorPublisher("chain-pub", "pipe-7", "orders")
+                    .resolve(hz).accept(7L);
+            CaptureRunUnit.readCursorPublisher("chain-pub", "pipe-7", "customers")
+                    .resolve(hz).accept(11L);
+
+            ConsumerOffset offset = meta.read("chain-pub").orElseThrow().consumerOffsets().stream()
+                    .filter(c -> c.pipelineId().equals("pipe-7")).findFirst().orElseThrow();
+            assertThat(offset.perTableSeq()).containsExactlyInAnyOrderEntriesOf(Map.of(
+                    "orders", 7L, "customers", 11L));
+        } finally {
+            hz.getUserContext().remove(CaptureRunUnit.SRS_META_USER_CONTEXT_KEY);
+        }
+    }
+
+    @Test
+    void rejects_an_empty_stream_selection_before_provisioning() {
+        InMemoryMeta meta = new InMemoryMeta();
+        CaptureRunSpec spec = new CaptureRunSpec(
+                new CaptureConfig("mysql", Map.of("host", "h"), List.of()),
+                ReadMode.CDC_ONLY, "chain-empty", true, "src-1", "pipe-1", StartFrom.earliest(),
+                new SourcePosition("cdc-start-0"), null, 0L, monotonicWatermark());
+
+        assertThatThrownBy(() -> runUnit(new FakeSource(List.of(), List.of()), meta)
+                .start(spec, ignored -> { }))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least one stream");
+        assertThat(meta.created).isEmpty();
+    }
+
+    @Test
+    void snapshot_passthrough_failure_rolls_back_a_chain_created_by_this_start() {
+        InMemoryMeta meta = new InMemoryMeta();
+        SrsCoordinator coordinator = new SrsCoordinator(meta);
+        FakeSource source = new FakeSource(List.of(row(1)), List.of());
+        CaptureRunSpec spec = spec(ReadMode.SNAPSHOT_AND_CDC, true, "chain-snapshot-failure");
+        MiningChainId chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
+        RuntimeException failure = new IllegalStateException("snapshot sink failed");
+        CaptureRunUnit unit = new CaptureRunUnit(source, coordinator, meta, hz);
+
+        assertThatThrownBy(() -> unit.start(spec, ignored -> { throw failure; }))
+                .isSameAs(failure);
+
+        assertThat(coordinator.isProvisioned(chainId)).isFalse();
+        assertThat(source.cdcStarted).isFalse();
     }
 
     @Test

@@ -1,11 +1,13 @@
 package io.tapstate.app;
 
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.ReadMode;
 import io.tapstate.core.model.Settings;
 import io.tapstate.core.model.SourceResource;
 import io.tapstate.runtime.srs.CaptureRun;
+import io.tapstate.runtime.srs.CaptureError;
 import io.tapstate.runtime.srs.CaptureRunSpec;
 import io.tapstate.runtime.srs.MiningChainId;
 import io.tapstate.runtime.srs.SnapshotBuffer;
@@ -79,13 +81,22 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
         List<CaptureRun> runs = new ArrayList<>();
         List<AttributedSnapshot> attributed = new ArrayList<>();
-        for (String sourceId : pipeline.sources()) {
-            SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
-            SourceCaptureResolution resolution = SourceCaptureResolution.of(source);
-            CaptureRunSpec spec = deriveSpec(pipelineId, pipeline.settings(), source, resolution);
-            CaptureRun run = captureStarter.start(spec, snapshotPassthrough(resolution.ringName()));
-            runs.add(run);
-            recordSnapshot(attributed, sourceId, spec, run);
+        try {
+            for (String sourceId : pipeline.sources()) {
+                SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
+                SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
+                CaptureRunSpec spec = deriveSpec(pipelineId, pipeline.settings(), source, resolution);
+                Map<String, Long> observedSnapshotCounts = new LinkedHashMap<>();
+                CaptureRun run = captureStarter.start(spec, snapshotPassthrough(resolution, observedSnapshotCounts));
+                runs.add(run);
+                recordSnapshot(attributed, sourceId, spec, run, observedSnapshotCounts);
+            }
+        } catch (RuntimeException | Error failure) {
+            RuntimeException cleanupFailure = closeRuns(runs, pipelineId);
+            if (cleanupFailure != null) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
         }
         runsByPipeline.put(pipelineId, runs);
         snapshotsByPipeline.put(pipelineId, keyByTableOrQualifyOnCollision(attributed));
@@ -96,24 +107,29 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
     }
 
     /**
-     * Records what one run's snapshot loaded against the table it read, so {@link #startCapture} can key
-     * the pipeline's published snapshot map once every source has run. Left unattributed (recorded as
-     * nothing) when the run had no snapshot phase to attribute at all: a config naming no single stream
-     * (empty means "every stream the connector exposes", several would have one row count with no table to
-     * hang it on) or a read mode whose {@link CapturePlan} never ran the bounded snapshot phase (e.g.
-     * {@code cdc_only}) — reporting either as "0 rows" would publish a present-but-fabricated entry for a
-     * table this run never actually snapshotted, which is a stronger and false claim than the honest
-     * unavailable the read face is documented to publish instead.
+     * Records what each selected stream's snapshot loaded, so {@link #startCapture} can key the pipeline's
+     * published snapshot map once every source has run. A cdc-only run has no entries because it never ran a
+     * bounded snapshot phase.
      */
     private static void recordSnapshot(
-            List<AttributedSnapshot> attributed, String sourceId, CaptureRunSpec spec, CaptureRun run) {
+            List<AttributedSnapshot> attributed,
+            String sourceId,
+            CaptureRunSpec spec,
+            CaptureRun run,
+            Map<String, Long> observedSnapshotCounts) {
         List<String> streams = spec.config().streams();
-        if (streams.size() != 1 || !CapturePlan.forReadMode(spec.readMode()).snapshot()) {
+        if (!CapturePlan.forReadMode(spec.readMode()).snapshot()) {
             return;
         }
-        // The total is reported by no source today, so it stays null and the percentage with it -- progress
-        // with no total is honest partial data, never a faked complete load.
-        attributed.add(new AttributedSnapshot(sourceId, streams.get(0), new TableSnapshot(run.snapshotCount(), null, null)));
+        for (String table : streams) {
+            Map<String, Long> counts = run.snapshotCounts().isEmpty() ? observedSnapshotCounts : run.snapshotCounts();
+            long count = streams.size() == 1
+                    ? counts.getOrDefault(table, run.snapshotCount())
+                    : counts.getOrDefault(table, 0L);
+            // The total is reported by no source today, so it stays null and the percentage with it -- progress
+            // with no total is honest partial data, never a faked complete load.
+            attributed.add(new AttributedSnapshot(sourceId, table, new TableSnapshot(count, null, null)));
+        }
     }
 
     /**
@@ -149,21 +165,52 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         if (runs == null) {
             return;
         }
-        // Close first: stops every capture daemon so no thread leaks. Then release this pipeline's consumer
-        // membership and tear the source chain down -- a shared-ring run only; a run that opened no chain has
-        // nothing to release.
+        RuntimeException cleanupFailure = closeRuns(runs, pipelineId);
+        if (cleanupFailure != null) {
+            throw cleanupFailure;
+        }
+    }
+
+    /**
+     * Releases live runs after a stop, or after a later source prevents a multi-source start from completing.
+     *
+     * <p>Close first: stops every capture daemon so no thread leaks. Then release this pipeline's consumer
+     * membership and tear the source chain down -- a shared-ring run only; a run that opened no chain has
+     * nothing to release.
+     *
+     * <p>Every step runs even when an earlier one throws, and the first failure carries the rest as
+     * suppressed. A release abandoned half way is what leaves a chain nobody owns and a daemon nobody stops.
+     */
+    private RuntimeException closeRuns(List<CaptureRun> runs, String pipelineId) {
+        RuntimeException firstFailure = null;
         Set<MiningChainId> chains = new LinkedHashSet<>();
         for (CaptureRun run : runs) {
-            run.close();
+            firstFailure = runCleanup(run::close, firstFailure);
+            // Collected whether or not the close succeeded: a daemon that refused to stop does not make the
+            // consumer membership this pipeline holds any less this pipeline's to give back.
             run.chainId().ifPresent(chains::add);
         }
         // Once per chain, never once per run. Two sources reading one connection are one chain with a ring
         // per table, which is what a pipeline over a parent and a child table is; releasing it per run would
         // have the second source release a chain the first already closed, and the release refuses that.
         for (MiningChainId chainId : chains) {
-            srsCoordinator.detachConsumer(chainId, pipelineId);
-            srsCoordinator.teardownSource(chainId);
+            firstFailure = runCleanup(() -> srsCoordinator.detachConsumer(chainId, pipelineId), firstFailure);
+            firstFailure = runCleanup(() -> srsCoordinator.teardownSource(chainId), firstFailure);
         }
+        return firstFailure;
+    }
+
+    /** Runs one release step, keeping the first failure and hanging any later one off it as suppressed. */
+    private static RuntimeException runCleanup(Runnable cleanup, RuntimeException firstFailure) {
+        try {
+            cleanup.run();
+        } catch (RuntimeException failure) {
+            if (firstFailure == null) {
+                return failure;
+            }
+            firstFailure.addSuppressed(failure);
+        }
+        return firstFailure;
     }
 
     /**
@@ -239,7 +286,17 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
      * it. A read mode that runs no snapshot never calls this, so the buffer for that ring stays empty and the
      * source is a pure tail.
      */
-    private Consumer<Envelope> snapshotPassthrough(String ringName) {
-        return event -> snapshotBuffer.append(ringName, event);
+    private Consumer<Envelope> snapshotPassthrough(
+            SourceCaptureResolution resolution, Map<String, Long> observedSnapshotCounts) {
+        Set<String> selectedTables = Set.copyOf(resolution.tables());
+        return event -> {
+            if (!selectedTables.contains(event.src())) {
+                throw new TapstateException(
+                        CaptureError.EVENT_TABLE_NOT_SELECTED, Map.of("table", event.src()), null);
+            }
+            observedSnapshotCounts.merge(event.src(), 1L, Long::sum);
+            snapshotBuffer.append(resolution.ringName(event.src()), event);
+        };
     }
+
 }

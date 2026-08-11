@@ -9,6 +9,7 @@ import io.tapstate.spi.capture.SourcePosition;
 import io.tapstate.spi.store.SrsMeta;
 import io.tapstate.spi.store.SrsMetaStore;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -24,10 +25,10 @@ public final class SnapshotPhase {
     }
 
     /**
-     * Runs the snapshot phase for one {@code table}: records the cdc-start position for the chain, drains
-     * the bounded snapshot read straight to {@code sink} with every row stamped with the generation this
-     * snapshot belongs to, then marks the table's snapshot complete. Returns the number of events passed
-     * through.
+     * Runs the snapshot phase over the chain's selected {@code tables}: records the cdc-start position for
+     * the chain, drains the bounded snapshot read straight to {@code sink} with every row stamped with the
+     * generation this snapshot belongs to, then marks each of those tables' snapshot complete. Returns the
+     * number of events passed through.
      *
      * <p>The rows are ordered even though they have no position in the change stream: they carry the
      * reserved snapshot sequence, which places all of them before every change of the same generation, so
@@ -53,7 +54,7 @@ public final class SnapshotPhase {
             CapturePort port,
             CaptureConfig config,
             String miningChainId,
-            String table,
+            List<String> tables,
             SourcePosition cdcStart,
             long ringEpoch,
             SrsMetaStore meta,
@@ -61,16 +62,23 @@ public final class SnapshotPhase {
         Objects.requireNonNull(port, "port");
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(miningChainId, "miningChainId");
-        Objects.requireNonNull(table, "table");
+        Objects.requireNonNull(tables, "tables");
         Objects.requireNonNull(cdcStart, "cdcStart");
         Objects.requireNonNull(meta, "meta");
         Objects.requireNonNull(sink, "sink");
+        if (tables.isEmpty()) {
+            throw new IllegalArgumentException("a snapshot over a chain must name the tables it reads");
+        }
 
-        long epoch = pinnedEpoch(meta, miningChainId, table, ringEpoch);
+        long epoch = pinnedEpoch(meta, miningChainId, tables, ringEpoch);
         SourceOrder order = SourceOrder.snapshotRow(epoch);
         meta.setCdcStart(miningChainId, cdcStart.token(), epoch);
         long count = drain(port, config, row -> sink.accept(row.withOrder(order)));
-        meta.markSnapshotComplete(miningChainId, table);
+        // One drain reads every selected table to exhaustion, so each of them is marked - marking only the
+        // first would leave the rest looking un-drained and pin a later re-mine to this run's generation.
+        for (String table : tables) {
+            meta.markSnapshotComplete(miningChainId, table);
+        }
         return count;
     }
 
@@ -85,14 +93,17 @@ public final class SnapshotPhase {
      * generation makes that reversal impossible rather than unlikely: the rerun's rows sit below every
      * change of their own generation and below every generation after it.
      *
-     * <p>Resuming is "a seam was recorded and this table has not drained". A table already marked drained
-     * means whatever runs now is a new snapshot — a re-mine — and a new baseline of truth is entitled to
-     * beat what came before, so it takes the current generation.
+     * <p>Resuming is "a seam was recorded and some selected table has not drained". A run whose tables are
+     * all marked drained means whatever runs now is a new snapshot — a re-mine — and a new baseline of truth
+     * is entitled to beat what came before, so it takes the current generation. One table of the selection
+     * still un-drained keeps the whole run pinned: the rows of its drained siblings are re-read by the same
+     * drain, and letting those take the running generation is exactly the silent roll-back this pins against.
      */
-    private static long pinnedEpoch(SrsMetaStore meta, String miningChainId, String table, long ringEpoch) {
+    private static long pinnedEpoch(
+            SrsMetaStore meta, String miningChainId, List<String> tables, long ringEpoch) {
         return meta.read(miningChainId)
                 .filter(record -> record.snapshotEpoch() != 0L)
-                .filter(record -> !record.snapshotCompletedTables().contains(table))
+                .filter(record -> !record.snapshotCompletedTables().containsAll(tables))
                 .map(SrsMeta::snapshotEpoch)
                 .orElse(ringEpoch);
     }

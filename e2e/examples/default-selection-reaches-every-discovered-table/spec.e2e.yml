@@ -1,0 +1,15 @@
+# Omitted source tables select every table returned by the latest discovery.
+# Two independent target counts make a single-table implementation fail visibly: one target would stay
+# absent rather than both tables receiving their own snapshot rows.
+name: default-selection-reaches-every-discovered-table
+setup:
+  connectors: [e2e_file]
+  apply: [src_file.tap.yml, tgt_file.tap.yml, pipeline.tap.yml]
+  discover: [src_file]
+pipeline: pipeline.tap.yml
+seed:
+  src_file.orders: { rows: 2 }
+  src_file.customers: { rows: 3 }
+steps:
+  - start
+  - await: { count: { tgt_file.orders: 2, tgt_file.customers: 3 } }
