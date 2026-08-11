@@ -63,16 +63,25 @@ class NestSendCostBench {
     void whatTheWindowTakesOffAHotRoot() throws Exception {
         System.out.println();
         System.out.printf("nest send window = %d ms, one root, %d ms per rate%n", WINDOW_MILLIS, RUN_MILLIS);
-        System.out.println("  rate/s   changes     sends   changes per send");
+        System.out.println("  rate/s   changes     sends   changes per send   state writes   per change");
         for (int rate : RATES) {
             Measured measured = drive(rate);
-            System.out.printf("  %6d   %7d   %7d   %16.1f%n", rate, measured.changes, measured.sends,
-                    measured.changes / (double) measured.sends);
+            System.out.printf("  %6d   %7d   %7d   %16.1f   %12d   %10.2f%n", rate, measured.changes,
+                    measured.sends, measured.changes / (double) measured.sends, measured.writes,
+                    measured.writes / (double) measured.changes);
         }
         System.out.println();
         System.out.println("  A root changing slower than the window is not folded at all: every change is");
         System.out.println("  its own leading edge. Above that, sends flatten at 1000/window per second and");
         System.out.println("  the ratio is whatever the rate divided by that comes to.");
+        System.out.println();
+        System.out.println("  The state writes are the point of the last two columns. The window rations");
+        System.out.println("  sending and reaches nothing else: a state that skipped a change would be wrong");
+        System.out.println("  rather than stale, so every change is written through whatever is sent.");
+        System.out.println("  The count is state writes = changes + windows flushed, slightly above one per");
+        System.out.println("  change rather than below it - each flush stores the document again once what");
+        System.out.println("  it carried has been released. So the state side costs marginally MORE with a");
+        System.out.println("  window than without, and the limits worked out from it do not move.");
     }
 
     /**
@@ -81,7 +90,7 @@ class NestSendCostBench {
      * arriving in between - so what is being measured includes the sweep that ends a window.
      */
     private Measured drive(int changesPerSecond) throws Exception {
-        HeapNestStore<RootAssembly> store = new HeapNestStore<>();
+        CountingStore store = new CountingStore();
         TestOutbox outbox = new TestOutbox(4096);
         AssemblerProcessor processor = new AssemblerProcessor(TOPOLOGY.assembler(), TOPOLOGY.slots(), store,
                 "doc", null, null, ReplayFloor.NONE, NestSettings.defaults(), NestClock.SYSTEM,
@@ -108,7 +117,7 @@ class NestSendCostBench {
         }
         processor.complete();
         sends += drain(outbox);
-        return new Measured(changes, sends);
+        return new Measured(changes, sends, store.writes);
     }
 
     @Test
@@ -146,7 +155,39 @@ class NestSendCostBench {
         return Envelope.insert(seq, "customer", fields, null).withOrder(new SourceOrder(1L, seq));
     }
 
-    private record Measured(long changes, long sends) {
+    private record Measured(long changes, long sends, long writes) {
+    }
+
+    /**
+     * A store that counts what was written through it. Counting rather than timing: how long one durable
+     * write takes belongs to an endpoint, but how many of them one change costs belongs to the design and
+     * is the same on every machine.
+     */
+    private static final class CountingStore implements NestStore<RootAssembly> {
+
+        private final Map<Object, RootAssembly> entries = new LinkedHashMap<>();
+        private long writes;
+
+        @Override
+        public RootAssembly load(Object key) {
+            return entries.get(key);
+        }
+
+        @Override
+        public void save(Object key, RootAssembly state) {
+            writes++;
+            entries.put(key, state);
+        }
+
+        @Override
+        public void remove(Object key) {
+            entries.remove(key);
+        }
+
+        @Override
+        public long count() {
+            return entries.size();
+        }
     }
 
     /** A target that answers at once: what is being counted is how the batches were formed, not latency. */

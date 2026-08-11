@@ -105,6 +105,21 @@ durable storage as it happens.
 Same 2 MB document taking 200 changes a second: the state side is being asked for about
 400 MB/s, and no window setting changes that.
 
+Measured, same runs as the folding table above:
+
+| changes/s | state writes per change |
+|---|---|
+| 50 | 1.40 |
+| 100 | 1.20 |
+| 200 | 1.10 |
+| 400 | 1.05 |
+| 800 | 1.02 |
+
+Slightly **above** one per change, not below: the count is `changes + windows flushed`,
+because a flush stores the document once more after releasing what it carried. The window
+therefore costs a little more on the state side rather than less, and the ratio approaches
+1.0 as the change rate rises, since the flushes are capped while the changes are not.
+
 ### 3. The whole pipeline, bandwidth
 
 ```
