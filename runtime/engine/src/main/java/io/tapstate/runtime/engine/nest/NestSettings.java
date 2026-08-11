@@ -46,25 +46,33 @@ public final class NestSettings implements Serializable {
      * absorbed by the layer behind it: a document is assembled whole, so however wide it has grown is what
      * has to be in memory at once, and no eviction reaches inside one.
      *
-     * <p>Provisional. What a deployment should run with follows from measuring what one element of its
-     * documents costs, and until that measurement exists this is the honest placeholder: high enough not to
-     * fail work that was always going to fit, low enough to be reached before nothing is left to reach it
-     * with.
+     * <p>Measured rather than guessed. One element of a wide row costs about 7 KiB in memory, so a document
+     * at this limit is around 140 MiB - and it is rendered into a second copy of itself to go out, so that
+     * is paid twice at the moment it is refused. Far past anything healthy, and still inside what a member
+     * with a few gigabytes can refuse while it is running, which is the whole requirement: a limit only
+     * reached after the heap is gone never fires at all, and what happens in its place is an exhausted
+     * member reporting something else, from somewhere else, having taken the rest of the pipeline with it.
      */
-    public static final long DEFAULT_ELEMENT_LIMIT = 100_000L;
+    public static final long DEFAULT_ELEMENT_LIMIT = 20_000L;
 
     /**
      * How many entries each namespace keeps in memory when nothing says otherwise.
      *
-     * <p>High enough that a deployment whose state fits never evicts at all - eviction buys capacity with a
-     * read of the layer behind the map, and a level that was always going to fit should not pay it - and
-     * low enough that a level which does not fit is bounded by this rather than by the heap running out.
+     * <p>Low enough that a namespace holding it leaves the process something to run in, and high enough to
+     * be worth having: what is past it is not lost but read back from the layer behind the map, which costs
+     * a seek per event rather than an error.
      *
-     * <p>Provisional. What a deployment should run with follows from measuring what one entry of its levels
-     * costs in memory, which is the multiplication this number cannot do for itself: it is a count of
-     * entries, and what has to fit is bytes.
+     * <p>Measured rather than guessed, against a document that has absorbed a hundred elements - about
+     * 240 KiB of memory each - so a namespace at this budget holds a little under a gigabyte, and a cascade
+     * pays that once per level.
+     *
+     * <p><b>Deliberately the conservative end of what was measured</b>, because the two ways of being wrong
+     * are not equally visible. Set too low this is slow and says so: the share of reads that fall through to
+     * the layer behind the map is published and can be alarmed on. Set too high it is a member that runs out
+     * of memory with every metric still green, which nothing announces until it is over. Between an error
+     * that reports itself and one that does not, this is sized against the one that does not.
      */
-    public static final long DEFAULT_ENTRIES_HELD_IN_MEMORY = 100_000L;
+    public static final long DEFAULT_ENTRIES_HELD_IN_MEMORY = 4_000L;
 
     /**
      * How many changes one key may hold waiting for something that has not arrived, when nothing says
@@ -75,12 +83,18 @@ public final class NestSettings implements Serializable {
      * <p>Per key rather than per namespace, and by change rather than by row: one row rewritten while its
      * parent is missing is one row and as many held changes as it was written.
      *
-     * <p>Provisional, and provisional for the same missing measurement as the two above: what one held change
-     * costs in memory is what turns this count into the bytes it is really about. High enough that a load
-     * read in an unlucky order - every child before the parent it hangs from - finishes rather than failing
-     * partway, low enough to be reached while there is still memory to report it with.
+     * <p>Measured rather than guessed: a held change of a wide row costs about 7.5 KiB, so one key at this
+     * limit holds around 70 MiB. Set below what the memory alone would allow, because what it really has to
+     * clear is a load arriving in the worst order - every child of one row before that row - and a fan-out
+     * past ten thousand under a single parent is rarer than one key stuck holding that much is alarming.
+     *
+     * <p><b>What this does not bound is many keys each holding a little.</b> A foreign key pointing at a row
+     * that never arrives is held for as long as the job runs, and a million such keys holding one change
+     * apiece pass this limit without touching it. What bounds those is the budget above, which moves them to
+     * the layer behind the map; what they go on holding back is the frontier, which is reported separately
+     * and is the thing actually worth watching for this shape.
      */
-    public static final long DEFAULT_PENDING_LIMIT = 100_000L;
+    public static final long DEFAULT_PENDING_LIMIT = 10_000L;
 
     /**
      * How many records of deleted elements one document may keep when nothing says otherwise. The third count
@@ -94,8 +108,10 @@ public final class NestSettings implements Serializable {
      * healthy frontier never approaches it, low enough that a frontier stuck for hours is answered by a
      * failed job rather than by a member running out of memory.
      *
-     * <p>Provisional, and provisional for the same missing measurement as the counts above: this is a count
-     * of records and what has to fit is bytes.
+     * <p><b>Measured and left where it was, unlike the three around it.</b> A record of a deletion keeps no
+     * row - about 620 bytes whatever the row it replaced was carrying, which is the design holding rather
+     * than a coincidence - so a document at this limit is around 60 MiB, already inside what a member can
+     * refuse while running. The same measurement that moved the other three found nothing to move here.
      */
     public static final long DEFAULT_TOMBSTONE_LIMIT = 100_000L;
 
