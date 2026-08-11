@@ -78,6 +78,21 @@ class ApplyServiceTest {
         return new ArtifactDraft(null, content);
     }
 
+    /** A draft carrying the version of the stored artifact the author based this edit on. */
+    private static ArtifactDraft draft(String content, String expectedContentHash) {
+        return new ArtifactDraft(null, content, expectedContentHash);
+    }
+
+    /** The canonical text a stored artifact currently holds. */
+    private String stored(String id) {
+        return new CanonicalWriter().write(store.get(id).orElseThrow());
+    }
+
+    /** The canonical text the given authored YAML would be stored as. */
+    private static String canonicalOf(String yaml) {
+        return new CanonicalWriter().write(new DslParser().parse(yaml));
+    }
+
     // ---- the store-free front half: validate -> canonical -> hash ----
 
     @Test
@@ -549,6 +564,87 @@ class ApplyServiceTest {
         assertThat(store.saveCount).as("a wholly-unchanged batch writes nothing further").isEqualTo(writesAfterSeed);
     }
 
+    // ---- optimistic concurrency: an optional per-draft precondition on apply ----
+
+    @Test
+    void applyWithoutAPreconditionBehavesExactlyAsItDidBefore() {
+        // The compatibility case: an existing caller passes no hash and keeps overwriting whatever is
+        // stored. Without this, adding the precondition could silently start refusing today's callers.
+        service.apply("alice", List.of(draft(TGT_MY)));
+
+        ApplyResult result = service.apply("alice", List.of(draft(TGT_MY_EDITED)));
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.UPDATED);
+        assertThat(stored("tgt_my")).isEqualTo(canonicalOf(TGT_MY_EDITED));
+    }
+
+    @Test
+    void applyWithTheCurrentPreconditionUpdatesTheArtifact() {
+        String current = service.apply("alice", List.of(draft(TGT_MY)))
+                .outcomes().get(0).contentHash();
+
+        ApplyResult result = service.apply("alice", List.of(draft(TGT_MY_EDITED, current)));
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.UPDATED);
+        assertThat(stored("tgt_my")).isEqualTo(canonicalOf(TGT_MY_EDITED));
+    }
+
+    @Test
+    void applyWithAStalePreconditionIsRefusedWithTheStoredBytesUnchanged() {
+        service.apply("alice", List.of(draft(TGT_MY)));
+        String before = stored("tgt_my");
+        int writesBefore = store.saveCount;
+
+        assertThatThrownBy(() -> service.apply("alice", List.of(draft(TGT_MY_EDITED, "0".repeat(64)))))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.VERSION_CONFLICT);
+                    assertThat(error.args()).containsExactlyInAnyOrderEntriesOf(Map.of("id", "tgt_my"));
+                });
+        assertThat(stored("tgt_my"))
+                .as("a refused apply leaves the stored canonical bytes exactly as they were")
+                .isEqualTo(before);
+        assertThat(store.saveCount).isEqualTo(writesBefore);
+    }
+
+    @Test
+    void oneStaleDraftRefusesTheWholeBatchIncludingItsValidSiblings() {
+        service.apply("alice", List.of(draft(TGT_MY)));
+        int writesBefore = store.saveCount;
+
+        assertThatThrownBy(() -> service.apply("alice", List.of(
+                draft(SRC_ORA_STANDALONE), draft(TGT_MY_EDITED, "0".repeat(64)))))
+                .isInstanceOfSatisfying(TapstateException.class,
+                        error -> assertThat(error.code()).isEqualTo(ArtifactError.VERSION_CONFLICT));
+        assertThat(store.get("src_ora"))
+                .as("the batch is one closure, so a sibling of a stale draft is not written either")
+                .isEmpty();
+        assertThat(store.saveCount).isEqualTo(writesBefore);
+    }
+
+    @Test
+    void aPreconditionOnAnArtifactThatIsNotStoredIsRefusedAsNotFound() {
+        assertThatThrownBy(() -> service.apply("alice", List.of(draft(TGT_MY, "0".repeat(64)))))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.NOT_FOUND);
+                    assertThat(error.args()).containsExactlyInAnyOrderEntriesOf(Map.of("id", "tgt_my"));
+                });
+        assertThat(store.saveCount).isZero();
+    }
+
+    @Test
+    void validateReportsAStalePreconditionAsADiagnosticRatherThanThrowing() {
+        service.apply("alice", List.of(draft(TGT_MY)));
+
+        ArtifactValidationResult result = service.validate(
+                List.of(draft(TGT_MY_EDITED, "0".repeat(64))));
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.diagnostics()).singleElement().satisfies(diagnostic ->
+                assertThat(diagnostic.code()).isEqualTo("artifact.version-conflict"));
+    }
+
     // ---- fixtures ----
 
     private static final String SRC_ORA = """
@@ -565,6 +661,15 @@ class ApplyServiceTest {
 
     // The same oracle source with no pipeline referencing it — a standalone resource for batch tests.
     private static final String SRC_ORA_STANDALONE = SRC_ORA;
+
+    // TGT_MY after an edit: same id, one changed connection field, so it is an update rather than a no-op.
+    private static final String TGT_MY_EDITED = """
+            version: tapstate/v1
+            kind: source
+            id: tgt_my
+            connector: mysql
+            config: { host: 10.30.0.9, username: writer, password: My_2026 }
+            """;
 
     private static final String PIPELINE = """
             version: tapstate/v1

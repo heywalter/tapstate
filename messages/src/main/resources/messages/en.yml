@@ -266,6 +266,21 @@ engine.no-such-job:
 monitor.no-observation:
   message: "No observation is available for pipeline {pipeline}."
   solution: "Check the pipeline id for typos; a freshly started pipeline may take a moment to publish its first observation."
+artifact.in-use:
+  message: "Artifact `{id}` is still referenced by: {referrers}."
+  solution: "Delete or rewrite those resources first, then delete `{id}`."
+artifact.not-found:
+  message: "No artifact with id `{id}` is stored."
+  solution: "List artifacts to find an existing id."
+artifact.pipeline-not-stopped:
+  message: "Pipeline `{id}` is {actual} and is headed for {desired}, so it cannot be deleted."
+  solution: "Stop the pipeline, let it settle, then delete it."
+artifact.precondition-required:
+  message: "Deleting artifact `{id}` requires the content hash of the version you read."
+  solution: "Read the artifact, then retry the delete with that content hash."
+artifact.version-conflict:
+  message: "Artifact `{id}` changed after it was read."
+  solution: "Read the current artifact, redo the change on that version, then apply again."
 source.already-exists:
   message: "A Source with id '{id}' already exists."
   solution: "Choose a different id, or replace the existing Source with its current ETag."

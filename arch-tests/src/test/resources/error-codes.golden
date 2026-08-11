@@ -13,6 +13,11 @@ actuation.source-table-not-discovered
 actuation.source-table-regex-invalid
 actuation.source-table-selection-empty
 actuation.source-table-spec-unsupported
+artifact.in-use
+artifact.not-found
+artifact.pipeline-not-stopped
+artifact.precondition-required
+artifact.version-conflict
 boot.hazelcast-unavailable
 capture.event-table-not-selected
 capture.start-from-unparsable

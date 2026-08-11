@@ -34,9 +34,10 @@ import java.util.regex.PatternSyntaxException;
  * -> hash: it parses each draft (structural + expression checks), validates the whole batch as one
  * closure (duplicate ids, reference closure, mode rules, and the connector capability matrix against
  * the catalog), judges the batch's row expressions against the columns of the tables its sources were
- * discovered to hold, then emits each resource's canonical form and content hash. It writes nothing, and the only
- * store it reads is the schema store — an observation of what discovery found, never the config truth
- * layer, which apply is the one writer of.
+ * discovered to hold, then emits each resource's canonical form and content hash. It writes nothing. It reads the
+ * schema store — an observation of what discovery found, never the config truth layer, which apply is
+ * the one writer of — and reads the artifact store only for a draft that carries a precondition, to
+ * judge that precondition against the stored version.
  * {@link #apply} runs a plan and then upserts each artifact into the store by its id, skipping the
  * write when the stored artifact's content hash is unchanged (a no-op).
  *
@@ -44,8 +45,11 @@ import java.util.regex.PatternSyntaxException;
  * only once a connection has been discovered, so an expression the data cannot survive is refused
  * here rather than at the offline check, which has nothing to judge it against.
  *
- * <p>Any validation failure aborts with the first coded {@code dsl.*} diagnostic before any upsert;
- * nothing is written on a validation failure. The batch is the closure: references resolve within the
+ * <p>Any validation failure aborts with the first coded {@code dsl.*} diagnostic before any upsert, and a
+ * draft whose precondition has gone stale aborts the same way with {@code artifact.version-conflict};
+ * nothing is written on either. The refusal is of the whole batch, never of the offending draft alone —
+ * a batch is one closure, so letting half of it land would store a state nothing ever validated. The
+ * batch is the closure: references resolve within the
  * submitted set. The union with store-resident artifacts is layered in where the store is consulted.
  *
  * <p>The catalog is supplied per plan rather than fixed, so the online path validates against the live
@@ -84,6 +88,13 @@ public final class ApplyService {
         List<Resource> resources = new ArrayList<>();
         for (ArtifactDraft draft : drafts) {
             resources.add(parse(draft));
+        }
+        // Preconditions are judged once every draft has parsed, so a malformed document is reported as
+        // malformed rather than as a version conflict, and before the batch is validated, so an author
+        // editing a version that has moved on is told that instead of being handed diagnostics about
+        // content they are about to rewrite.
+        for (int index = 0; index < drafts.size(); index++) {
+            requireCurrentVersion(drafts.get(index), resources.get(index));
         }
         Workspace workspace = Workspace.of(resources, catalog.get());
         RowExpressionTypeRules.validate(resources, discoveredTables(resources));
@@ -267,6 +278,25 @@ public final class ApplyService {
     /** The content hash of a stored artifact, recomputed over its canonical form for the no-op check. */
     private String storedHash(Resource stored) {
         return CanonicalHash.of(writer.write(stored));
+    }
+
+    /**
+     * Refuses a draft whose optional precondition no longer names the stored version. A draft without
+     * one is left alone, which is what keeps a caller that never asked for the check from ever being
+     * refused by it. An id that is not stored at all cannot match any version, and is reported as
+     * absent rather than as a conflict, so an author whose target was deleted is told what happened.
+     */
+    private void requireCurrentVersion(ArtifactDraft draft, Resource parsed) {
+        String expected = draft.expectedContentHash();
+        if (expected == null) {
+            return;
+        }
+        String id = parsed.id();
+        Resource stored = store.get(id).orElseThrow(() ->
+                new TapstateException(ArtifactError.NOT_FOUND, Map.of("id", id), null));
+        if (!storedHash(stored).equals(expected)) {
+            throw new TapstateException(ArtifactError.VERSION_CONFLICT, Map.of("id", id), null);
+        }
     }
 
     private Resource parse(ArtifactDraft draft) {
