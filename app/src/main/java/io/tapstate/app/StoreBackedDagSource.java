@@ -5,7 +5,7 @@ import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import io.tapstate.adapters.transform.MapSpec;
 import io.tapstate.adapters.transform.StatelessTransforms;
-import io.tapstate.core.model.FromClause;
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.ServeBlock;
@@ -16,7 +16,7 @@ import io.tapstate.core.model.TransformBody;
 import io.tapstate.runtime.engine.DagBindings;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
 import io.tapstate.runtime.engine.SinkAckBinding;
-import io.tapstate.runtime.srs.SrsReadCursorPublisherFactory;
+import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SrsSourceProcessor;
 import io.tapstate.runtime.srs.StartFrom;
 import io.tapstate.spi.sink.DdlPolicy;
@@ -26,12 +26,14 @@ import io.tapstate.spi.sink.WriteMode;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.StorePort;
 import io.tapstate.spi.transform.TransformPort;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Builds the Jet topology a pipeline runs from its stored artifact. It loads the pipeline and the source and
@@ -49,8 +51,8 @@ import java.util.Set;
  * connector. Deriving the source's change-ring identity is delegated to the shared source resolution so the
  * reader built here and the capture side that fills the ring land on the same ring.
  *
- * <p>L1 shape: each source reads exactly one table, and a serve.sync element names a source id as its target
- * connection supplier. Start position defaults to the earliest buffered change.
+ * <p>A source may read several tables, and a serve.sync element names a source id as its target connection
+ * supplier. Start position defaults to the earliest buffered change.
  */
 final class StoreBackedDagSource implements DagSource {
 
@@ -59,7 +61,7 @@ final class StoreBackedDagSource implements DagSource {
     private final TargetModelResolver targetModelResolver;
 
     StoreBackedDagSource(StorePort storePort) {
-        this(storePort, PdkSinkWriterFactory::new);
+        this(storePort, new PdkSinkWriterBinder());
     }
 
     StoreBackedDagSource(StorePort storePort, SinkWriterBinder sinkWriterBinder) {
@@ -71,61 +73,21 @@ final class StoreBackedDagSource implements DagSource {
     @Override
     public DAG dagFor(String pipelineId) {
         PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
-        Map<String, String> sourceIdByTable = sourceIdByTable(pipeline);
-        TargetModelResolver.ResolvedTarget resolved =
-                targetModelResolver.resolve(servedSourceId(pipeline, sourceIdByTable));
+        Map<String, SourceVertex> sourceVertices = sourceVertices(pipeline);
+        Map<String, String> sourceKeyByTable = sourceKeyByTable(sourceVertices);
+        // The linear builder does not expose a per-sink upstream table set. Binding every selected table keeps
+        // a non-first source table from losing its discovered model or rename when it reaches a serve sink.
+        Map<String, TargetTable> targets = targetModelResolver.resolveAll(pipeline);
+        Set<String> servedTables = sourceTables(sourceVertices);
+        Map<String, List<String>> sourceKeysById = sourceKeysById(sourceVertices);
         return PipelineDagBuilder.build(
                 pipeline,
-                bindings(sourceIdByTable, resolved.target(), resolved.sourceTable()),
+                bindings(sourceVertices, sourceKeyByTable, sourceKeysById, targets, servedTables, stepIds(pipeline)),
                 sinkAckBinding(pipeline, pipelineId));
     }
 
-    /**
-     * The source whose rows reach the serve sinks: the serve block's {@code from:} walked back through the
-     * transform chain to the source feeding it. A sink's target model and its rename rules key off that
-     * source's table, so what a sink is bound to is the model of the rows that actually arrive there.
-     *
-     * <p>A reference that does not narrow to exactly one source - a regex spanning the universe, a union
-     * merging several, a token naming neither a source nor a step - falls back to the pipeline's first
-     * source, which is the whole of it at the single-source L1 shape.
-     */
-    static String servedSourceId(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
-        String served = pipeline.serve() instanceof ServeBlock.Inline serve
-                ? sourceBehind(serve.from(), pipeline, sourceIdByTable, new HashSet<>())
-                : null;
-        return served != null ? served : pipeline.sources().getFirst();
-    }
-
-    /** The single source a reference reaches, or null when it names several or none. */
-    private static String sourceBehind(FromRef ref, PipelineResource pipeline,
-            Map<String, String> sourceIdByTable, Set<String> visited) {
-        if (!(ref instanceof FromRef.Literal literal)) {
-            return null;
-        }
-        String key = sourceIdByTable.getOrDefault(literal.ref(), literal.ref());
-        if (pipeline.sources().contains(key)) {
-            return key;
-        }
-        // Not a source, so it is a step id to follow upstream; `visited` stops a malformed cycle here
-        // rather than in a stack overflow, since the reference graph is validated before a pipeline is stored.
-        if (!visited.add(key) || pipeline.transforms() == null) {
-            return null;
-        }
-        for (Step step : pipeline.transforms()) {
-            if (step.id().equals(key)) {
-                return sourceBehind(step.from(), pipeline, sourceIdByTable, visited);
-            }
-        }
-        return null;
-    }
-
-    /** The single source a step's upstream wiring reaches; an alias map or a merge of several reaches none. */
-    private static String sourceBehind(FromClause from, PipelineResource pipeline,
-            Map<String, String> sourceIdByTable, Set<String> visited) {
-        if (!(from instanceof FromClause.Flow flow) || flow.refs().size() != 1) {
-            return null;
-        }
-        return sourceBehind(flow.refs().getFirst(), pipeline, sourceIdByTable, visited);
+    private record SourceVertex(
+            String pipelineId, String sourceId, String table, SourceCaptureResolution resolution) {
     }
 
     /**
@@ -134,14 +96,52 @@ final class StoreBackedDagSource implements DagSource {
      * A table read by two of one pipeline's sources cannot occur here: the reference rules reject the
      * ambiguity before a pipeline is ever stored.
      */
-    private Map<String, String> sourceIdByTable(PipelineResource pipeline) {
-        Map<String, String> byTable = new LinkedHashMap<>();
+    private Map<String, SourceVertex> sourceVertices(PipelineResource pipeline) {
+        Map<String, SourceVertex> vertices = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
-            SourceCaptureResolution resolution =
-                    SourceCaptureResolution.of(StoredArtifacts.requireSource(artifacts(), sourceId));
-            byTable.put(resolution.table(), sourceId);
+            SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
+            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
+            for (String table : resolution.tables()) {
+                String key = resolution.tables().size() == 1 ? sourceId : sourceId + "." + table;
+                vertices.put(key, new SourceVertex(pipeline.id(), sourceId, table, resolution));
+            }
+        }
+        return vertices;
+    }
+
+    private Map<String, String> sourceKeyByTable(Map<String, SourceVertex> sourceVertices) {
+        Map<String, String> byTable = new LinkedHashMap<>();
+        Map<String, SourceVertex> firstByTable = new LinkedHashMap<>();
+        for (Map.Entry<String, SourceVertex> entry : sourceVertices.entrySet()) {
+            SourceVertex previous = firstByTable.putIfAbsent(entry.getValue().table(), entry.getValue());
+            if (previous != null && !previous.sourceId().equals(entry.getValue().sourceId())) {
+                throw new TapstateException(
+                        ActuationError.SOURCE_TABLE_AMBIGUOUS,
+                        Map.of(
+                                "table", entry.getValue().table(),
+                                "sources", previous.sourceId() + ", " + entry.getValue().sourceId()),
+                        null);
+            }
+            byTable.putIfAbsent(entry.getValue().table(), entry.getKey());
         }
         return byTable;
+    }
+
+    private static Set<String> sourceTables(Map<String, SourceVertex> sourceVertices) {
+        Set<String> tables = new LinkedHashSet<>();
+        for (SourceVertex vertex : sourceVertices.values()) {
+            tables.add(vertex.table());
+        }
+        return tables;
+    }
+
+    private Map<String, List<String>> sourceKeysById(Map<String, SourceVertex> sourceVertices) {
+        Map<String, List<String>> keys = new LinkedHashMap<>();
+        for (Map.Entry<String, SourceVertex> entry : sourceVertices.entrySet()) {
+            keys.computeIfAbsent(entry.getValue().sourceId(), ignored -> new java.util.ArrayList<>())
+                    .add(entry.getKey());
+        }
+        return keys;
     }
 
     /**
@@ -154,9 +154,11 @@ final class StoreBackedDagSource implements DagSource {
     private SinkAckBinding sinkAckBinding(PipelineResource pipeline, String pipelineId) {
         Map<String, String> chainIdByTable = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
-            SourceCaptureResolution resolution =
-                    SourceCaptureResolution.of(StoredArtifacts.requireSource(artifacts(), sourceId));
-            chainIdByTable.put(resolution.table(), resolution.chainId().value());
+            SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
+            SourceCaptureResolution resolution = SourceCaptureResolution.of(source, SourceDiscovery.model(storePort, source));
+            for (String table : resolution.tables()) {
+                chainIdByTable.put(table, resolution.chainId().value());
+            }
         }
         return new SinkAckBinding(
                 new StoreBackedSinkAckFactory(chainIdByTable, pipelineId), MockPositionOrder.INSTANCE);
@@ -167,25 +169,35 @@ final class StoreBackedDagSource implements DagSource {
      * builder walks the topology; only the vertex suppliers they return travel onto the DAG, so they may
      * reach the store freely while what they produce stays serializable.
      */
-    private DagBindings bindings(Map<String, String> sourceIdByTable, TargetTable target, String sourceTable) {
+    private DagBindings bindings(
+            Map<String, SourceVertex> sourceVertices,
+            Map<String, String> sourceKeyByTable,
+            Map<String, List<String>> sourceKeysById,
+            Map<String, TargetTable> targets,
+            Set<String> servedTables,
+            Set<String> stepIds) {
         return new DagBindings(
-                this::sourceVertex,
+                key -> sourceVertex(sourceVertices.get(key)),
                 StoreBackedDagSource::transformPort,
-                element -> sinkWriter(element, TargetModelResolver.rename(target, sourceTable, element.rename())),
-                ref -> upstreams(ref, sourceIdByTable));
+                element -> sinkWriter(element, targets, servedTables),
+                ref -> upstreams(ref, sourceKeyByTable, sourceKeysById, sourceVertices, stepIds),
+                sourceKeysById::get);
     }
 
     /**
-     * The source vertex for one source id: it resolves the source's connector, config and single table into
-     * the per-table change ring the capture side writes. The stream name projected into each event is the
-     * table name. Resolving the same ring identity the capture side resolves is what points the reader at the
-     * ring the writer fills.
+     * The source vertex for one selected table: it resolves the source's connector, config and per-table
+     * change ring the capture side writes. The stream name projected into each event is the table name.
+     * Resolving the same ring identity the capture side resolves is what points the reader at the ring the
+     * writer fills.
      */
-    private ProcessorMetaSupplier sourceVertex(String sourceId) {
-        SourceCaptureResolution resolution =
-                SourceCaptureResolution.of(StoredArtifacts.requireSource(artifacts(), sourceId));
+    private ProcessorMetaSupplier sourceVertex(SourceVertex vertex) {
+        if (vertex == null) {
+            throw new IllegalStateException("source vertex binding is missing");
+        }
         return SrsSourceProcessor.metaSupplier(
-                resolution.ringName(), resolution.table(), StartFrom.earliest(), SrsReadCursorPublisherFactory.NONE);
+                vertex.resolution().ringName(vertex.table()), vertex.table(),
+                StartFrom.earliest(), CaptureRunUnit.readCursorPublisher(
+                        vertex.resolution().chainId().value(), vertex.pipelineId(), vertex.table()));
     }
 
     /**
@@ -226,10 +238,12 @@ final class StoreBackedDagSource implements DagSource {
      * with the binding, or is null when no model was discovered. The bound factory carries only these
      * serializable coordinates and opens the connector on the member that runs the sink.
      */
-    private SupplierEx<? extends SinkWriter> sinkWriter(SyncElement element, TargetTable target) {
+    private SupplierEx<? extends SinkWriter> sinkWriter(
+            SyncElement element, Map<String, TargetTable> targets, Set<String> servedTables) {
         SourceResource sink = StoredArtifacts.requireSource(artifacts(), element.source());
         return sinkWriterBinder.bind(
-                sink.connector(), sink.config(), writeMode(element.writeMode()), ddl(element.ddl()), target);
+                sink.connector(), sink.config(), writeMode(element.writeMode()), ddl(element.ddl()),
+                TargetModelResolver.renameAll(targets, servedTables, element.rename()));
     }
 
     /**
@@ -241,13 +255,75 @@ final class StoreBackedDagSource implements DagSource {
      * where the source declares no table to be addressed by instead. Translating here is what this binding is
      * for: the builder is told which vertices a reference produces and cannot know that a table implies one.
      *
-     * <p>A regex reference expands the source universe and is not carried by the linear L1 builder.
+     * <p>A regex reference expands selected source tables and transform step ids in declaration order. A
+     * regex that expands to no producer is rejected before a broken DAG can be assembled.
      */
-    private static List<String> upstreams(FromRef ref, Map<String, String> sourceIdByTable) {
+    private static List<String> upstreams(
+            FromRef ref,
+            Map<String, String> sourceIdByTable,
+            Map<String, List<String>> sourceKeysById,
+            Map<String, SourceVertex> sourceVertices,
+            Set<String> stepIds) {
         if (ref instanceof FromRef.Literal literal) {
+            List<String> sourceKeys = sourceKeysById.get(literal.ref());
+            if (sourceKeys != null) {
+                return List.copyOf(sourceKeys);
+            }
+            if (sourceVertices.containsKey(literal.ref())) {
+                return List.of(literal.ref());
+            }
+            int dot = literal.ref().indexOf('.');
+            if (dot > 0) {
+                String sourceId = literal.ref().substring(0, dot);
+                String table = literal.ref().substring(dot + 1);
+                List<String> qualified = sourceKeysById.get(sourceId);
+                if (qualified != null) {
+                    List<String> matches = qualified.stream()
+                            .filter(key -> sourceVertices.get(key).table().equals(table))
+                            .toList();
+                    if (matches.isEmpty()) {
+                        throw new TapstateException(
+                                ActuationError.SOURCE_TABLE_NOT_DISCOVERED,
+                                Map.of("source", sourceId, "table", table), null);
+                    }
+                    return matches;
+                }
+            }
             return List.of(sourceIdByTable.getOrDefault(literal.ref(), literal.ref()));
         }
-        throw new IllegalStateException("regex from: reference is not carried by the linear L1 builder: " + ref);
+        FromRef.Regex regex = (FromRef.Regex) ref;
+        final Pattern pattern;
+        try {
+            pattern = Pattern.compile(regex.pattern());
+        } catch (PatternSyntaxException exception) {
+            throw new TapstateException(
+                    ActuationError.FROM_REGEX_INVALID, Map.of("regex", regex.pattern()), exception);
+        }
+        LinkedHashSet<String> matches = new LinkedHashSet<>();
+        for (Map.Entry<String, SourceVertex> entry : sourceVertices.entrySet()) {
+            SourceVertex vertex = entry.getValue();
+            if (pattern.matcher(vertex.table()).matches()
+                    || pattern.matcher(entry.getKey()).matches()
+                    || pattern.matcher(vertex.sourceId()).matches()) {
+                matches.add(entry.getKey());
+            }
+        }
+        for (String stepId : stepIds) {
+            if (pattern.matcher(stepId).matches()) {
+                matches.add(stepId);
+            }
+        }
+        if (matches.isEmpty()) {
+            throw new TapstateException(ActuationError.FROM_REGEX_EMPTY, Map.of("regex", regex.pattern()), null);
+        }
+        return List.copyOf(matches);
+    }
+
+    private static Set<String> stepIds(PipelineResource pipeline) {
+        if (pipeline.transforms() == null) {
+            return Set.of();
+        }
+        return pipeline.transforms().stream().map(Step::id).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
     }
 
     private static WriteMode writeMode(io.tapstate.core.model.WriteMode mode) {
@@ -282,5 +358,29 @@ final class StoreBackedDagSource implements DagSource {
         SupplierEx<? extends SinkWriter> bind(
                 String connectorId, Map<String, Object> settings, WriteMode writeMode, DdlPolicy ddl,
                 TargetTable target);
+
+        default SupplierEx<? extends SinkWriter> bind(
+                String connectorId, Map<String, Object> settings, WriteMode writeMode, DdlPolicy ddl,
+                Map<String, TargetTable> targets) {
+            return bind(connectorId, settings, writeMode, ddl,
+                    targets.size() == 1 ? targets.values().iterator().next() : null);
+        }
+    }
+
+    private static final class PdkSinkWriterBinder implements SinkWriterBinder {
+
+        @Override
+        public SupplierEx<? extends SinkWriter> bind(
+                String connectorId, Map<String, Object> settings, WriteMode writeMode, DdlPolicy ddl,
+                TargetTable target) {
+            return new PdkSinkWriterFactory(connectorId, settings, writeMode, ddl, target);
+        }
+
+        @Override
+        public SupplierEx<? extends SinkWriter> bind(
+                String connectorId, Map<String, Object> settings, WriteMode writeMode, DdlPolicy ddl,
+                Map<String, TargetTable> targets) {
+            return new PdkSinkWriterFactory(connectorId, settings, writeMode, ddl, targets);
+        }
     }
 }

@@ -23,15 +23,16 @@ import io.tapstate.spi.store.SourceField;
 import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * Coverage for how the store-backed DAG source feeds a sink's resolved target model: the write-side target
- * table resolved from the pipeline source's discovered model is what reaches the sink binder, so the sink
- * creates the target by that model and keys an upsert on its primary key. When no model has been discovered
- * the sink is bound with no target and falls back to a bare table id.
+ * Coverage for how the store-backed DAG source feeds a sink's resolved target models: the write-side target
+ * tables resolved from the pipeline sources' discovered models reach the sink binder, so the sink creates
+ * each target by that model and keys an upsert on its primary key. When no model has been discovered the
+ * sink falls back to a bare table id.
  */
 class StoreBackedDagSourceTargetModelTest {
 
@@ -97,11 +98,11 @@ class StoreBackedDagSourceTargetModelTest {
         InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("address_src"));
         store.schemas().save(discovered("address_src", "mysql", new SourceTable(
                 "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of())));
-        List<TargetTable> bound = new ArrayList<>();
+        Map<String, TargetTable> bound = new LinkedHashMap<>();
 
-        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+        new StoreBackedDagSource(store, capturingMapBinder(bound)).dagFor("p");
 
-        assertThat(bound).containsExactly(new TargetTable(
+        assertThat(bound).containsEntry("PlayerAddress", new TargetTable(
                 "player_address", List.of(new TargetField("id", "INT", true))));
     }
 
@@ -112,11 +113,11 @@ class StoreBackedDagSourceTargetModelTest {
                 "orders", List.of(new SourceField("total", "DECIMAL")), List.of("total"), List.of())));
         store.schemas().save(discovered("address_src", "mysql", new SourceTable(
                 "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of())));
-        List<TargetTable> bound = new ArrayList<>();
+        Map<String, TargetTable> bound = new LinkedHashMap<>();
 
-        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+        new StoreBackedDagSource(store, capturingMapBinder(bound)).dagFor("p");
 
-        assertThat(bound).containsExactly(new TargetTable(
+        assertThat(bound).containsEntry("PlayerAddress", new TargetTable(
                 "player_address", List.of(new TargetField("id", "INT", true))));
     }
 
@@ -125,57 +126,58 @@ class StoreBackedDagSourceTargetModelTest {
         InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("keep_recent"),
                 Step.inline("keep_recent", FromClause.list(FromRef.literal("address_src")),
                         new TransformBody.Filter("true"), null, null));
-        List<TargetTable> bound = new ArrayList<>();
+        Map<String, TargetTable> bound = new LinkedHashMap<>();
 
-        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+        new StoreBackedDagSource(store, capturingMapBinder(bound)).dagFor("p");
 
-        assertThat(bound).containsExactly(new TargetTable("player_address", List.of()));
+        assertThat(bound).containsEntry("PlayerAddress", new TargetTable("player_address", List.of()));
     }
 
     @Test
     void renames_with_the_table_a_serve_block_names_directly() {
         InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("PlayerAddress"));
-        List<TargetTable> bound = new ArrayList<>();
+        Map<String, TargetTable> bound = new LinkedHashMap<>();
 
-        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+        new StoreBackedDagSource(store, capturingMapBinder(bound)).dagFor("p");
 
-        assertThat(bound).containsExactly(new TargetTable("player_address", List.of()));
+        assertThat(bound).containsEntry("PlayerAddress", new TargetTable("player_address", List.of()));
     }
 
     @Test
-    void falls_back_to_the_first_source_when_a_step_merges_several_upstreams() {
+    void binds_the_qualified_table_of_a_non_first_source() {
+        InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("address_src.PlayerAddress"));
+        store.schemas().save(discovered("address_src", "mysql", new SourceTable(
+                "PlayerAddress", List.of(new SourceField("id", "INT")), List.of("id"), List.of())));
+        Map<String, TargetTable> bound = new LinkedHashMap<>();
+
+        new StoreBackedDagSource(store, capturingMapBinder(bound)).dagFor("p");
+
+        assertThat(bound).containsEntry("PlayerAddress", new TargetTable(
+                "player_address", List.of(new TargetField("id", "INT", true))));
+    }
+
+    @Test
+    void binds_target_models_for_all_sources_when_a_step_merges_several_upstreams() {
         InMemoryStorePort store = seededMultiSourcePipeline(FromRef.literal("merged"),
                 Step.inline("merged", FromClause.list(FromRef.literal("orders"), FromRef.literal("PlayerAddress")),
                         new TransformBody.Union(), null, null));
-        List<TargetTable> bound = new ArrayList<>();
+        store.schemas().save(discovered("orders_src", "mysql", new SourceTable(
+                "orders", List.of(new SourceField("id", "INT"), new SourceField("total", "DECIMAL")),
+                List.of("id"), List.of())));
+        store.schemas().save(discovered("address_src", "mysql", new SourceTable(
+                "PlayerAddress", List.of(new SourceField("id", "INT"), new SourceField("street", "VARCHAR")),
+                List.of("id"), List.of())));
+        Map<String, TargetTable> bound = new LinkedHashMap<>();
 
-        new StoreBackedDagSource(store, capturingBinder(bound)).dagFor("p");
+        new StoreBackedDagSource(store, capturingMapBinder(bound)).dagFor("p");
 
-        // orders_src leads the source list and its table is not in the rename map, so the name stays put.
-        assertThat(bound).containsExactly(new TargetTable("orders", List.of()));
-    }
-
-    /**
-     * The remaining shapes that name no single source. Each is asked of the decision directly rather than
-     * through a built DAG: the linear L1 builder refuses a regex reference and an unresolved token outright,
-     * so no pipeline carrying one ever reaches a sink binding to assert on.
-     */
-    @Test
-    void names_no_source_for_a_reference_that_does_not_narrow_to_one() {
-        PipelineResource merging = pipelineOf(FromRef.literal("merged"),
-                Step.inline("merged", FromClause.list(FromRef.literal("orders"), FromRef.literal("PlayerAddress")),
-                        new TransformBody.Union(), null, null));
-        Map<String, String> byTable = Map.of("orders", "orders_src", "PlayerAddress", "address_src");
-
-        assertThat(StoreBackedDagSource.servedSourceId(pipelineOf(FromRef.regex(".*")), byTable))
-                .as("a regex spans the universe").isEqualTo("orders_src");
-        assertThat(StoreBackedDagSource.servedSourceId(pipelineOf(FromRef.literal("nowhere")), byTable))
-                .as("a token naming neither a source nor a step, with no transforms to search").isEqualTo("orders_src");
-        assertThat(StoreBackedDagSource.servedSourceId(merging, byTable))
-                .as("a union merges several upstreams").isEqualTo("orders_src");
-        assertThat(StoreBackedDagSource.servedSourceId(
-                pipelineOf(FromRef.literal("nowhere"), (Step) merging.transforms().getFirst()), byTable))
-                .as("a token matching none of the steps searched").isEqualTo("orders_src");
+        assertThat(bound)
+                .containsEntry("orders", new TargetTable("orders", List.of(
+                        new TargetField("id", "INT", true),
+                        new TargetField("total", "DECIMAL", false))))
+                .containsEntry("PlayerAddress", new TargetTable("player_address", List.of(
+                        new TargetField("id", "INT", true),
+                        new TargetField("street", "VARCHAR", false))));
     }
 
     // ---- fixtures ----------------------------------------------------------------------
@@ -198,8 +200,8 @@ class StoreBackedDagSourceTargetModelTest {
     }
 
     /**
-     * A two-source pipeline whose sink renames {@code PlayerAddress}, so which source the serve block is
-     * pointed at decides the bound target: only {@code address_src} carries that table.
+     * A two-source pipeline whose sink renames {@code PlayerAddress}. Both selected source tables are bound,
+     * while only {@code address_src} carries the renamed table.
      */
     private static InMemoryStorePort seededMultiSourcePipeline(FromRef serveFrom, Step... transforms) {
         InMemoryStorePort store = new InMemoryStorePort();
@@ -229,6 +231,28 @@ class StoreBackedDagSourceTargetModelTest {
         return (connectorId, settings, writeMode, ddl, target) -> {
             bound.add(target);
             return (SupplierEx<SinkWriter>) () -> null;
+        };
+    }
+
+    private static StoreBackedDagSource.SinkWriterBinder capturingMapBinder(Map<String, TargetTable> bound) {
+        return new StoreBackedDagSource.SinkWriterBinder() {
+            @Override
+            public SupplierEx<? extends SinkWriter> bind(
+                    String connectorId, Map<String, Object> settings, io.tapstate.spi.sink.WriteMode writeMode,
+                    io.tapstate.spi.sink.DdlPolicy ddl, TargetTable target) {
+                if (target != null) {
+                    bound.put(target.name(), target);
+                }
+                return (SupplierEx<SinkWriter>) () -> null;
+            }
+
+            @Override
+            public SupplierEx<? extends SinkWriter> bind(
+                    String connectorId, Map<String, Object> settings, io.tapstate.spi.sink.WriteMode writeMode,
+                    io.tapstate.spi.sink.DdlPolicy ddl, Map<String, TargetTable> targets) {
+                bound.putAll(targets);
+                return (SupplierEx<SinkWriter>) () -> null;
+            }
         };
     }
 

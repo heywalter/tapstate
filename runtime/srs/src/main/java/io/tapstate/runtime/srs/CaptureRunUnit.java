@@ -11,7 +11,9 @@ import io.tapstate.spi.store.SrsMeta;
 import io.tapstate.spi.store.SrsMetaStore;
 
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -28,8 +30,9 @@ import java.util.function.Supplier;
  * writes the change ring and exposes a Jet source over it; an srs-disabled tail streams straight to the one
  * consumer with no ring or coordinator. See {@link #start} for the exact ordering.
  *
- * <p>Single-table at L1: a shared-ring run reads exactly one stream into one per-table ring. The mock
- * watermark and position order the spec carries stand in for real connector machinery.
+ * <p>A shared-ring run reads every configured stream through one connector subscription and routes each
+ * stream into its own per-table ring. The mock watermark and position order the spec carries stand in for
+ * real connector machinery.
  */
 public final class CaptureRunUnit {
 
@@ -72,58 +75,103 @@ public final class CaptureRunUnit {
 
         MiningChainId chainId = null;
         boolean merged = false;
-        String table = null;
-        if (plan.sharedRing()) {
-            // Fail fast before provisioning: a shared-ring run is single-table at L1, so a multi-table
-            // config is rejected before any chain state is opened, not part way through.
-            table = singleTable(spec.config());
-            chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
-            merged = coordinator
-                    .provisionSource(spec.sourceId(), chainId, spec.config().streams(), spec.retention())
-                    .merged();
-        }
-
-        long snapshotCount = 0;
-        if (plan.snapshot()) {
-            snapshotCount = chainId != null
-                    ? SnapshotPhase.run(port, spec.config(), chainId.value(), spec.cdcStart(), meta, passthrough)
-                    : SnapshotPhase.drain(port, spec.config(), passthrough);
-        }
-
-        CaptureHealth health = new CaptureHealth();
-        Optional<StreamSource<SrsItem>> ringSource = Optional.empty();
+        boolean chainCreated = false;
+        boolean consumerAttached = false;
         Optional<Subscription> subscription = Optional.empty();
-        if (plan.sharedRing()) {
-            String cid = chainId.value();
-            String tbl = table;
-            coordinator.attachConsumer(chainId, spec.pipelineId());
-            String ringName = SrsRingbuffer.ringName(cid, tbl);
-            SrsWriteGate gate = new SrsWriteGate(new SrsRingbuffer(hz.getRingbuffer(ringName)));
-            CdcChain chain = new CdcChain(
-                    gate, meta, cid, spec.watermark(), spec.positionOrder(), spec.schemaVer());
-            LongSupplier minConsumerReadSeq = () -> minConsumerReadSeq(meta, cid, tbl);
-            Supplier<Collection<ConsumerOffset>> consumers =
-                    () -> meta.read(cid).map(SrsMeta::consumerOffsets).orElse(List.of());
-            subscription = Optional.of(CdcPhase.run(port, spec.config(), chain, minConsumerReadSeq, consumers, health));
-            ringSource = Optional.of(SrsRingSource.create(
-                    ringName, spec.startFrom(), readCursorPublisher(cid, spec.pipelineId(), tbl)));
-        } else if (plan.directTail()) {
-            // srs.enabled:false: the tail streams straight to the single consumer, with no shared ring,
-            // no coordinator chain and no durable meta -- the lightweight direct path.
-            subscription = Optional.of(port.cdc(spec.config(), health.recording(passthrough::accept)));
+        List<String> tables = spec.config().streams();
+        if (tables == null || tables.isEmpty()) {
+            throw new IllegalArgumentException("capture config must select at least one stream");
         }
+        try {
+            if (plan.sharedRing()) {
+                chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
+                merged = coordinator
+                        .provisionSource(spec.sourceId(), chainId, spec.config().streams(), spec.retention())
+                        .merged();
+                chainCreated = !merged;
+            }
 
-        return new CaptureRun(Optional.ofNullable(chainId), merged, snapshotCount, ringSource, subscription, health);
+            long snapshotCount = 0;
+            Map<String, Long> snapshotCounts = new LinkedHashMap<>();
+            if (plan.snapshot()) {
+                Consumer<Envelope> snapshotPassthrough = event -> {
+                    snapshotCounts.merge(event.src(), 1L, Long::sum);
+                    passthrough.accept(event);
+                };
+                snapshotCount = chainId != null
+                        ? SnapshotPhase.run(port, spec.config(), chainId.value(), spec.cdcStart(), meta, snapshotPassthrough)
+                        : SnapshotPhase.drain(port, spec.config(), snapshotPassthrough);
+            }
+
+            CaptureHealth health = new CaptureHealth();
+            Optional<StreamSource<SrsItem>> ringSource = Optional.empty();
+            if (plan.sharedRing()) {
+                String cid = chainId.value();
+                coordinator.attachConsumer(chainId, spec.pipelineId());
+                consumerAttached = true;
+                Supplier<Collection<ConsumerOffset>> consumers =
+                        () -> meta.read(cid).map(SrsMeta::consumerOffsets).orElse(List.of());
+                Map<String, CdcPhase.TableRoute> routes = new LinkedHashMap<>();
+                for (String table : tables) {
+                    String ringName = SrsRingbuffer.ringName(cid, table);
+                    SrsWriteGate gate = new SrsWriteGate(new SrsRingbuffer(hz.getRingbuffer(ringName)));
+                    CdcChain chain = new CdcChain(
+                            gate, meta, cid, spec.watermark(), spec.positionOrder(), spec.schemaVer());
+                    routes.put(table, new CdcPhase.TableRoute(
+                            chain, () -> minConsumerReadSeq(meta, cid, table), consumers));
+                }
+                subscription = Optional.of(CdcPhase.run(port, spec.config(), routes, health));
+                String firstTable = tables.getFirst();
+                String firstRing = SrsRingbuffer.ringName(cid, firstTable);
+                ringSource = Optional.of(SrsRingSource.create(
+                        firstRing, spec.startFrom(), readCursorPublisher(cid, spec.pipelineId(), firstTable)));
+            } else if (plan.directTail()) {
+                // srs.enabled:false: the tail streams straight to the consumer, with no shared ring,
+                // no coordinator chain and no durable meta -- the lightweight direct path.
+                subscription = Optional.of(port.cdc(spec.config(), health.recording(passthrough::accept)));
+            }
+
+            return new CaptureRun(
+                    Optional.ofNullable(chainId), merged, snapshotCount, snapshotCounts, ringSource, subscription, health);
+        } catch (RuntimeException | Error failure) {
+            RuntimeException cleanupFailure = rollbackStartFailure(
+                    chainId, spec.pipelineId(), chainCreated, consumerAttached, subscription);
+            if (cleanupFailure != null) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
-    /** The single stream a shared-ring run reads — L1 is single-table; anything else is out of scope here. */
-    private static String singleTable(CaptureConfig config) {
-        List<String> streams = config.streams();
-        if (streams.size() != 1) {
-            throw new IllegalArgumentException(
-                    "single-table capture expects exactly one stream, got " + streams.size());
+    private RuntimeException rollbackStartFailure(
+            MiningChainId chainId,
+            String pipelineId,
+            boolean chainCreated,
+            boolean consumerAttached,
+            Optional<Subscription> subscription) {
+        RuntimeException failure = null;
+        if (subscription.isPresent()) {
+            failure = runCleanup(subscription.get()::close, failure);
         }
-        return streams.get(0);
+        if (chainId != null && consumerAttached) {
+            failure = runCleanup(() -> coordinator.detachConsumer(chainId, pipelineId), failure);
+        }
+        if (chainId != null && chainCreated) {
+            failure = runCleanup(() -> coordinator.teardownSource(chainId), failure);
+        }
+        return failure;
+    }
+
+    private static RuntimeException runCleanup(Runnable cleanup, RuntimeException firstFailure) {
+        try {
+            cleanup.run();
+        } catch (RuntimeException failure) {
+            if (firstFailure == null) {
+                return failure;
+            }
+            firstFailure.addSuppressed(failure);
+        }
+        return firstFailure;
     }
 
     /**
@@ -147,7 +195,8 @@ public final class CaptureRunUnit {
      * sink-ack. It closes over only the chain, pipeline and table coordinates — never the store — so it
      * stays serializable; a member with no store bound resolves to a no-op sink.
      */
-    static SrsReadCursorPublisherFactory readCursorPublisher(String miningChainId, String pipelineId, String table) {
+    public static SrsReadCursorPublisherFactory readCursorPublisher(
+            String miningChainId, String pipelineId, String table) {
         return member -> {
             Object bound = member.getUserContext().get(SRS_META_USER_CONTEXT_KEY);
             if (!(bound instanceof SrsMetaStore memberMeta)) {
