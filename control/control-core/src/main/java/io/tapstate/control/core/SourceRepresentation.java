@@ -35,11 +35,25 @@ public final class SourceRepresentation {
 
     /** Builds a core Source while applying catalog-driven secret replacement semantics. */
     public SourceResource toModel(SourceDraft draft, SourceResource existing) {
+        return toModel(draft, existing, true);
+    }
+
+    /** Builds a draft Source while applying only the draft's explicit secret removals. */
+    SourceResource toDraftModel(SourceDraft draft) {
+        return toModel(draft, null, false);
+    }
+
+    private SourceResource toModel(
+            SourceDraft draft, SourceResource existing, boolean enforceSecretRules) {
         Objects.requireNonNull(draft, "draft");
         ConnectorCatalogEntry connector = connector(draft.connector());
         Map<String, ConfigField> secrets = secretFields(connector);
-        validateSuppliedSecrets(draft, secrets);
-        List<String> clearSecrets = validateClearSecrets(draft, secrets);
+        if (enforceSecretRules) {
+            validateSuppliedSecrets(draft, secrets);
+        }
+        List<String> clearSecrets = enforceSecretRules
+                ? validateClearSecrets(draft, secrets)
+                : draft.clearSecrets();
 
         Map<String, Object> config = new LinkedHashMap<>(draft.config());
         if (existing != null && existing.connector().equals(draft.connector())) {
