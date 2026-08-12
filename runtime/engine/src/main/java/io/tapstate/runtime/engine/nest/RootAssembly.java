@@ -292,6 +292,99 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
+     * Takes the element at {@code from} out of this document together with everything beneath it, and
+     * hands back what hung there so another document can be given it.
+     *
+     * <p>What hangs beneath cannot travel as changes of its own. Those rows arrived long ago and nothing
+     * will ever send them again — the source edited one row, the one that moved — so unless they are read
+     * out of the document that has them they are simply lost, quietly, with nothing anywhere reporting it.
+     *
+     * <p><b>The element itself is not handed over.</b> It is the row the source did edit, so it arrives at
+     * its new document as an ordinary change. Included here as well, two paths could place it and the two
+     * would have to agree about which order won.
+     *
+     * <p>Handed over shallowest first, so whoever applies them places a parent before its children and
+     * nothing is parked as waiting on the way in. Records of deletions travel like anything else: left
+     * behind, a replay from beneath the frontier would put the row back in the document that gained the
+     * element, where nothing would ever delete it again.
+     *
+     * <p>Positions are not carried. What each of those rows covered was accounted for by the document that
+     * held them, and what keeps the frontier below a hand-over in flight is the hand-over itself being
+     * counted as still held — not a second copy of every position in the subtree.
+     */
+    public List<NestElement> detachSubtree(ElementRef from) {
+        Objects.requireNonNull(from, "from");
+        Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
+        Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
+        ElementNode leaving = slot == null ? null : slot.get(from.elementKey());
+        if (leaving == null) {
+            return List.of();
+        }
+        List<NestElement> handedOver = new ArrayList<>();
+        collectBeneath(leaving, from.pathId(), identityOf(from.pathId(), leaving), handedOver);
+        slot.remove(from.elementKey());
+        forgetNames(leaving, from.pathId());
+        return handedOver;
+    }
+
+    /**
+     * Everything under one element, level by level so a parent is always listed before its children. Each
+     * is rebuilt as the change that would put it back: where it hangs, the row it holds, and the order that
+     * decides whether it still wins where it lands.
+     */
+    private void collectBeneath(ElementNode holder, List<String> holderPathId, Object holderIdentity,
+            List<NestElement> into) {
+        List<ElementNode> nodes = new ArrayList<>();
+        List<List<String>> paths = new ArrayList<>();
+        List<Object> identities = new ArrayList<>();
+        for (Map.Entry<String, Map<List<Object>, ElementNode>> embed : holder.children().entrySet()) {
+            List<String> pathId = deeper(holderPathId, embed.getKey());
+            for (Map.Entry<List<Object>, ElementNode> held : embed.getValue().entrySet()) {
+                ElementNode node = held.getValue();
+                Object identity = identityOf(pathId, node);
+                into.add(new NestElement(new ElementRef(pathId, holderIdentity, held.getKey(), identity),
+                        node.fields(), node.order(), Map.of()));
+                nodes.add(node);
+                paths.add(pathId);
+                identities.add(identity);
+            }
+        }
+        for (int i = 0; i < nodes.size(); i++) {
+            collectBeneath(nodes.get(i), paths.get(i), identities.get(i), into);
+        }
+    }
+
+    /** Which identity value names this node in its embed, or null where the embed has no children. */
+    private Object identityOf(List<String> pathId, ElementNode node) {
+        Map<Object, ElementNode> named = byIdentity.get(pathId);
+        if (named == null) {
+            return null;
+        }
+        for (Map.Entry<Object, ElementNode> entry : named.entrySet()) {
+            if (entry.getValue() == node) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Drops the names of a node and everything beneath it. Left behind, a name would go on answering for a
+     * row this document no longer holds, and the next child to arrive would be filed under it: rendered by
+     * nothing, waiting for nothing, reported by nobody.
+     */
+    private void forgetNames(ElementNode node, List<String> pathId) {
+        Map<Object, ElementNode> named = byIdentity.get(pathId);
+        if (named != null) {
+            named.values().remove(node);
+        }
+        node.children().forEach((field, held) -> {
+            List<String> deeper = deeper(pathId, field);
+            held.values().forEach(child -> forgetNames(child, deeper));
+        });
+    }
+
+    /**
      * The lowest position held per chain — the bound the durable frontier must stay below for everything
      * this assembly has taken in and not sent on: the elements waiting for an ancestor that has not
      * arrived, and whatever has been absorbed since the last document went out. Chains holding nothing do
