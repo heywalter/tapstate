@@ -176,7 +176,7 @@ public final class Cli implements Runnable {
      * that only some of these verbs accept.
      */
     static final Map<String, VerbHelp> VERB_HELP = Map.ofEntries(
-            Map.entry("apply", new VerbHelp("[<path>]",
+            Map.entry("apply", new VerbHelp("[<path>] [--if-match <hash>]",
                     "Upload the workspace, or one artifact, creating or updating each resource.")),
             Map.entry("get", new VerbHelp("<id>",
                     "Fetch one stored artifact back as canonical YAML.")),

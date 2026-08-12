@@ -384,6 +384,26 @@ class HttpControlPlaneClientTest {
     }
 
     @Test
+    void aDraftWithAPreconditionCarriesItInTheApplyBodyAndOneWithoutOmitsTheKey() throws Exception {
+        // Two halves of one contract. Present: the server has to receive it or the check never happens.
+        // Absent: the key must not appear at all rather than appear as null — an existing caller's request
+        // has to stay byte-identical, and a null would reach a schema that forbids what it does not declare.
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/artifacts:apply", 200, "{\"outcomes\":[]}", seen);
+        try {
+            new HttpControlPlaneClient().apply(baseOf(server), "tok-abc",
+                    List.of(new LocalDraft("a.tap.yml", "kind: source\nid: a\n", "f".repeat(64))));
+            assertThat(seen.get().body()).contains("\"expectedContentHash\": \"" + "f".repeat(64) + "\"");
+
+            new HttpControlPlaneClient().apply(baseOf(server), "tok-abc",
+                    List.of(new LocalDraft("a.tap.yml", "kind: source\nid: a\n")));
+            assertThat(seen.get().body()).doesNotContain("expectedContentHash");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void tokenCreatePostsScopeAndReturnsTheOneTimeBearer() throws Exception {
         AtomicReference<CapturedRequest> seen = new AtomicReference<>();
         HttpServer server = apiServer("/api/tokens", 201,

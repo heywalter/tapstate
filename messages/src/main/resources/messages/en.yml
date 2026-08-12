@@ -80,6 +80,9 @@ cli.repl-builtin-only:
 cli.mcp-unavailable:
   message: "The MCP sidecar is unavailable: {reason}."
   solution: "Install the complete Tapstate CLI bundle, including libexec/tapstate-mcp, and retry."
+cli.if-match-needs-one-resource:
+  message: "`--if-match` names one version, but this apply covers {count} resources."
+  solution: "Apply the single file you are editing, or drop `--if-match` and let the batch apply unconditionally."
 dsl.unknown-field:
   message: "Unknown field '{field}' at {path}."
   solution: "Remove it, or run `tapstate explain` to see the fields allowed here."

@@ -201,6 +201,105 @@ class ControlApiTest {
     }
 
     @Test
+    void anApplyCarryingTheCurrentPreconditionIsAcceptedAndReplacesTheVersion() {
+        applyDrafts(TGT_MY);
+        String current = client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().contentHash();
+
+        ApplyResult result = applyDraftsWithPrecondition(TGT_MY_CHANGED, current);
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::id).containsExactly("tgt_my");
+        assertThat(client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm())
+                .isEqualTo(offlineCanonical(TGT_MY_CHANGED));
+    }
+
+    @Test
+    void anApplyCarryingAStalePreconditionIsRefusedAndLeavesTheStoredBytesUnchanged() {
+        applyDrafts(TGT_MY);
+        String before = client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm();
+
+        ApiError body = client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", TGT_MY_CHANGED, "expectedContentHash", "0".repeat(64)))))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("artifact.version-conflict");
+        // Not merely "an error came back": the refusal has to precede the write, so the stored bytes are
+        // the ones from before the call. An implementation that upserts then checks would pass a test
+        // that only looked at the status.
+        assertThat(client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm())
+                .isEqualTo(before);
+    }
+
+    @Test
+    void anApplyCarryingAPreconditionForAnIdThatIsNotStoredIsNotFound() {
+        // A precondition says "I am editing a version I read". If the id is not there at all, the author's
+        // target was removed, and saying "version conflict" would send them to re-read something that no
+        // longer exists.
+        ApiError body = client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", TGT_MY, "expectedContentHash", "0".repeat(64)))))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("artifact.not-found");
+    }
+
+    @Test
+    void oneStaleDraftRefusesTheWholeBatchSoNoOtherDraftInItIsWritten() {
+        // The batch guarantee, on the face where a partial write would be visible as a partial response.
+        // The first draft is new and perfectly valid; if the refusal were per-draft rather than per-batch
+        // it would land, and the caller would be left with half an edit it never asked to be split.
+        //
+        // The stale draft is deliberately second. That also discriminates an implementation that judges
+        // preconditions for only the first draft it is handed — which passes a batch whose stale draft is
+        // anywhere else, and would look correct in any test that put the bad one in front.
+        applyDrafts(TGT_MY);
+
+        client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", SRC_ORA),
+                        Map.of("content", TGT_MY_CHANGED, "expectedContentHash", "0".repeat(64)))))
+                .exchange((request, response) -> response.getStatusCode());
+
+        HttpStatusCode secondDraft = client().get().uri("/api/artifacts/src_ora")
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(secondDraft).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void anApplyWithNoPreconditionKeepsOverwritingAsItAlwaysHas() {
+        // The backward-compatibility half: the field is optional, and a caller that never sends it is
+        // never refused by a check it did not ask for.
+        applyDrafts(TGT_MY);
+
+        applyDrafts(TGT_MY_CHANGED);
+
+        assertThat(client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm())
+                .isEqualTo(offlineCanonical(TGT_MY_CHANGED));
+    }
+
+    private ApplyResult applyDraftsWithPrecondition(String draft, String expectedContentHash) {
+        return client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", draft, "expectedContentHash", expectedContentHash))))
+                .retrieve().toEntity(ApplyResult.class).getBody();
+    }
+
+    @Test
     void whatAReadReturnsAsItsHashIsAcceptedVerbatimAsTheRemovalPrecondition() {
         // The round-trip that makes the removal usable by a caller that cannot hash for itself: read the
         // artifact, hand the hash straight back as If-Match, and the removal is accepted. Asserting only
@@ -718,6 +817,15 @@ class ControlApiTest {
             id: tgt_my
             connector: mysql
             config: { host: 10.30.0.5, username: writer, password: My_2026 }
+            """;
+
+    /** The same id with different content, so an edit of TGT_MY changes the stored bytes and its hash. */
+    private static final String TGT_MY_CHANGED = """
+            version: tapstate/v1
+            kind: source
+            id: tgt_my
+            connector: mysql
+            config: { host: 10.30.0.5, username: writer, password: Changed_2026 }
             """;
 
     private static final String SRC_ORA = """

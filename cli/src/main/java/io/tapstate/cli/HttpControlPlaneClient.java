@@ -1030,13 +1030,22 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         return URI.create(base + path);
     }
 
-    /** The apply request body: {@code {"drafts":[{"source":..,"content":..}]}} in submission order. */
+    /**
+     * The apply request body: {@code {"drafts":[{"source":..,"content":..}]}} in submission order, each
+     * draft carrying {@code expectedContentHash} only when one was given. A draft with no precondition
+     * omits the key rather than sending null, so a request that asked for no check stays exactly the shape
+     * it has always been — and the published schema refuses properties it does not declare, which a null
+     * would still be one of.
+     */
     private static String applyBody(List<LocalDraft> drafts) {
         List<Object> array = new ArrayList<>();
         for (LocalDraft draft : drafts) {
             Map<String, Object> d = new LinkedHashMap<>();
             d.put("source", draft.source());
             d.put("content", draft.content());
+            if (draft.expectedContentHash() != null) {
+                d.put("expectedContentHash", draft.expectedContentHash());
+            }
             array.add(d);
         }
         Map<String, Object> body = new LinkedHashMap<>();

@@ -2,6 +2,7 @@ package io.tapstate.control.core;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -25,6 +26,34 @@ class ControlApiSchemaTest {
                 .collect(Collectors.toSet());
 
         assertThat(actual).isEqualTo(MCP_OPERATIONS);
+    }
+
+    /**
+     * A draft may carry the same per-resource precondition the removal takes, and the schema has to say
+     * so. This is not decoration: the draft object is {@code additionalProperties: false}, so a field the
+     * schema does not declare is one a schema-checking caller is told never to send — the server would
+     * accept it and no caller would ever offer it. It stays optional, because a draft without one is the
+     * behaviour every existing caller already has.
+     */
+    @Test
+    void anApplyDraftMayDeclareThePreconditionItIsEditingAgainst() {
+        Map<?, ?> draft = applyDraftSchema();
+
+        Map<?, ?> properties = (Map<?, ?>) draft.get("properties");
+        assertThat(properties.keySet().stream().map(String::valueOf).toList())
+                .contains("expectedContentHash");
+        assertThat(draft.get("additionalProperties")).isEqualTo(false);
+        List<?> required = (List<?>) draft.get("required");
+        assertThat(required.stream().map(String::valueOf).toList())
+                .as("a draft without a precondition keeps today's behaviour")
+                .doesNotContain("expectedContentHash");
+    }
+
+    private static Map<?, ?> applyDraftSchema() {
+        Map<?, ?> request = ControlApiSchema.resolve(
+                ControlOperations.registry().resolve("artifact.apply").schema().params());
+        Map<?, ?> drafts = (Map<?, ?>) ((Map<?, ?>) request.get("properties")).get("drafts");
+        return (Map<?, ?>) drafts.get("items");
     }
 
     @Test

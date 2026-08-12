@@ -2400,6 +2400,61 @@ class ReplTest {
     }
 
     @Test
+    void applyOfOneResourceWithAPreconditionCarriesItOnThatDraft(@TempDir Path base) throws Exception {
+        copyWorkspace("/ws-valid", base);
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.applyOutcome = new ApplyOutcome.Applied(
+                List.of(new ApplyOutcome.Item("src_kfk", "source", "UPDATED")));
+        Harness h = onlineSession(base, client);
+        String hash = "e".repeat(64);
+
+        assertThat(h.repl().dispatch("apply source/src_kfk.tap.yml --if-match " + hash)).isTrue();
+
+        assertThat(client.appliedDrafts).hasSize(1);
+        assertThat(client.appliedDrafts.get(0))
+                .singleElement()
+                .extracting(LocalDraft::expectedContentHash)
+                .isEqualTo(hash);
+    }
+
+    /**
+     * A batch precondition would be a lie: one hash cannot describe several resources, and picking one to
+     * attach it to would silently leave the rest unguarded. Refusing before the request is the whole point
+     * — the alternative is an edit that lands for every resource the caller was not thinking about.
+     */
+    @Test
+    void applyOfAMultiResourceBatchWithAPreconditionIsRefusedBeforeAnythingIsSent(@TempDir Path base)
+            throws Exception {
+        copyWorkspace("/ws-valid", base);   // three resources
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(base, client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("apply --if-match " + "e".repeat(64))).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("error:").contains("cli.if-match-needs-one-resource");
+        assertThat(out).contains("3");
+        assertThat(client.applyCalls).isEmpty();
+    }
+
+    @Test
+    void applyWithoutAPreconditionSendsDraftsThatDeclareNone(@TempDir Path base) throws Exception {
+        // The backward-compatibility half, asserted on the wire value rather than on the outcome: a draft
+        // that silently acquired a hash would start refusing callers who never asked for the check.
+        copyWorkspace("/ws-valid", base);
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.applyOutcome = new ApplyOutcome.Applied(List.of());
+        Harness h = onlineSession(base, client);
+
+        assertThat(h.repl().dispatch("apply")).isTrue();
+
+        assertThat(client.appliedDrafts).hasSize(1);
+        assertThat(client.appliedDrafts.get(0))
+                .allSatisfy(d -> assertThat(d.expectedContentHash()).isNull());
+    }
+
+    @Test
     void applySubstitutesReferencesFromTheEnvironmentBeforeSendingTheDrafts(@TempDir Path base) throws Exception {
         Files.createDirectory(base.resolve("source"));
         Files.writeString(base.resolve("source").resolve("tgt.tap.yml"),

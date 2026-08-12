@@ -130,9 +130,17 @@ public final class ControlApiSchema {
         pair(defs, "ConnectionTestResult", object(List.of("id"), Map.of("id", id), false), opaque);
         pair(defs, "ConnectionSchema", object(List.of("id"), Map.of("id", id), false), opaque);
 
+        // The precondition is declared here, not merely tolerated by the server: this object refuses
+        // undeclared properties, so a field the schema omits is one a schema-checking caller is told never
+        // to send. It stays out of the required list — a draft without one applies the way it always did.
         Map<String, Object> draft = object(
                 List.of("content"),
-                Map.of("source", string("Origin label for diagnostics"), "content", string("tapstate/v1 YAML")),
+                Map.of(
+                        "source", string("Origin label for diagnostics"),
+                        "content", string("tapstate/v1 YAML"),
+                        "expectedContentHash",
+                        string("Content hash of the stored version this draft edits, as returned by a read "
+                                + "of it; omit to apply unconditionally")),
                 false);
         Map<String, Object> artifactRequest = object(
                 List.of("drafts"), Map.of("drafts", array(draft)), false);

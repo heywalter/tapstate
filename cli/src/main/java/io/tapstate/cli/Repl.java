@@ -351,10 +351,13 @@ final class Repl {
         if (words.get(0).equals("token")) {
             return tokenOnline(words);
         }
-        // `delete` carries a precondition of its own (`--if-match <hash>`), so it parses its own words
-        // rather than falling into the positional-only guard below, which would refuse the flag.
+        // `delete` and `apply` each carry a precondition of their own (`--if-match <hash>`), so they parse
+        // their own words rather than falling into the positional-only guard below, which would refuse it.
         if (words.get(0).equals("delete")) {
             return deleteOnline(words);
+        }
+        if (words.get(0).equals("apply")) {
+            return applyOnline(words);
         }
         // The two streaming sugars ride the read verbs over the websocket channel: `status --watch` and
         // `logs --follow`. They are the only dash-options a connected verb accepts, and only on their verb.
@@ -596,7 +599,24 @@ final class Repl {
      */
     private int applyOnline(List<String> words) {
         PrintWriter err = commandLine.getErr();
-        Path target = words.size() > 1 ? workdir.resolve(words.get(1)).normalize() : workdir;
+        String ifMatch = null;
+        String operand = null;
+        for (int i = 1; i < words.size(); i++) {
+            String word = words.get(i);
+            if (word.equals("--if-match")) {
+                if (i + 1 >= words.size()) {
+                    return applyUsage("--if-match needs a hash");
+                }
+                ifMatch = words.get(++i);
+            } else if (word.startsWith("-")) {
+                return applyUsage("unknown option '" + word + "'");
+            } else if (operand == null) {
+                operand = word;
+            } else {
+                return applyUsage("unexpected operand '" + word + "'");
+            }
+        }
+        Path target = operand != null ? workdir.resolve(operand).normalize() : workdir;
         List<LocalDraft> drafts;
         try {
             drafts = collectDrafts(target);
@@ -614,8 +634,28 @@ final class Repl {
             err.flush();
             return Cli.EXIT_USAGE;
         }
+        if (ifMatch != null) {
+            // One hash names one version. Over a batch there is no resource it could be describing, and
+            // attaching it to one of them would leave the rest applied with no check at all — an edit
+            // landing on resources the caller was not thinking about. Refused before anything is sent.
+            if (drafts.size() != 1) {
+                MessageCatalog.Rendered rendered = MessageCatalog.bundled().render(
+                        CliError.IF_MATCH_NEEDS_ONE_RESOURCE, Map.of("count", drafts.size()));
+                err.println(Ansi.AUTO.string("@|bold,red error:|@") + " "
+                        + CliError.IF_MATCH_NEEDS_ONE_RESOURCE.code());
+                err.println("  " + rendered.message());
+                if (rendered.solution() != null) {
+                    err.println("  " + rendered.solution());
+                }
+                err.flush();
+                return Cli.EXIT_DIAGNOSTIC;
+            }
+            LocalDraft only = drafts.get(0);
+            drafts = List.of(new LocalDraft(only.source(), only.content(), ifMatch));
+        }
+        List<LocalDraft> submitted = drafts;
         ApplyOutcome outcome = withFailover(() ->
-                controlPlane.apply(session.landingNode(), session.credential(), drafts),
+                controlPlane.apply(session.landingNode(), session.credential(), submitted),
                 o -> o instanceof ApplyOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
         return switch (outcome) {
@@ -763,6 +803,13 @@ final class Repl {
             case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected, chosenFormat);
             case DeleteOutcome.Unreachable ignored -> reportRequestFailed();
         };
+    }
+
+    private int applyUsage(String reason) {
+        PrintWriter err = commandLine.getErr();
+        err.println("apply: " + reason + " (usage: apply [<path>] [--if-match <hash>])");
+        err.flush();
+        return Cli.EXIT_USAGE;
     }
 
     private int deleteUsage(String reason) {

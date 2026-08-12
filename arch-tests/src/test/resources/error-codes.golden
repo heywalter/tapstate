@@ -23,6 +23,7 @@ capture.event-table-not-selected
 capture.start-from-unparsable
 cli.artifact-exists
 cli.connect-failed
+cli.if-match-needs-one-resource
 cli.kind-dir-mismatch
 cli.mcp-unavailable
 cli.not-authenticated
