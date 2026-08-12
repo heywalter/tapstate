@@ -266,13 +266,17 @@ class ControlApiTest {
         // anywhere else, and would look correct in any test that put the bad one in front.
         applyDrafts(TGT_MY);
 
-        client().post().uri("/api/artifacts:apply")
+        HttpStatusCode refusal = client().post().uri("/api/artifacts:apply")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(Map.of("drafts", List.of(
                         Map.of("content", SRC_ORA),
                         Map.of("content", TGT_MY_CHANGED, "expectedContentHash", "0".repeat(64)))))
                 .exchange((request, response) -> response.getStatusCode());
 
+        // The refusal's own status is pinned, not merely the absence of a write: any other refusal —
+        // a parse error, an unrelated validation failure — would also leave src_ora unwritten, and
+        // would pass an assertion that only looked at the store.
+        assertThat(refusal).isEqualTo(HttpStatus.PRECONDITION_FAILED);
         HttpStatusCode secondDraft = client().get().uri("/api/artifacts/src_ora")
                 .exchange((request, response) -> response.getStatusCode());
         assertThat(secondDraft).isEqualTo(HttpStatus.NOT_FOUND);
@@ -875,11 +879,25 @@ class ControlApiTest {
 
         @Override
         public void saveAll(List<Resource> artifacts) {
+            saveAll(artifacts, Map.of());
+        }
+
+        @Override
+        public Optional<String> saveAll(List<Resource> artifacts, Map<String, String> expectedContentHashes) {
+            // The declared versions are compared as part of the write, the way the real store compares
+            // them inside its transaction, so the boundary tests see the same refusal a real one gives.
+            for (Map.Entry<String, String> expected : expectedContentHashes.entrySet()) {
+                String canonical = byId.get(expected.getKey());
+                if (canonical == null || !CanonicalHash.of(canonical).equals(expected.getValue())) {
+                    return Optional.of(expected.getKey());
+                }
+            }
             Map<String, String> staged = new LinkedHashMap<>();
             for (Resource artifact : artifacts) {
                 staged.put(artifact.id(), writer.write(artifact));
             }
             byId.putAll(staged);
+            return Optional.empty();
         }
 
         @Override

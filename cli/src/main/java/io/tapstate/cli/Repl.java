@@ -920,6 +920,16 @@ final class Repl {
             }
             case "artifact.version-conflict" ->
                     err.println("  it changed since you read it; read it again and redo the removal.");
+            case "artifact.reclaim-incomplete" -> {
+                // Not a refusal: the resource is gone. Saying "retry" here — the next step every other
+                // branch implies — sends the operator at a removal that can now only answer not-found,
+                // and the residue that does need clearing goes unmentioned.
+                err.println("  the removal stands: '" + target + "' is gone. Do not retry it.");
+                Object residue = rejected.params().get("residue");
+                if (residue != null) {
+                    err.println("  left behind, clear by hand: " + renderReferrers(residue));
+                }
+            }
             default -> {
                 // Every other refusal is fully said by its own rendered message.
             }

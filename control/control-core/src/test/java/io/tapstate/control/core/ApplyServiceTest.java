@@ -680,6 +680,45 @@ class ApplyServiceTest {
     }
 
     @Test
+    void aWriterThatLandsAfterThePreconditionWasComparedStillRefusesTheApply() {
+        // The lost update the precondition exists to prevent, in the shape it actually happens in: not
+        // "the version was already stale when the author submitted" — plan() catches that — but "it went
+        // stale while this apply was validating". plan() runs a whole workspace validation and a schema
+        // read between its comparison and the write, so the window is wide enough to lose a real edit.
+        //
+        // This is what discriminates a precondition that is only checked from one that is enforced: an
+        // unconditional batch write passes every other test in this class and fails only this one.
+        String readByBoth = service.apply("alice", List.of(draft(TGT_MY))).outcomes().get(0).contentHash();
+        Resource alicesEdit = new DslParser().parse(TGT_MY_EDITED);
+        store.concurrentWriter = () -> store.landDirectly(alicesEdit);
+
+        assertThatThrownBy(() -> service.apply("bob", List.of(draft(TGT_MY_EDITED_AGAIN, readByBoth))))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.VERSION_CONFLICT);
+                    assertThat(error.args()).containsExactlyInAnyOrderEntriesOf(Map.of("id", "tgt_my"));
+                });
+        assertThat(stored("tgt_my"))
+                .as("the edit that landed first survives; the loser is refused rather than silently dropped")
+                .isEqualTo(canonicalOf(TGT_MY_EDITED));
+    }
+
+    @Test
+    void anApplyWithNoDeclaredVersionIsStillWrittenWhenAnotherWriterLandsFirst() {
+        // The other half of the same window: a caller that declared nothing asked for no check, and
+        // must keep overwriting exactly as it always did. Guarding an unasked-for precondition would
+        // turn every concurrent apply into a refusal.
+        service.apply("alice", List.of(draft(TGT_MY)));
+        Resource alicesEdit = new DslParser().parse(TGT_MY_EDITED);
+        store.concurrentWriter = () -> store.landDirectly(alicesEdit);
+
+        ApplyResult result = service.apply("bob", List.of(draft(TGT_MY_EDITED_AGAIN)));
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.UPDATED);
+        assertThat(stored("tgt_my")).isEqualTo(canonicalOf(TGT_MY_EDITED_AGAIN));
+    }
+
+    @Test
     void validateReportsAStalePreconditionAsADiagnosticRatherThanThrowing() {
         service.apply("alice", List.of(draft(TGT_MY)));
 
@@ -717,6 +756,15 @@ class ApplyServiceTest {
             config: { host: 10.30.0.9, username: writer, password: My_2026 }
             """;
 
+    // A third version of the same id, so two authors' edits can be told apart in the store.
+    private static final String TGT_MY_EDITED_AGAIN = """
+            version: tapstate/v1
+            kind: source
+            id: tgt_my
+            connector: mysql
+            config: { host: 10.30.0.11, username: writer, password: My_2026 }
+            """;
+
     private static final String PIPELINE = """
             version: tapstate/v1
             kind: pipeline
@@ -748,9 +796,32 @@ class ApplyServiceTest {
         private final List<List<String>> saveAllBatches = new ArrayList<>();
         private int saveCount = 0;
         private String failOnId = null;
+        /** A writer that commits between the plan's comparison and this store's write. */
+        private Runnable concurrentWriter = null;
 
         @Override
         public void saveAll(List<Resource> artifacts) {
+            saveAll(artifacts, Map.of());
+        }
+
+        @Override
+        public Optional<String> saveAll(List<Resource> artifacts, Map<String, String> expectedContentHashes) {
+            // The other writer lands here: after the caller planned against what it read, before this
+            // write compares. Modelling it inside the store is the only place it can go — that is
+            // precisely the window an outside-the-write comparison leaves open.
+            if (concurrentWriter != null) {
+                Runnable other = concurrentWriter;
+                concurrentWriter = null;
+                other.run();
+            }
+            // The comparison is part of the write, not a step before it: a declared version that no
+            // longer names the stored bytes refuses the whole batch and stages nothing.
+            for (Map.Entry<String, String> expected : expectedContentHashes.entrySet()) {
+                String canonical = byId.get(expected.getKey());
+                if (canonical == null || !CanonicalHash.of(canonical).equals(expected.getValue())) {
+                    return Optional.of(expected.getKey());
+                }
+            }
             // Atomic: stage the whole batch, then commit it in one step — but if any member is the
             // injected poison, fail before committing anything, so no partial batch survives.
             Map<String, String> staged = new LinkedHashMap<>();
@@ -763,6 +834,12 @@ class ApplyServiceTest {
             byId.putAll(staged);
             saveCount += artifacts.size();
             saveAllBatches.add(artifacts.stream().map(Resource::id).toList());
+            return Optional.empty();
+        }
+
+        /** Commits {@code canonical} for {@code id} directly, as another author's apply would. */
+        void landDirectly(Resource artifact) {
+            byId.put(artifact.id(), writer.write(artifact));
         }
 
         @Override

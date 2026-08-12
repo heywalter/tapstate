@@ -258,10 +258,19 @@ class HttpControlPlaneClientTest {
     private static HttpServer deleteServer(int status, String responseBody,
             AtomicReference<String> method, AtomicReference<String> path,
             AtomicReference<String> ifMatch, AtomicReference<Boolean> hadIfMatch) throws Exception {
+        return deleteServer(status, responseBody, method, path, ifMatch, hadIfMatch, new AtomicReference<>());
+    }
+
+    /** The same server, for the one test that also pins the credential the removal travelled under. */
+    private static HttpServer deleteServer(int status, String responseBody,
+            AtomicReference<String> method, AtomicReference<String> path,
+            AtomicReference<String> ifMatch, AtomicReference<Boolean> hadIfMatch,
+            AtomicReference<String> authorization) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/artifacts", exchange -> {
             method.set(exchange.getRequestMethod());
             path.set(exchange.getRequestURI().getRawPath());
+            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
             hadIfMatch.set(exchange.getRequestHeaders().containsKey("If-Match"));
             ifMatch.set(exchange.getRequestHeaders().getFirst("If-Match"));
             byte[] bytes = responseBody == null ? new byte[0] : responseBody.getBytes(StandardCharsets.UTF_8);
@@ -283,7 +292,8 @@ class HttpControlPlaneClientTest {
         AtomicReference<String> path = new AtomicReference<>();
         AtomicReference<String> ifMatch = new AtomicReference<>();
         AtomicReference<Boolean> had = new AtomicReference<>();
-        HttpServer server = deleteServer(204, null, method, path, ifMatch, had);
+        AtomicReference<String> authorization = new AtomicReference<>();
+        HttpServer server = deleteServer(204, null, method, path, ifMatch, had, authorization);
         try {
             String hash = "a".repeat(64);
             DeleteOutcome outcome = new HttpControlPlaneClient()
@@ -294,6 +304,9 @@ class HttpControlPlaneClientTest {
             // read as a successful removal — so the method itself is pinned.
             assertThat(method.get()).isEqualTo("DELETE");
             assertThat(path.get()).isEqualTo("/api/artifacts/src_kfk");
+            // A removal that dropped the credential would reach an unauthenticated server just as well,
+            // and every other assertion here would still hold.
+            assertThat(authorization.get()).isEqualTo("Bearer tok-abc");
             assertThat(ifMatch.get()).isEqualTo("\"" + hash + "\"");
         } finally {
             server.stop(0);

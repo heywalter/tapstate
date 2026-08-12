@@ -97,6 +97,10 @@ class ApiExceptionHandler {
             case "artifact.precondition-required" -> HttpStatus.PRECONDITION_REQUIRED;
             case "artifact.version-conflict" -> HttpStatus.PRECONDITION_FAILED;
             case "artifact.in-use", "artifact.pipeline-not-stopped" -> HttpStatus.CONFLICT;
+            // Not a 4xx: the request was valid and was carried out. What failed is the server's own
+            // follow-up work, and the body's code — not the status — is what tells the caller the
+            // removal stands and must not be retried.
+            case "artifact.reclaim-incomplete" -> HttpStatus.INTERNAL_SERVER_ERROR;
             case "connector.not-found" -> HttpStatus.NOT_FOUND;
             // A request refused at the HTTP boundary as structurally malformed is a client input error, like dsl.*.
             case "control.malformed-request" -> HttpStatus.BAD_REQUEST;

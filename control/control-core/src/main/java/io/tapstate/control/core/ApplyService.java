@@ -60,6 +60,13 @@ import java.util.regex.PatternSyntaxException;
  * — even with different raw key order — writes nothing. Apply writes the changed set — the created and
  * updated artifacts — as one atomic batch, so a mid-batch write failure rolls the whole batch back and
  * no partial batch is stored, matching the validation-failure guarantee on the write side.
+ *
+ * <p>A declared version is enforced <em>inside</em> that batch write, not only compared beforehand.
+ * The comparison in {@link #plan} is what produces the diagnostic an author can read; it is not what
+ * makes the edit safe, because validation runs between it and the write and a second author lands in
+ * that window. Handing the declared versions to the store makes the comparison and the write one
+ * indivisible operation, so the losing author is refused with {@code artifact.version-conflict}
+ * rather than silently overwriting the winner.
  */
 public final class ApplyService {
 
@@ -151,6 +158,7 @@ public final class ApplyService {
         List<ArtifactOutcome> outcomes = new ArrayList<>();
         List<Resource> toWrite = new ArrayList<>();
         List<AuditContext> audited = new ArrayList<>();
+        Map<String, String> enforced = new LinkedHashMap<>();
         for (PreparedArtifact prepared : plan.artifacts()) {
             ArtifactOutcome outcome = outcome(prepared);
             if (outcome.change() != ArtifactOutcome.Change.UNCHANGED) {
@@ -158,14 +166,31 @@ public final class ApplyService {
                 // The declared version travels with the record, so a version-checked edit is
                 // distinguishable in the audit trail from a blind overwrite of the same id. A draft that
                 // declared none records none, which is what that absence then means.
-                audited.add(new AuditContext(principal, prepared.id(), plan.precondition(prepared.id())));
+                String declared = plan.precondition(prepared.id());
+                audited.add(new AuditContext(principal, prepared.id(), declared));
+                // Only the ids this batch actually overwrites are guarded at the write. An unchanged
+                // artifact is not written, so there is nothing for its declared version to protect —
+                // plan() already compared it, and the comparison is all a caller asked for.
+                if (declared != null) {
+                    enforced.put(prepared.id(), declared);
+                }
             }
             outcomes.add(outcome);
         }
         // The changed set is audited per artifact, then written as one atomic batch: all of it lands or,
         // on a write failure, none does.
+        //
+        // The declared versions are handed to the write rather than only to plan(). plan()'s comparison
+        // happens before a whole workspace validation and a schema-store read, so a second author
+        // editing the same id inside that window passes the same comparison and both writes land — the
+        // first author's edit is gone, and nothing anywhere reports it. Passing them here makes the
+        // comparison and the write one store operation, which is the only form of the check that
+        // survives a concurrent writer.
         return auditGate.dispatchAll(ControlOperations.ARTIFACT_APPLY, audited, () -> {
-            store.saveAll(toWrite);
+            String conflicted = store.saveAll(toWrite, enforced).orElse(null);
+            if (conflicted != null) {
+                throw new TapstateException(ArtifactError.VERSION_CONFLICT, Map.of("id", conflicted), null);
+            }
             return new ApplyResult(outcomes);
         });
     }

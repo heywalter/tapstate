@@ -92,6 +92,11 @@ public final class ArtifactMutationService {
      * already gone and is reported rather than swallowed, so the residue is visible to whoever has to
      * clear it; it never puts the artifact back, because a removal the caller was told succeeded must not
      * silently undo itself.
+     *
+     * <p>The two are told apart by their code, not only by their text. A refusal means nothing happened
+     * and the caller may retry; {@code artifact.reclaim-incomplete} means the artifact is gone and
+     * retrying can only answer {@code artifact.not-found}, which is what a caller handed a refusal for a
+     * partly-executed removal would do next — learning nothing about the residue it now owns.
      */
     public void delete(String principal, String id, String expectedContentHash) {
         Objects.requireNonNull(principal, "principal");
@@ -100,13 +105,14 @@ public final class ArtifactMutationService {
             throw error(ArtifactError.PRECONDITION_REQUIRED, Map.of("id", id));
         }
 
-        List<Resource> stored = store.list();
-        Resource target = stored.stream()
-                .filter(resource -> resource.id().equals(id))
-                .findFirst()
+        // The target is fetched by id rather than picked out of the whole store. Reconstructing every
+        // stored resource to find one of them makes an unrelated document this version cannot parse fail
+        // the lookup — so a single unreadable sibling would answer every removal in the store with the
+        // same io diagnostic, including the removal of the document that cannot be read.
+        Resource target = store.get(id)
                 .orElseThrow(() -> error(ArtifactError.NOT_FOUND, Map.of("id", id)));
 
-        refuseWhenReferenced(id, stored);
+        refuseWhenReferenced(id, store.list());
         if (target instanceof PipelineResource) {
             refuseWhenNotStopped(id);
         }
@@ -136,6 +142,24 @@ public final class ArtifactMutationService {
     }
 
     /**
+     * The removal stands; some of what it owns did not come with it. This is reported as its own code
+     * rather than as the reclaim step's raw failure, because the raw failure travels the same channel a
+     * refusal does and would be read as one: the caller is told the removal was rejected, retries, and
+     * gets {@code artifact.not-found} — with no way to learn that the first attempt destroyed the
+     * artifact and left the rest. Naming the residue is the whole point of the code; the underlying
+     * failures ride along as cause and suppressed so nothing is swallowed.
+     */
+    private static TapstateException reclaimIncomplete(String id, List<String> residue,
+            List<RuntimeException> failures) {
+        TapstateException incomplete = new TapstateException(
+                ArtifactError.RECLAIM_INCOMPLETE,
+                Map.of("id", id, "residue", residue),
+                failures.get(0));
+        failures.stream().skip(1).forEach(incomplete::addSuppressed);
+        return incomplete;
+    }
+
+    /**
      * Reclaims everything a removed pipeline owns. Every step is attempted even after one fails, and the
      * failures are reported together at the end: aborting at the first would leave the untouched steps'
      * residue behind on top of the failure, and the artifact is already gone by now so no caller can
@@ -147,11 +171,14 @@ public final class ArtifactMutationService {
      */
     private void reclaim(String id) {
         List<RuntimeException> failures = new ArrayList<>();
-        attempt(failures, () -> detachFromEveryChain(id));
-        attempt(failures, () -> desired.delete(id));
-        attempt(failures, () -> state.delete(id));
-        attempt(failures, () -> observations.delete(id));
-        rethrowTogether(failures);
+        List<String> residue = new ArrayList<>();
+        attempt(failures, residue, "mining-chain-consumer", () -> detachFromEveryChain(id));
+        attempt(failures, residue, "desired", () -> desired.delete(id));
+        attempt(failures, residue, "state", () -> state.delete(id));
+        attempt(failures, residue, "observation", () -> observations.delete(id));
+        if (!failures.isEmpty()) {
+            throw reclaimIncomplete(id, residue, failures);
+        }
     }
 
     /**
@@ -194,6 +221,20 @@ public final class ArtifactMutationService {
             step.run();
         } catch (RuntimeException e) {
             failures.add(e);
+        }
+    }
+
+    /**
+     * The same, naming what the step would have reclaimed. A failure here is reported to someone who
+     * has to go and clear it by hand, and "the reclaim failed" does not say what is left — the names
+     * are what turn the report into a task.
+     */
+    private static void attempt(
+            List<RuntimeException> failures, List<String> residue, String name, Runnable step) {
+        int before = failures.size();
+        attempt(failures, step);
+        if (failures.size() > before) {
+            residue.add(name);
         }
     }
 

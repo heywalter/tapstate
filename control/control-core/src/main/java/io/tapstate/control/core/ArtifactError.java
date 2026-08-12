@@ -19,7 +19,15 @@ public enum ArtifactError implements TapstateErrorCode {
     PRECONDITION_REQUIRED("artifact.precondition-required", Set.of("id")),
     VERSION_CONFLICT("artifact.version-conflict", Set.of("id")),
     IN_USE("artifact.in-use", Set.of("id", "referrers")),
-    PIPELINE_NOT_STOPPED("artifact.pipeline-not-stopped", Set.of("id", "actual", "desired"));
+    PIPELINE_NOT_STOPPED("artifact.pipeline-not-stopped", Set.of("id", "actual", "desired")),
+    /**
+     * The artifact was removed and some of its dependent bookkeeping was not. Distinct from the four
+     * above because it is not a refusal: those mean nothing happened and the caller may retry, this one
+     * means the removal stands and retrying it can only ever answer {@code artifact.not-found}. Sharing
+     * a code with a refusal would make a partly-executed removal indistinguishable from one that never
+     * started, on every face.
+     */
+    RECLAIM_INCOMPLETE("artifact.reclaim-incomplete", Set.of("id", "residue"));
 
     private final String code;
     private final Set<String> placeholders;

@@ -456,7 +456,17 @@ class ArtifactMutationServiceTest {
         RuntimeException ioFailure = new IllegalArgumentException("desired store is down");
         desired.failDeleteWith(ioFailure);
 
-        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow))).isSameAs(ioFailure);
+        // Reported as its own code, not as one of the refusals: a refusal means nothing happened and
+        // invites a retry, and this caller's retry can only ever answer artifact.not-found while the
+        // residue below stays where it is. The underlying failure is kept as the cause, so the coded
+        // report costs no diagnosis.
+        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.RECLAIM_INCOMPLETE);
+                    assertThat(error.args()).containsEntry("id", "flow");
+                    assertThat(error.args()).containsEntry("residue", List.of("desired"));
+                })
+                .hasCause(ioFailure);
 
         // Never resurrected: the removal did happen, and a caller told otherwise would re-apply a
         // resource it believes it deleted.
@@ -483,7 +493,10 @@ class ArtifactMutationServiceTest {
         RuntimeException chainDown = new IllegalArgumentException("chain-a is unreachable");
         srsMeta.failDetachOn("chain-a", chainDown);
 
-        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow))).isSameAs(chainDown);
+        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
+                .isInstanceOfSatisfying(TapstateException.class, error ->
+                        assertThat(error.args()).containsEntry("residue", List.of("mining-chain-consumer")))
+                .hasCause(chainDown);
 
         assertThat(srsMeta.consumerIds("chain-b")).containsExactly("other");
         assertThat(srsMeta.consumerIds("chain-c")).isEmpty();
@@ -510,9 +523,10 @@ class ArtifactMutationServiceTest {
 
         // Both are carried out, not just the one that ended the loop: each names a different chain
         // whose cursor is still there, and a caller shown only the first would clear one and leave one.
+        // The coded report carries them as its cause chain, so wrapping costs no diagnosis.
         assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
-                .isSameAs(first)
-                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second));
+                .hasCause(first)
+                .satisfies(thrown -> assertThat(thrown.getCause().getSuppressed()).containsExactly(second));
     }
 
     @Test
@@ -528,9 +542,13 @@ class ArtifactMutationServiceTest {
 
         // All three lifecycle steps are armed, not two: a step left out of the collecting wrapper
         // would abort the reclaim at itself, and the steps after it would go unattempted while the
-        // artifact is already gone. The suppressed order also pins the sequence the reclaim runs in.
+        // artifact is already gone. The suppressed order also pins the sequence the reclaim runs in,
+        // and the residue list names each of them — a report saying only "the reclaim failed" leaves
+        // whoever has to clear it guessing which documents are still there.
         assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
-                .isSameAs(first)
+                .isInstanceOfSatisfying(TapstateException.class, error -> assertThat(error.args())
+                        .containsEntry("residue", List.of("desired", "state", "observation")))
+                .hasCause(first)
                 .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second, third));
     }
 

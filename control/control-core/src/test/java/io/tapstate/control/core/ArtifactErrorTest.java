@@ -29,7 +29,9 @@ class ArtifactErrorTest {
                 // another stored resource still references the id
                 "artifact.in-use",
                 // the id is a pipeline that is running or is about to run
-                "artifact.pipeline-not-stopped");
+                "artifact.pipeline-not-stopped",
+                // the artifact was removed and some of its dependent bookkeeping was not
+                "artifact.reclaim-incomplete");
     }
 
     @Test
@@ -43,5 +45,9 @@ class ArtifactErrorTest {
         // actual / desired = both halves of the lifecycle verdict, since one alone cannot explain it
         assertThat(ArtifactError.PIPELINE_NOT_STOPPED.placeholders())
                 .containsExactlyInAnyOrder("id", "actual", "desired");
+        // residue = what the removal left behind, which is the only part of this failure anyone can act
+        // on: the removal itself is done and cannot be retried
+        assertThat(ArtifactError.RECLAIM_INCOMPLETE.placeholders())
+                .containsExactlyInAnyOrder("id", "residue");
     }
 }

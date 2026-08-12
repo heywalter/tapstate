@@ -187,7 +187,10 @@ class ControlPlaneTest {
                 409, "{\"code\":\"artifact.pipeline-not-stopped\",\"params\":{\"actual\":null}}", "the removal");
 
         assertThat(refusal.code()).isEqualTo("artifact.pipeline-not-stopped");
-        assertThat(refusal.params()).containsKey("actual");
+        // The value is pinned alongside the key: a reader that keeps the key but substitutes a
+        // placeholder for the null would satisfy a key-only assertion while reporting an argument the
+        // server never sent.
+        assertThat(refusal.params()).containsEntry("actual", null);
     }
 
     /** Every 4xx, not only the one the product happens to use today. */
