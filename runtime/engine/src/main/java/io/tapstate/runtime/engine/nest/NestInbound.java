@@ -23,7 +23,8 @@ import java.util.Objects;
  * a cascading edge: no row of a source arrives on one, so there is nothing to track and no table to name.
  */
 public record NestInbound(int ordinal, String alias, List<String> pathId, List<String> keyFields,
-        List<String> elementKey, boolean tracksKeyChanges, String table) implements Serializable {
+        List<String> elementKey, boolean tracksKeyChanges, String table,
+        boolean carriesDepartures) implements Serializable {
 
     public NestInbound {
         Objects.requireNonNull(pathId, "pathId");
@@ -37,12 +38,39 @@ public record NestInbound(int ordinal, String alias, List<String> pathId, List<S
         if (alias == null && tracksKeyChanges) {
             throw new IllegalArgumentException("no row arrives on a cascading edge to track key changes on");
         }
+        if (carriesDepartures && !tracksKeyChanges) {
+            throw new IllegalArgumentException(
+                    "only a stream whose key changes are followed has departures to carry");
+        }
     }
 
     /** An edge over rows nobody asked to have key changes followed on - the shape most of them are. */
     public NestInbound(int ordinal, String alias, List<String> pathId, List<String> keyFields,
             List<String> elementKey) {
-        this(ordinal, alias, pathId, keyFields, elementKey, false, null);
+        this(ordinal, alias, pathId, keyFields, elementKey, false, null, false);
+    }
+
+    /** An edge carrying rows as they now are, which is what all but the departure edges carry. */
+    public NestInbound(int ordinal, String alias, List<String> pathId, List<String> keyFields,
+            List<String> elementKey, boolean tracksKeyChanges, String table) {
+        this(ordinal, alias, pathId, keyFields, elementKey, tracksKeyChanges, table, false);
+    }
+
+    /**
+     * The twin of a tracked edge, carrying the same rows keyed by where they <em>were</em>.
+     *
+     * <p>It exists because a row whose join key changed only ever arrives where its new key belongs, while
+     * the state it is leaving is held by another instance of this vertex. Reaching for that state across
+     * instances loses writes; being sent the row a second time, keyed by the value it is leaving, puts the
+     * work where the state already is. The upstream needs no say in it - a processor emits to every
+     * outbound edge it has, so a second edge is a second delivery.
+     *
+     * <p>Every row travels it, not only the ones that moved: an edge cannot filter. What tells them apart is
+     * that the two keys differ, and for a row carrying no earlier image they never do.
+     */
+    public static NestInbound departuresOf(int ordinal, NestInbound tracked) {
+        return new NestInbound(ordinal, tracked.alias(), tracked.pathId(), tracked.keyFields(),
+                tracked.elementKey(), tracked.tracksKeyChanges(), tracked.table(), true);
     }
 
     /** Whether these rows arrive already stamped with the parent key by the vertex one level down. */

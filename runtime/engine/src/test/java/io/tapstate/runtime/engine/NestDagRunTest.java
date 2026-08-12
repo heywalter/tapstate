@@ -131,6 +131,36 @@ class NestDagRunTest {
         assertThat(items(documents.get(2)).get(0)).containsEntry("sku", "s20");
     }
 
+    /**
+     * The same job with key changes followed, which draws a second edge into the assembler carrying every
+     * row again keyed by what it is leaving. Two things could go wrong and neither shows up anywhere else:
+     * the extra ordinal is one more edge a level waits on before it promises anything, so a chain never
+     * registered against it pins the frontier and the job simply never finishes; and every row arriving
+     * twice is every row that could be placed twice.
+     *
+     * <p>Nothing here moves between documents - that is covered where the operators are driven directly.
+     * What is being asked is narrower and only a real job can answer it: with the second edge drawn, does
+     * this still run to completion and produce exactly the documents it did without it.
+     */
+    @Test
+    void followingKeyChangesDrawsASecondEdgeAndTheJobStillFinishesWithTheSameDocuments() {
+        DAG dag = ordersWithItems(
+                List.of(row("order_id", 1, "code", "A"), row("order_id", 2, "code", "B")),
+                List.of(row("item_id", 10, "order_id", 1, "sku", "s10"),
+                        row("item_id", 11, "order_id", 1, "sku", "s11"),
+                        row("item_id", 20, "order_id", 2, "sku", "s20")),
+                false, true);
+
+        member.getJet().newJob(dag).join();
+
+        Map<Object, Map<String, Object>> documents = latestPerRoot();
+        assertThat(documents.keySet()).containsExactlyInAnyOrder(1, 2);
+        assertThat(items(documents.get(1)))
+                .describedAs("arriving on two edges is not arriving twice into the document")
+                .hasSize(2);
+        assertThat(items(documents.get(2))).hasSize(1);
+    }
+
     @Test
     void theSeamThatReadsBackTheDurableFrontierIsBoundOnTheMemberRunningTheAssembler() {
         DAG dag = ordersWithItems(List.of(row("order_id", 1, "code", "A")),
@@ -197,8 +227,13 @@ class NestDagRunTest {
      */
     private static DAG ordersWithItems(List<Map<String, Object>> orders, List<Map<String, Object>> items,
             boolean endless) {
+        return ordersWithItems(orders, items, endless, false);
+    }
+
+    private static DAG ordersWithItems(List<Map<String, Object>> orders, List<Map<String, Object>> items,
+            boolean endless, boolean trackKeyChanges) {
         Embed item = new Embed("item", Map.of("order_id", "order_id"), EmbedAs.ARRAY, "items",
-                List.of("item_id"), null, null, null);
+                List.of("item_id"), null, trackKeyChanges ? Boolean.TRUE : null, null);
         TransformBody.Nest body = new TransformBody.Nest(null, null,
                 new NestRoot("order", List.of("order_id"), null, null, List.of(item)));
 

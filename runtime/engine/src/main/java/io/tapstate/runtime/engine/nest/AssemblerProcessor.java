@@ -425,41 +425,31 @@ public final class AssemblerProcessor extends AbstractProcessor {
             }
             return;
         }
-        List<Object> key = NestKeys.valuesOf(row, edge.keyFields());
-        Touched document = touched(key, touched);
-        document.ts = event.ts();
         ElementRef ref = new ElementRef(edge.pathId(), null,
                 NestKeys.valuesOf(row, edge.elementKey()), null);
         Map<String, Object> was = NestKeys.replacedRow(edge, event);
         ElementRef from = was == null ? null
                 : new ElementRef(edge.pathId(), null, NestKeys.valuesOf(was, edge.elementKey()), null);
-        List<Object> movedTo = was == null ? null : NestKeys.valuesOf(was, edge.keyFields());
-        boolean departed = movedTo != null && !movedTo.equals(key);
-        NestElement arriving = new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
-                event.positions(), from, departed);
-        settle(key, document.assembly, arriving);
-        if (was == null) {
+        List<Object> joining = NestKeys.valuesOf(row, edge.keyFields());
+        List<Object> leaving = was == null ? null : NestKeys.valuesOf(was, edge.keyFields());
+        boolean departed = leaving != null && !leaving.equals(joining);
+        // Which document this copy is about is the key it was routed on, not the key its row now names. The
+        // departure copy was sent here by what the row is leaving, so that is the document this instance
+        // holds and the only one it may touch.
+        List<Object> key = edge.carriesDepartures() ? leaving : joining;
+        if (edge.carriesDepartures() && !departed) {
+            // Leaving nowhere: this copy landed beside its twin, which has the row in hand already.
             return;
         }
+        Touched document = touched(key, touched);
+        document.ts = event.ts();
+        settle(key, document.assembly, edge.carriesDepartures()
+                ? new NestElement(ref, null, order, event.positions(), from, true)
+                : new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
+                        event.positions(), from, departed));
         // A leaf hanging straight off the root belongs to whichever document its join key names, so a row
         // re-pointed at another root has to be taken out of the one it was in. Both are held here, so the
         // pair needs no routing: this vertex is where the two keys would have met anyway.
-        if (departed) {
-            // NOT SAFE ACROSS INSTANCES YET, and this is the one place that says so. The edge carrying
-            // these rows is partitioned on the key read from the row as it now is, so a row whose join key
-            // changed only ever arrives where its new key belongs; the document under its old key is held
-            // by another instance of this vertex, and this reads and writes it anyway. Two instances
-            // touching one document lose each other's writes, and nothing about a lost write is visible
-            // afterwards. It holds on one member too - nothing here is pinned to a single instance.
-            //
-            // What makes it right is the departure being routed to that key rather than reached for, which
-            // needs an edge partitioned on the key the row is leaving. Until then this is correct for one
-            // instance and racy for more, and must not be read as finished.
-            Touched left = touched(movedTo, touched);
-            left.ts = event.ts();
-            settle(movedTo, left.assembly,
-                    new NestElement(ref, null, order, event.positions(), from, true));
-        }
     }
 
     /**

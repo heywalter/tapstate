@@ -156,9 +156,13 @@ class AnElementThatMovesToAnotherParentLeavesTheOneItCameFromTest {
         feed(assembler, out, 1, Envelope.insert(2, "profile",
                 row("customer_id", "C1", "tier", "gold"), null).withOrder(at(2)));
 
-        feed(assembler, out, 1, Envelope.update(3, "profile",
+        Envelope moved = Envelope.update(3, "profile",
                 row("customer_id", "C1", "tier", "gold"),
-                row("customer_id", "C2", "tier", "gold"), null).withOrder(at(3)));
+                row("customer_id", "C2", "tier", "gold"), null).withOrder(at(3));
+        // Both edges, because the graph draws both: the same row keyed by where it now belongs and by where
+        // it was, so the document it is leaving is settled by whoever holds it rather than reached for.
+        feed(assembler, out, 1, moved);
+        feed(assembler, out, departureTwin(topology, List.of("profile")), moved);
 
         assertThat(documents.load(List.of("C1")).render(topology.slots()).orElseThrow())
                 .describedAs("an object embed with nothing in it omits its field rather than showing null")
@@ -193,6 +197,16 @@ class AnElementThatMovesToAnotherParentLeavesTheOneItCameFromTest {
         assertThat(NestFixtures.listAt(document, "policies", "claims")).hasSize(1);
     }
 
+    /** The ordinal the graph delivers {@code pathId}'s rows on keyed by what they are leaving. */
+    private static int departureTwin(NestTopology topology, List<String> pathId) {
+        for (NestInbound edge : topology.assembler().inbound()) {
+            if (edge.carriesDepartures() && edge.pathId().equals(pathId)) {
+                return edge.ordinal();
+            }
+        }
+        throw new AssertionError("no departure edge carries " + pathId);
+    }
+
     private static void feed(AssemblerProcessor processor, TestOutbox out, int ordinal, Envelope event) {
         TestInbox inbox = new TestInbox();
         inbox.queue().add(event);
@@ -217,7 +231,10 @@ class AnElementThatMovesToAnotherParentLeavesTheOneItCameFromTest {
         private final List<EmbedSlot> slots;
         private final HeapNestStore<RootAssembly> documents = new HeapNestStore<>();
 
+        private final TransformBody.Nest tree;
+
         Chain(TransformBody.Nest tree) throws Exception {
+            this.tree = tree;
             NestTopology topology = NestTopology.compile("p", "doc", tree, tables());
             this.slots = topology.slots();
             this.resolver = new ResolverProcessor(topology.vertexAt(List.of("policies")),
@@ -260,8 +277,31 @@ class AnElementThatMovesToAnotherParentLeavesTheOneItCameFromTest {
                     row("claim_id", claimId, "policy_id", is), null).withOrder(at(seq)));
         }
 
-        /** One event through the resolver, then everything it routed through the assembler. */
+        /**
+         * One event through the resolver, then everything it routed through the assembler.
+         *
+         * <p>Delivered on the departure twin as well where the tree has one, because that is what the graph
+         * does: a processor emits to every outbound edge it has, so a tracked stream reaches its vertex
+         * twice - once keyed by where the row now is, once by where it was. A harness feeding only the first
+         * would be testing a graph nobody runs.
+         */
         private void through(int ordinal, Envelope event) {
+            deliver(ordinal, event);
+            departureTwinOf(ordinal).ifPresent(twin -> deliver(twin, event));
+        }
+
+        private java.util.OptionalInt departureTwinOf(int ordinal) {
+            NestVertex vertex = NestTopology.compile("p", "doc", tree, tables()).vertexAt(List.of("policies"));
+            NestInbound arriving = vertex.inbound().get(ordinal);
+            for (NestInbound edge : vertex.inbound()) {
+                if (edge.carriesDepartures() && edge.pathId().equals(arriving.pathId())) {
+                    return java.util.OptionalInt.of(edge.ordinal());
+                }
+            }
+            return java.util.OptionalInt.empty();
+        }
+
+        private void deliver(int ordinal, Envelope event) {
             TestInbox inbox = new TestInbox();
             inbox.queue().add(event);
             resolver.process(ordinal, inbox);

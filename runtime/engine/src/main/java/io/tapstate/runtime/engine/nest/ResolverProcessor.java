@@ -292,12 +292,14 @@ public final class ResolverProcessor extends AbstractProcessor {
             NestElement arriving = departing(
                     element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas),
                     parentBefore, parent);
-            if (parentBefore != null && !parentBefore.equals(parent)) {
-                // NOT SAFE ACROSS INSTANCES YET - the same constraint the assembler states where it settles
-                // both documents itself. This row arrived where its new key belongs, and the entry under the
-                // key it is leaving is held by another instance of this vertex; resolving against that entry
-                // reads and writes state this instance does not own.
-                route(parentBefore, departureOf(arriving), touched);
+            if (edge.carriesDepartures()) {
+                // This copy of the row was keyed by what it is leaving, so the entry it resolves against is
+                // this instance's own. A row that is leaving nowhere arrives here keyed the same as its twin
+                // and is dropped: it has already been dealt with as an arrival.
+                if (parentBefore != null && !parentBefore.equals(parent)) {
+                    route(parentBefore, departureOf(arriving), touched);
+                }
+                return;
             }
             route(parent, arriving, touched);
         }

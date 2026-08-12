@@ -128,7 +128,9 @@ public final class NestDag {
         Vertex source = sources.size() == 1
                 ? sources.get(0)
                 : merged(dag, destination, edge, sources, nextOutbound, frontier);
-        draw(dag, source, destination, edge.ordinal(), fieldKey(edge.keyFields()), nextOutbound);
+        draw(dag, source, destination, edge.ordinal(),
+                edge.carriesDepartures() ? leavingKey(edge.keyFields()) : fieldKey(edge.keyFields()),
+                nextOutbound);
     }
 
     /**
@@ -196,6 +198,20 @@ public final class NestDag {
     /** Reads the key off the fields a row carries it in. */
     private static FunctionEx<Object, Object> fieldKey(List<String> fields) {
         return item -> NestKeys.valuesOf(NestKeys.rowOf((Envelope) item), fields);
+    }
+
+    /**
+     * The key a row is leaving, so it arrives where the state it is leaving is held rather than where the
+     * state it is joining is. A row carrying no earlier image is not leaving anywhere and takes the key it
+     * already has, which lands it on the same partition as its twin - where the two keys being equal is
+     * exactly what says there is no departure to make.
+     */
+    private static FunctionEx<Object, Object> leavingKey(List<String> fields) {
+        return item -> {
+            Envelope event = (Envelope) item;
+            Map<String, Object> was = event.before();
+            return NestKeys.valuesOf(was == null ? NestKeys.rowOf(event) : was, fields);
+        };
     }
 
     /** Reads the key an upstream vertex already resolved and routed by. */

@@ -258,6 +258,17 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
                             tableBehind(child.embed().from(), tracked, tables))
                     : new NestInbound(edges.size(), null, child.pathId(), List.of(), List.of()));
         }
+        // Appended after every edge above, never interleaved: an ordinal is how a processor tells one kind
+        // of arrival from another, so inserting one would renumber the rest and silently point every later
+        // edge at the wrong handling.
+        //
+        // Only the ones that arrive as rows of a source get a twin. A cascading edge carries changes another
+        // vertex already routed, so where they were is already settled and there is nothing to re-key.
+        for (NestInbound edge : List.copyOf(edges)) {
+            if (edge.tracksKeyChanges()) {
+                edges.add(NestInbound.departuresOf(edges.size(), edge));
+            }
+        }
         return edges;
     }
 
