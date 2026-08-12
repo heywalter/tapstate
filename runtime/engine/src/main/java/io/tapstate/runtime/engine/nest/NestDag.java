@@ -285,7 +285,7 @@ public final class NestDag {
                                 axes, chainsByOrdinal, floor, settings, clock, sending,
                                 bound.forParking(spec))
                         : new ResolverProcessor(spec, bound.forResolver(spec), boundDeadLetter, axes,
-                                chainsByOrdinal, floor, clock, settings, bound.forParking(spec)));
+                                chainsByOrdinal, floor, clock, settings));
             }
             return processors;
         }

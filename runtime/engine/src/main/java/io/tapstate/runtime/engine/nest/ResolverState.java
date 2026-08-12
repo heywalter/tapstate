@@ -166,16 +166,6 @@ public final class ResolverState implements Serializable {
         return lowest;
     }
 
-    /**
-     * Hands back everything waiting here and stops waiting for it, leaving the mapping itself alone. It is
-     * what a key being vacated gives up: those children asked a question of a value the row no longer
-     * answers to, and the row now answers to another one, so the answer they are waiting for will never
-     * come here. The mapping is not handed over with them - the row declares it again where it now belongs.
-     */
-    public List<NestElement> handOverWaiting() {
-        return drain();
-    }
-
     private boolean wins(SourceOrder candidate) {
         return order == null || candidate.compareTo(order) > 0;
     }
