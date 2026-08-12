@@ -151,7 +151,43 @@ class ControlPlaneTest {
     @Test
     void readsAClientErrorAsTheRefusalItIs() {
         assertThat(ControlPlane.interpretRefusal(400, coded("dsl.row-expression-type-unsupported"), "the batch"))
-                .isEqualTo(new ControlPlane.Refusal(400, "dsl.row-expression-type-unsupported"));
+                .isEqualTo(new ControlPlane.Refusal(
+                        400, "dsl.row-expression-type-unsupported", Map.of("pipeline", PIPELINE)));
+    }
+
+    /**
+     * The named arguments travel with the refusal, because several refusals are only actionable through
+     * them - which resources still reference the one being removed, what state a pipeline is actually in.
+     * A reader that stopped at the code would leave a caller able to assert that a refusal happened but
+     * never that it named the right thing.
+     */
+    @Test
+    void carriesTheNamedArgumentsTheRefusalWasSentWith() {
+        assertThat(ControlPlane.interpretRefusal(409, coded("artifact.in-use"), "the removal").params())
+                .containsEntry("pipeline", PIPELINE);
+    }
+
+    /** A refusal that carried no arguments reads as none rather than as a missing field. */
+    @Test
+    void readsARefusalWithNoArgumentsAsCarryingNone() {
+        assertThat(ControlPlane.interpretRefusal(
+                        404, JsonWriter.write(Map.of("code", "artifact.not-found")), "the removal").params())
+                .isEmpty();
+    }
+
+    /**
+     * One null argument must not cost the whole refusal. The obvious defensive copy - {@code Map.copyOf} -
+     * rejects a null value, so reading a body the server sent one in would throw here and lose the code and
+     * message along with it, turning a precise refusal into an unexplained harness crash. The product side
+     * has already been bitten by exactly this; the reader must not reintroduce it.
+     */
+    @Test
+    void keepsARefusalWhoseArgumentTheServerSentAsNull() {
+        ControlPlane.Refusal refusal = ControlPlane.interpretRefusal(
+                409, "{\"code\":\"artifact.pipeline-not-stopped\",\"params\":{\"actual\":null}}", "the removal");
+
+        assertThat(refusal.code()).isEqualTo("artifact.pipeline-not-stopped");
+        assertThat(refusal.params()).containsKey("actual");
     }
 
     /** Every 4xx, not only the one the product happens to use today. */

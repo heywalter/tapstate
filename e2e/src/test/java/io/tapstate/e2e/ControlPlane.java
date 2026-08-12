@@ -9,12 +9,15 @@ import io.tapstate.core.lifecycle.PipelineState;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -99,6 +102,46 @@ final class ControlPlane {
         return interpretRefusal(response.statusCode(), response.body(), "applying " + contentBySource.keySet());
     }
 
+    /**
+     * One document submitted for apply, optionally carrying the version it was written against. A null
+     * {@code expectedContentHash} submits no precondition, which is the unconditional apply every caller
+     * above sends.
+     */
+    record Draft(String source, String content, String expectedContentHash) {}
+
+    /** Applies one document written against the version {@code expectedContentHash} names. */
+    void applyExpecting(String source, String content, String expectedContentHash) {
+        expect(send(authed("/api/artifacts:apply", applyBody(List.of(
+                        new Draft(source, content, expectedContentHash))))),
+                200, "apply " + source + " against version " + expectedContentHash);
+    }
+
+    /**
+     * Attempts an apply carrying a precondition the product is expected to refuse, and returns the refusal.
+     * The peer of {@link #applyExpecting}, kept apart from it for the reason every other refusal verb here
+     * is kept apart from its success: one return value cannot mean both.
+     */
+    Refusal applyExpectingRefusal(String source, String content, String expectedContentHash) {
+        HttpResponse<String> response = send(authed("/api/artifacts:apply",
+                applyBody(List.of(new Draft(source, content, expectedContentHash)))));
+        return interpretRefusal(response.statusCode(), response.body(), "applying " + source);
+    }
+
+    /**
+     * The apply request body. A draft carrying no precondition omits the field entirely rather than sending
+     * an explicit null: the field is defined as optional, and a caller that never asked for the check has to
+     * travel the wire indistinguishably from one written before the field existed.
+     */
+    private static String applyBody(List<Draft> drafts) {
+        List<Map<String, String>> encoded = drafts.stream()
+                .map(draft -> draft.expectedContentHash() == null
+                        ? Map.of("source", draft.source(), "content", draft.content())
+                        : Map.of("source", draft.source(), "content", draft.content(),
+                                "expectedContentHash", draft.expectedContentHash()))
+                .toList();
+        return JsonWriter.write(Map.of("drafts", encoded));
+    }
+
     /** The ids the server holds - read back from the server, which is the truth, not from the files sent. */
     List<String> artifactIds() {
         HttpResponse<String> response = send(authedGet("/api/artifacts"));
@@ -113,14 +156,91 @@ final class ControlPlane {
                 .toList();
     }
 
+    /**
+     * One stored artifact as the server hands it back, hash included. The hash is the precondition an edit
+     * or a removal has to supply, so reading it here is what makes read-then-remove a closed loop over the
+     * wire rather than something the caller computes locally off bytes it hopes are the same.
+     */
+    record StoredArtifact(String id, String kind, String canonicalForm, String contentHash) {}
+
+    /**
+     * The artifact stored under {@code id}, or empty when the server holds none.
+     *
+     * <p>Empty is a reading, not a failure: "it is gone" is the assertion a removal witness makes, and a
+     * caller that could not distinguish an absent artifact from a broken read could not make it. Every
+     * other non-200 stays loud.
+     */
+    Optional<StoredArtifact> artifact(String id) {
+        HttpResponse<String> response = send(authedGet("/api/artifacts/" + urlSegment(id)));
+        if (response.statusCode() == 404) {
+            return Optional.empty();
+        }
+        expect(response, 200, "read the artifact " + id);
+        if (!(JsonReader.parse(response.body()) instanceof Map<?, ?> map)) {
+            throw new AssertionError("the artifact read was not an object: " + response.body());
+        }
+        return Optional.of(new StoredArtifact(
+                string(map, "id", response.body()),
+                string(map, "kind", response.body()),
+                string(map, "canonicalForm", response.body()),
+                string(map, "contentHash", response.body())));
+    }
+
+    /**
+     * The content hash of the stored artifact {@code id}, failing when the server holds none.
+     *
+     * <p>Separate from {@link #artifact} because a caller reading a hash in order to spend it on a removal
+     * has already assumed the artifact is there; getting an empty back would fail it one call later, on a
+     * line that says nothing about what actually went wrong.
+     */
+    String contentHash(String id) {
+        return artifact(id)
+                .orElseThrow(() -> new AssertionError(
+                        "no artifact " + id + " to read a content hash from"))
+                .contentHash();
+    }
+
+    /** Removes the artifact {@code id}, offering {@code expectedContentHash} as the version the caller read. */
+    void deleteArtifact(String id, String expectedContentHash) {
+        expect(send(authedDelete(id, expectedContentHash)), 204, "delete " + id);
+    }
+
+    /**
+     * Attempts a removal the product is expected to refuse, and returns the refusal it answered with. A
+     * null {@code expectedContentHash} sends no {@code If-Match} at all, which is the unconditional
+     * removal the product answers with its own missing-precondition code.
+     *
+     * <p>A separate verb rather than a flag on {@link #deleteArtifact}, for the reason the apply and
+     * register pairs are separate: a caller that meant to remove and was refused has failed, and a caller
+     * that meant to witness a refusal and got a removal has failed too - and the second is the regression
+     * these callers exist to catch, so it can never be allowed to read as success.
+     */
+    Refusal deleteArtifactExpectingRefusal(String id, String expectedContentHash) {
+        HttpResponse<String> response = send(authedDelete(id, expectedContentHash));
+        return interpretRefusal(response.statusCode(), response.body(), "deleting " + id);
+    }
+
     /** Registers a connector's runtime jar; the product makes this idempotent by content hash. */
     void registerConnector(String connectorId, byte[] jar) {
         String body = JsonWriter.write(Map.of("artifact", Base64.getEncoder().encodeToString(jar)));
         expect(send(authed("/api/connectors:register", body)), 200, "register the " + connectorId + " connector");
     }
 
-    /** The refusal a rejected verb answered with: the HTTP status, and the code the product named. */
-    record Refusal(int status, String code) {}
+    /**
+     * The refusal a rejected verb answered with: the HTTP status, the code the product named, and the
+     * named arguments it sent with it.
+     *
+     * <p>The arguments are here because several refusals are only actionable through them - who is still
+     * referencing the resource, what state the pipeline is actually in - and a caller that could read the
+     * code but not the arguments would have to assert that a refusal happened without ever checking it
+     * named the right thing. They are empty, never null, for a body that carried none.
+     */
+    record Refusal(int status, String code, Map<String, Object> params) {
+
+        Refusal(int status, String code) {
+            this(status, code, Map.of());
+        }
+    }
 
     /**
      * Posts an artifact the product is expected to refuse, and returns the refusal it answered with.
@@ -158,7 +278,7 @@ final class ControlPlane {
                     "expected " + what + " to be refused, but the server failed instead: HTTP " + status
                             + " - " + body);
         }
-        return new Refusal(status, codeOf(body));
+        return new Refusal(status, codeOf(body), paramsOf(body));
     }
 
     /** Every connector id the online catalog answers with, registered rows and bundled ones alike. */
@@ -207,6 +327,20 @@ final class ControlPlane {
     Optional<PipelineState> state(String pipelineId) {
         HttpResponse<String> response = send(authedGet("/api/pipelines/" + pipelineId + "/status"));
         return interpretState(response.statusCode(), response.body(), pipelineId);
+    }
+
+    /**
+     * Attempts a status read the product is expected to refuse, and returns the refusal it answered with.
+     *
+     * <p>Kept apart from {@link #state} because the two emptinesses are not the same thing. That reader
+     * treats "no observation published yet" as a reading and keeps every other refusal loud, which is what
+     * lets a caller wait for a pipeline to come up. A pipeline that no longer exists is a different answer
+     * with a different code, and a caller witnessing that has to see the code rather than an absence it
+     * cannot tell from "not converged yet".
+     */
+    Refusal stateExpectingRefusal(String pipelineId) {
+        HttpResponse<String> response = send(authedGet("/api/pipelines/" + urlSegment(pipelineId) + "/status"));
+        return interpretRefusal(response.statusCode(), response.body(), "reading the status of " + pipelineId);
     }
 
     /**
@@ -325,8 +459,67 @@ final class ControlPlane {
         }
     }
 
+    /**
+     * The named arguments a structured error body carries, or none for a body that is not one. Read on the
+     * same terms as {@link #codeOf}: a refusal that came from something other than the product must still be
+     * reportable, so an unparseable body answers empty rather than throwing over the top of the report.
+     */
+    private static Map<String, Object> paramsOf(String body) {
+        try {
+            if (!(JsonReader.parse(body) instanceof Map<?, ?> map)
+                    || !(map.get("params") instanceof Map<?, ?> params)) {
+                return Map.of();
+            }
+            // Copied through a map that tolerates a null value rather than Map.copyOf, which rejects one. A
+            // single null argument would otherwise throw here and lose the whole refusal - code, message and
+            // all - which is the failure this harness exists to report, not to suffer.
+            Map<String, Object> copy = new LinkedHashMap<>();
+            params.forEach((key, value) -> copy.put(String.valueOf(key), value));
+            return Collections.unmodifiableMap(copy);
+        } catch (RuntimeException e) {
+            return Map.of();
+        }
+    }
+
+    /** A required string field of a structured answer, named in the failure when the answer omits it. */
+    private static String string(Map<?, ?> map, String field, String body) {
+        if (!(map.get(field) instanceof String value)) {
+            throw new AssertionError("the artifact read carried no " + field + ": " + body);
+        }
+        return value;
+    }
+
+    /**
+     * One path segment, encoded the way the product's own clients encode it - form encoding with the plus
+     * put back as {@code %20}, because a literal plus in a path is a plus and not a space.
+     *
+     * <p>Written out here rather than borrowed: the harness travels the public wire, so what it needs is an
+     * id that survives the trip, not the product's private helper. Ids that need any of this are pinned
+     * where the client builds the request; over this wire it keeps a specification honest about the address
+     * it asked for.
+     */
+    private static String urlSegment(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
     private HttpRequest get(String path) {
         return HttpRequest.newBuilder(baseUrl.resolve(path)).timeout(TIMEOUT).GET().build();
+    }
+
+    /**
+     * A conditional removal. A null hash sends no {@code If-Match} header at all rather than an empty one:
+     * an empty header is a malformed precondition, and the caller that passes null is witnessing the
+     * refusal of a removal that carried no precondition in the first place.
+     */
+    private HttpRequest authedDelete(String id, String expectedContentHash) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(baseUrl.resolve("/api/artifacts/" + urlSegment(id)))
+                .timeout(TIMEOUT)
+                .header("Authorization", "Bearer " + requireCredential())
+                .DELETE();
+        if (expectedContentHash != null) {
+            builder.header("If-Match", "\"" + expectedContentHash + "\"");
+        }
+        return builder.build();
     }
 
     private HttpRequest authedGet(String path) {
@@ -352,6 +545,15 @@ final class ControlPlane {
                 .header("Authorization", "Bearer " + requireCredential())
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build();
+    }
+
+    /**
+     * The bearer credential this harness logged in with, for handing to a second client that has to reach
+     * the same server as the same principal - the shipped MCP sidecar, which is configured with a token
+     * rather than a login.
+     */
+    String credential() {
+        return requireCredential();
     }
 
     private String requireCredential() {
