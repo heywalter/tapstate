@@ -74,6 +74,31 @@ class ChildrenWaitingUnderAVacatedIdentityAreCarriedToTheNewOneTest {
     }
 
     /**
+     * Which of the two copies runs first is not something either can decide, and the one that takes the
+     * identity over is the only thing that would ever look for what it is owed. Fed here in the order that
+     * breaks it - the identity taken over first, vacated after - and then given a turn with nothing coming
+     * in, which is one of the three places the second look happens.
+     */
+    @Test
+    void whatWasVacatedAfterTheNewIdentityLookedIsStillCollected() throws Exception {
+        ResolverProcessor policies = resolver();
+        feed(policies, CLAIMS, claim(1, "K1", "P1"));
+        drain();
+
+        feed(policies, OWN_ROWS, policyRenamed(2, "P1", "P2", "C1"));
+        assertThat(drain())
+                .describedAs("only the policy itself: nothing had been vacated when it looked")
+                .hasSize(1);
+
+        feed(policies, twinOf(POLICIES.pathId()), policyRenamed(2, "P1", "P2", "C1"));
+        policies.tryProcess();
+
+        assertThat(drain())
+                .describedAs("the second look is what gets the waiting claim answered at all")
+                .hasSize(1);
+    }
+
+    /**
      * The control. A row whose identity column did not change strands nothing, so a child waiting under it
      * must be left where it is - carrying it would take a change out of the one place something is going to
      * answer it.
