@@ -325,6 +325,9 @@ class ControlApiTest {
         ArtifactList listed = client().get().uri("/api/artifacts")
                 .retrieve().toEntity(ArtifactList.class).getBody();
 
+        // The size is asserted first because the per-element check below passes on an empty list: a
+        // regression that listed nothing at all would otherwise read as every element agreeing.
+        assertThat(listed.artifacts()).hasSize(3);
         assertThat(listed.artifacts()).allSatisfy(a -> assertThat(a.contentHash())
                 .isEqualTo(client().get().uri("/api/artifacts/" + a.id())
                         .retrieve().toEntity(StoredArtifact.class).getBody().contentHash()));

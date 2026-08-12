@@ -358,6 +358,58 @@ class HttpControlPlaneClientTest {
     }
 
     @Test
+    void theReadAndTheRemovalOfOneIdTargetTheSameEncodedPath() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<Boolean> had = new AtomicReference<>();
+        // A space is the cheapest character that tells path encoding apart from form encoding: they
+        // agree on everything else an id is likely to hold and disagree on exactly this one.
+        String id = "src kfk";
+        HttpServer server = deleteServer(404, "{\"code\":\"artifact.not-found\","
+                + "\"message\":\"No such resource.\",\"params\":{\"id\":\"src kfk\"}}",
+                method, path, ifMatch, had);
+        try {
+            new HttpControlPlaneClient().get(baseOf(server), "tok", id);
+            String afterRead = path.get();
+            new HttpControlPlaneClient().delete(baseOf(server), "tok", id, null);
+            String afterRemoval = path.get();
+
+            // A removal reads the current version and then deletes the same id, so if these two
+            // disagree the halves of one removal address two different resources.
+            assertThat(afterRead).isEqualTo("/api/artifacts/src%20kfk");
+            assertThat(afterRemoval).isEqualTo(afterRead);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void aRefusedRemovalSurvivesAParameterTheServerSentAsNull() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<Boolean> had = new AtomicReference<>();
+        HttpServer server = deleteServer(409, "{\"code\":\"artifact.pipeline-not-stopped\","
+                + "\"message\":\"Stop it first.\",\"params\":{\"id\":\"kfk2my\","
+                + "\"actual\":\"RUNNING\",\"desired\":null}}", method, path, ifMatch, had);
+        try {
+            DeleteOutcome outcome = new HttpControlPlaneClient()
+                    .delete(baseOf(server), "tok", "kfk2my", "d".repeat(64));
+
+            // One null-valued parameter must not cost the caller the code and the message. Those name
+            // the refusal and its next step; the null is the least informative part of the body, and
+            // losing the whole refusal over it leaves a bare sentence and nothing to act on.
+            assertThat(outcome).isInstanceOfSatisfying(DeleteOutcome.Rejected.class, rejected -> {
+                assertThat(rejected.code()).isEqualTo("artifact.pipeline-not-stopped");
+                assertThat(rejected.params()).containsEntry("actual", "RUNNING");
+            });
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void applyPostsTheDraftsWithABearerCredentialAndReturnsTheOutcomes() throws Exception {
         AtomicReference<CapturedRequest> seen = new AtomicReference<>();
         HttpServer server = apiServer("/api/artifacts:apply", 200,

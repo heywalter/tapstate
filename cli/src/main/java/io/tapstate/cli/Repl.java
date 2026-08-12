@@ -800,7 +800,7 @@ final class Repl {
                 out.flush();
                 yield Cli.EXIT_OK;
             }
-            case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected, chosenFormat);
+            case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected, chosenFormat, target);
             case DeleteOutcome.Unreachable ignored -> reportRequestFailed();
         };
     }
@@ -826,7 +826,7 @@ final class Repl {
      * resource, and what state the pipeline is really in — neither of which the caller can be expected
      * to work out from the code alone, and neither of which this verb does anything about on its own.
      */
-    private int renderDeleteRefusal(DeleteOutcome.Rejected rejected, OutputFormat format) {
+    private int renderDeleteRefusal(DeleteOutcome.Rejected rejected, OutputFormat format, String target) {
         if (format != OutputFormat.TEXT) {
             // The machine surfaces carry the parameters too, not just the code and message. They are what
             // the text surface below turns into the next step, so dropping them would leave a script with
@@ -857,7 +857,11 @@ final class Repl {
                 Object desired = rejected.params().get("desired");
                 if (actual != null || desired != null) {
                     err.println("  pipeline state: actual=" + actual + ", desired=" + desired);
-                    err.println("  run `stop " + rejected.params().get("id") + "` and wait for it to settle.");
+                    // The id comes from what was typed, not from the refusal: this line is a command
+                    // meant to be pasted, and a refusal that names no id would otherwise render one
+                    // that cannot run.
+                    err.println("  run `stop " + rejected.params().getOrDefault("id", target)
+                            + "` and wait for it to settle.");
                 }
             }
             case "artifact.version-conflict" ->

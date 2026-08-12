@@ -46,6 +46,10 @@ class ControlApiSchemaTest {
         List<?> required = (List<?>) draft.get("required");
         assertThat(required.stream().map(String::valueOf).toList())
                 .as("a draft without a precondition keeps today's behaviour")
+                // The list is pinned as non-empty by naming what does stay required: on an empty one
+                // the absence below holds vacuously, so a schema that lost its required fields
+                // altogether would read as proof that the precondition is optional.
+                .contains("content")
                 .doesNotContain("expectedContentHash");
     }
 

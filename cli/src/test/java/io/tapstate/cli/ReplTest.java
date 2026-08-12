@@ -1230,6 +1230,25 @@ class ReplTest {
     }
 
     @Test
+    void theStopGuidanceNamesTheTypedIdEvenWhenTheRefusalCarriesNone() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        // A refusal that names the state but not the id: the guidance is a command the user is meant
+        // to paste, so filling the id slot from an absent parameter prints `stop null` and hands them
+        // a line that cannot work. The verb already knows which id was typed.
+        client.deleteOutcome = new DeleteOutcome.Rejected(
+                "artifact.pipeline-not-stopped", "Pipeline 'kfk2my' is not stopped.",
+                Map.of("actual", "RUNNING", "desired", "RUNNING"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete kfk2my --if-match " + "e".repeat(64))).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("stop kfk2my");
+        assertThat(out).doesNotContain("stop null");
+    }
+
+    @Test
     void aVersionConflictTellsTheUserToReadAgainRatherThanToRetryWithoutThePrecondition() {
         FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
         client.deleteOutcome = new DeleteOutcome.Rejected(

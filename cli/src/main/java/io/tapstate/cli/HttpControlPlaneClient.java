@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -211,7 +212,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     @Override
     public GetOutcome get(URI baseUrl, String credential, String id) {
         try {
-            HttpRequest request = authed(baseUrl, "/api/artifacts/" + id, credential).GET().build();
+            HttpRequest request = authed(baseUrl, "/api/artifacts/" + urlSegment(id), credential).GET().build();
             HttpResponse<String> response =
                     send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             int status = response.statusCode();
@@ -237,7 +238,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     public DeleteOutcome delete(URI baseUrl, String credential, String id, String expectedContentHash) {
         try {
             HttpRequest.Builder builder = authed(
-                    baseUrl, "/api/artifacts/" + URLEncoder.encode(id, StandardCharsets.UTF_8), credential);
+                    baseUrl, "/api/artifacts/" + urlSegment(id), credential);
             // Send no If-Match at all rather than an empty one when the caller supplied no precondition:
             // the server tells "you sent none" (428) apart from "yours is stale" (412), and an empty
             // header would turn the first into the second.
@@ -271,7 +272,10 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
                 if (map.get("params") instanceof Map<?, ?> raw) {
                     raw.forEach((key, value) -> params.put(String.valueOf(key), value));
                 }
-                return new DeleteOutcome.Rejected(code, message, Map.copyOf(params));
+                // An unmodifiable view rather than Map.copyOf: copyOf rejects a null value, and the
+                // throw would be caught below and cost the caller the code and the message over the
+                // least informative part of the body. A null-valued parameter is kept as sent.
+                return new DeleteOutcome.Rejected(code, message, Collections.unmodifiableMap(params));
             }
         } catch (RuntimeException malformed) {
             // fall through: a non-coded / unparseable error body is still a refusal, not a crash
