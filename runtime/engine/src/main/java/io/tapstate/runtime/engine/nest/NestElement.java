@@ -77,4 +77,19 @@ public record NestElement(
     public boolean moves() {
         return movedFrom != null && !movedFrom.equals(ref);
     }
+
+    /**
+     * Whether this change says the element has left here for somewhere else, rather than that it was
+     * deleted. The two are told apart by where the change came from and never by what it carries: a
+     * deletion is read off a single row and can name no earlier one, so an absent row beside an earlier
+     * address can only be the half of a move that stays behind.
+     *
+     * <p>It cannot be asked as "the address changed" instead. An embed hanging straight off the root is
+     * addressed the same way in every document there is - what decides which document it lands in is the
+     * key it joins on, which is not part of an address at all - so for those the two addresses are equal
+     * and the departure would read as an ordinary edit.
+     */
+    public boolean departure() {
+        return fields == null && movedFrom != null;
+    }
 }

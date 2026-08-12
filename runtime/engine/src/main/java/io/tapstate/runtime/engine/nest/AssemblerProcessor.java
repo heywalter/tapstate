@@ -389,8 +389,21 @@ public final class AssemblerProcessor extends AbstractProcessor {
         Map<String, Object> was = NestKeys.replacedRow(edge, event);
         ElementRef from = was == null ? null
                 : new ElementRef(edge.pathId(), null, NestKeys.valuesOf(was, edge.elementKey()), null);
-        document.assembly.take(new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
-                event.positions(), from));
+        NestElement arriving = new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
+                event.positions(), from);
+        document.assembly.take(arriving);
+        if (was == null) {
+            return;
+        }
+        // A leaf hanging straight off the root belongs to whichever document its join key names, so a row
+        // re-pointed at another root has to be taken out of the one it was in. Both are held here, so the
+        // pair needs no routing: this vertex is where the two keys would have met anyway.
+        List<Object> before = NestKeys.valuesOf(was, edge.keyFields());
+        if (!before.equals(key)) {
+            Touched left = touched(before, touched);
+            left.ts = event.ts();
+            left.assembly.take(new NestElement(ref, null, order, event.positions(), from));
+        }
     }
 
     /**

@@ -287,11 +287,37 @@ public final class ResolverProcessor extends AbstractProcessor {
         } else {
             List<Object> parent = NestKeys.valuesOf(row, edge.keyFields());
             Map<String, Object> was = NestKeys.replacedRow(edge, event);
-            Object parentWas = was == null ? null
-                    : parentIdentity(edge, NestKeys.valuesOf(was, edge.keyFields()));
-            route(parent, element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas),
-                    touched);
+            List<Object> parentBefore = was == null ? null : NestKeys.valuesOf(was, edge.keyFields());
+            Object parentWas = was == null ? null : parentIdentity(edge, parentBefore);
+            NestElement arriving =
+                    element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas);
+            route(parent, arriving, touched);
+            if (parentBefore != null && !parentBefore.equals(parent)) {
+                route(parentBefore, departureOf(arriving), touched);
+            }
         }
+    }
+
+    /**
+     * Says on the key the element used to hang from that it has gone, whenever a row's join key now names
+     * a different one. It travels the old key rather than the new one on purpose: only that key leads to
+     * the document holding the element today, and whether that is the same document the element is going to
+     * is not something this level can answer - the two keys resolve independently and may lead anywhere.
+     *
+     * <p>Nothing is sent where the key did not move. The element is where it always was, and a departure
+     * from an address it never left would take it out of the only document it is in.
+     */
+    private void sendDeparture(List<Object> parentBefore, List<Object> parent, NestElement arriving) {
+        if (parentBefore == null || parentBefore.equals(parent)) {
+            return;
+        }
+        emit(new KeyedElement(parentBefore, departureOf(arriving)));
+    }
+
+    /** The half of a move that stays behind: the same change with no row, so it places nothing. */
+    private static NestElement departureOf(NestElement arriving) {
+        return new NestElement(arriving.ref(), null, arriving.order(), arriving.positions(),
+                arriving.movedFrom());
     }
 
     /**
@@ -307,10 +333,11 @@ public final class ResolverProcessor extends AbstractProcessor {
         List<Object> parent = NestKeys.valuesOf(row, vertex.parentKeyFields());
         ResolverState state = stateFor(key, touched);
         Map<String, Object> was = NestKeys.replacedRow(edge, event);
-        Object parentWas = was == null ? null
-                : parentIdentity(edge, NestKeys.valuesOf(was, vertex.parentKeyFields()));
-        emit(new KeyedElement(parent,
-                element(edge, event, row, parentIdentity(edge, parent), key, was, parentWas)));
+        List<Object> parentBefore = was == null ? null : NestKeys.valuesOf(was, vertex.parentKeyFields());
+        Object parentWas = was == null ? null : parentIdentity(edge, parentBefore);
+        NestElement arriving = element(edge, event, row, parentIdentity(edge, parent), key, was, parentWas);
+        emit(new KeyedElement(parent, arriving));
+        sendDeparture(parentBefore, parent, arriving);
         if (NestKeys.isDeletion(event)) {
             deleted.put(key, event.positions());
             for (ReleasedChild child : state.deleteMapping(order, clock.millis())) {

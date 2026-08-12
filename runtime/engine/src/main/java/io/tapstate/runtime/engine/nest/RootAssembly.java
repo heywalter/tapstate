@@ -390,7 +390,43 @@ public final class RootAssembly implements Serializable {
     }
 
     private boolean mutate(NestElement change) {
+        if (change.departure()) {
+            return depart(change);
+        }
         return change.moves() ? move(change) : place(change);
+    }
+
+    /**
+     * Takes out an element whose row now hangs from a parent this document does not hold. Nothing is left
+     * where it was: the element is not deleted, it is somewhere else, and a record of a deletion here would
+     * answer a question about this document that the source answers differently.
+     *
+     * <p><b>An element still holding a subtree is left exactly where it is.</b> Carrying it across means
+     * handing the whole subtree to the document that gains it, and until there is somewhere to hand it
+     * through, taking the element out here would drop rows that nothing will ever resend - invisibly, since
+     * they were never going to be reported by anything. A stale copy is a document that disagrees with its
+     * source and can be seen to; rows gone are not. So the weaker failure is chosen deliberately, and the
+     * choice lives here rather than at the level that noticed the move, which cannot know what hangs
+     * beneath.
+     */
+    private boolean depart(NestElement change) {
+        ElementRef from = change.movedFrom();
+        Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
+        Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
+        ElementNode leaving = slot == null ? null : slot.get(from.elementKey());
+        if (leaving == null || leaving.deleted() || !wins(change.order(), leaving.order())) {
+            return false;
+        }
+        if (!leaving.children().isEmpty()) {
+            return false;
+        }
+        slot.remove(from.elementKey());
+        Map<Object, ElementNode> named = byIdentity.get(from.pathId());
+        if (named != null) {
+            named.values().remove(leaving);
+        }
+        absorbed(change);
+        return true;
     }
 
     private boolean place(NestElement change) {
