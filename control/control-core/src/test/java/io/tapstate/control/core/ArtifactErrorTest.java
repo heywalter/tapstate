@@ -47,7 +47,9 @@ class ArtifactErrorTest {
                 .containsExactlyInAnyOrder("id", "actual", "desired");
         // residue = what the removal left behind, which is the only part of this failure anyone can act
         // on: the removal itself is done and cannot be retried
+        // reason = which of the two ways it ended incomplete, since the next step differs: a failed step
+        // is cleared by hand, a pipeline that came back up must be stopped before anything is cleared
         assertThat(ArtifactError.RECLAIM_INCOMPLETE.placeholders())
-                .containsExactlyInAnyOrder("id", "residue");
+                .containsExactlyInAnyOrder("id", "reason", "residue");
     }
 }

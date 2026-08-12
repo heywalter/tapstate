@@ -929,6 +929,13 @@ final class Repl {
                 if (residue != null) {
                     err.println("  left behind, clear by hand: " + renderReferrers(residue));
                 }
+                if ("pipeline-live".equals(String.valueOf(rejected.params().get("reason")))) {
+                    // Nothing was cleared here on purpose, and clearing it by hand while the job runs
+                    // would discard the fencing epoch that keeps it from colliding with a later
+                    // pipeline under the same id. Stopping comes first.
+                    err.println("  it was started again while the removal ran: `stop " + target
+                            + "` first, or its job keeps running with no artifact.");
+                }
             }
             default -> {
                 // Every other refusal is fully said by its own rendered message.

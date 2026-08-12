@@ -465,6 +465,7 @@ class ArtifactMutationServiceTest {
                     assertThat(error.code()).isEqualTo(ArtifactError.RECLAIM_INCOMPLETE);
                     assertThat(error.args()).containsEntry("id", "flow");
                     assertThat(error.args()).containsEntry("residue", List.of("desired"));
+                    assertThat(error.args()).containsEntry("reason", "step-failed");
                 })
                 .hasCause(ioFailure);
 
@@ -478,6 +479,36 @@ class ArtifactMutationServiceTest {
         assertThat(state.read("flow")).isEmpty();
         assertThat(observations.read("flow")).isEmpty();
         assertThat(srsMeta.consumerIds("chain-a")).isEmpty();
+    }
+
+    @Test
+    void aPipelineStartedInsideTheRemovalWindowKeepsItsCheckpointInsteadOfLosingItsFencingEpoch() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        state.put("flow", PipelineState.STOPPED);
+        desired.put("flow", PipelineState.STOPPED);
+        observations.put("flow");
+        srsMeta.seed("chain-a", consumer("flow"));
+        // A start lands after the lifecycle refusal has already passed and after the artifact's own
+        // compare-and-swap — which cannot see it, since starting a pipeline leaves the canonical bytes
+        // untouched. The reclaim that follows would otherwise delete the checkpoint of a job that is now
+        // executing, discarding the fencing epoch that keeps a later pipeline under this id from sharing
+        // a fencing sequence with it.
+        store.afterDelete = () -> desired.put("flow", PipelineState.RUNNING);
+
+        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.RECLAIM_INCOMPLETE);
+                    assertThat(error.args()).containsEntry("reason", "pipeline-live");
+                });
+
+        // The artifact is gone — the removal is not undone — and none of the live pipeline's own
+        // bookkeeping was touched, so stopping it and clearing up by hand is still possible.
+        assertThat(store.get("flow")).isEmpty();
+        assertThat(state.read("flow")).isPresent();
+        assertThat(desired.read("flow")).isPresent();
+        assertThat(observations.read("flow")).isPresent();
+        assertThat(srsMeta.consumerIds("chain-a")).containsExactly("flow");
     }
 
     @Test
@@ -600,6 +631,8 @@ class ArtifactMutationServiceTest {
     private static final class InMemoryArtifactStore implements ArtifactStore {
 
         private final Map<String, Resource> artifacts = new LinkedHashMap<>();
+        /** Another caller acting in the window between the removal and the reclaim that follows it. */
+        private Runnable afterDelete = null;
 
         @Override
         public synchronized ArtifactMutation delete(String id, String expectedContentHash) {
@@ -611,6 +644,11 @@ class ArtifactMutationServiceTest {
                 return ArtifactMutation.VERSION_CONFLICT;
             }
             artifacts.remove(id);
+            if (afterDelete != null) {
+                Runnable other = afterDelete;
+                afterDelete = null;
+                other.run();
+            }
             return ArtifactMutation.DELETED;
         }
 

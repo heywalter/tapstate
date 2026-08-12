@@ -279,8 +279,8 @@ artifact.pipeline-not-stopped:
   message: "Pipeline `{id}` is {actual} and is headed for {desired}, so it cannot be deleted."
   solution: "Stop the pipeline, let it settle, then delete it."
 artifact.reclaim-incomplete:
-  message: "Artifact `{id}` was removed, but this bookkeeping was left behind: {residue}."
-  solution: "The removal stands, so do not retry it. Clear the listed records by hand."
+  message: "Artifact `{id}` was removed, but this bookkeeping was left behind ({reason}): {residue}."
+  solution: "The removal stands, so do not retry it. If the pipeline is running again, stop it first; then clear the listed records by hand."
 artifact.precondition-required:
   message: "Deleting artifact `{id}` requires the content hash of the version you read."
   solution: "Read the artifact, then retry the delete with that content hash."

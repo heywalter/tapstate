@@ -27,7 +27,7 @@ public enum ArtifactError implements TapstateErrorCode {
      * a code with a refusal would make a partly-executed removal indistinguishable from one that never
      * started, on every face.
      */
-    RECLAIM_INCOMPLETE("artifact.reclaim-incomplete", Set.of("id", "residue"));
+    RECLAIM_INCOMPLETE("artifact.reclaim-incomplete", Set.of("id", "reason", "residue"));
 
     private final String code;
     private final Set<String> placeholders;

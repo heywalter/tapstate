@@ -1305,7 +1305,8 @@ class ReplTest {
         // answer artifact.not-found — and the residue that does need clearing is never mentioned.
         client.deleteOutcome = new DeleteOutcome.Rejected(
                 "artifact.reclaim-incomplete", "Artifact 'kfk2my' was removed, but bookkeeping was left.",
-                Map.of("id", "kfk2my", "residue", List.of("desired", "mining-chain-consumer")));
+                Map.of("id", "kfk2my", "reason", "step-failed",
+                        "residue", List.of("desired", "mining-chain-consumer")));
         Harness h = onlineSession(Path.of("tap-work"), client);
         int mark = h.sink().toString().length();
 
@@ -1314,6 +1315,26 @@ class ReplTest {
         String out = h.sink().toString().substring(mark);
         assertThat(out).contains("'kfk2my' is gone").contains("Do not retry");
         assertThat(out).contains("desired").contains("mining-chain-consumer");
+    }
+
+    @Test
+    void aRemovalThatStoppedBecauseThePipelineCameBackUpSaysToStopItBeforeClearingAnything() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        // The other way a removal ends incomplete: nothing was cleared, deliberately, because the
+        // pipeline was started while the removal ran. "Clear the listed records by hand" is the wrong
+        // next step here — deleting the checkpoint of a running job discards its fencing epoch.
+        client.deleteOutcome = new DeleteOutcome.Rejected(
+                "artifact.reclaim-incomplete", "Artifact 'kfk2my' was removed, but bookkeeping was left.",
+                Map.of("id", "kfk2my", "reason", "pipeline-live",
+                        "residue", List.of("mining-chain-consumer", "desired", "state", "observation")));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete kfk2my --if-match " + "e".repeat(64))).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("stop kfk2my");
+        assertThat(out).contains("started again");
     }
 
     @Test

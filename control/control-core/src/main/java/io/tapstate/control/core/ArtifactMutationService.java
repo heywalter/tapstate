@@ -149,12 +149,12 @@ public final class ArtifactMutationService {
      * artifact and left the rest. Naming the residue is the whole point of the code; the underlying
      * failures ride along as cause and suppressed so nothing is swallowed.
      */
-    private static TapstateException reclaimIncomplete(String id, List<String> residue,
+    private static TapstateException reclaimIncomplete(String id, String reason, List<String> residue,
             List<RuntimeException> failures) {
         TapstateException incomplete = new TapstateException(
                 ArtifactError.RECLAIM_INCOMPLETE,
-                Map.of("id", id, "residue", residue),
-                failures.get(0));
+                Map.of("id", id, "reason", reason, "residue", residue),
+                failures.isEmpty() ? null : failures.get(0));
         failures.stream().skip(1).forEach(incomplete::addSuppressed);
         return incomplete;
     }
@@ -168,8 +168,21 @@ public final class ArtifactMutationService {
      * <p>The shared chains are detached first because theirs is the only residue that harms a
      * <em>different</em> pipeline; if the process dies mid-reclaim, the damage that has been contained is
      * the one that was not this pipeline's alone to suffer.
+     *
+     * <p>The lifecycle is read once more first, because the refusal that judged it ran before the
+     * artifact was removed and nothing held it still in between: a start that landed inside that window
+     * leaves a pipeline whose job is now executing. Reclaiming one of those does not merely lose
+     * bookkeeping — deleting the checkpoint discards the fencing epoch, so a pipeline later applied
+     * under the same id shares a fencing sequence with the job still running under the old one. The
+     * bookkeeping is left alone and reported instead. This narrows the window rather than closing it;
+     * closing it needs a lifecycle-aware conditional delete or a lock spanning the check and the write,
+     * neither of which this store port offers.
      */
     private void reclaim(String id) {
+        if (!isAtRest(id)) {
+            throw reclaimIncomplete(id, "pipeline-live",
+                    List.of("mining-chain-consumer", "desired", "state", "observation"), List.of());
+        }
         List<RuntimeException> failures = new ArrayList<>();
         List<String> residue = new ArrayList<>();
         attempt(failures, residue, "mining-chain-consumer", () -> detachFromEveryChain(id));
@@ -177,7 +190,7 @@ public final class ArtifactMutationService {
         attempt(failures, residue, "state", () -> state.delete(id));
         attempt(failures, residue, "observation", () -> observations.delete(id));
         if (!failures.isEmpty()) {
-            throw reclaimIncomplete(id, residue, failures);
+            throw reclaimIncomplete(id, "step-failed", residue, failures);
         }
     }
 
@@ -253,17 +266,36 @@ public final class ArtifactMutationService {
      * never run, which is the clean case rather than an unknown one.
      */
     private void refuseWhenNotStopped(String id) {
-        PipelineState actual = state.read(id)
-                .map(checkpoint -> StateJson.parse(checkpoint.stateJson()))
-                .orElse(PipelineState.NEW);
-        PipelineState intent = desired.read(id)
-                .map(DesiredState::targetState)
-                .orElse(PipelineState.NEW);
-        if (!RESTING.contains(actual) || HEADED_UP.contains(intent)) {
+        PipelineState actual = actualStateOf(id);
+        PipelineState intent = intentOf(id);
+        if (!isAtRest(actual, intent)) {
             throw error(
                     ArtifactError.PIPELINE_NOT_STOPPED,
                     Map.of("id", id, "actual", actual.name(), "desired", intent.name()));
         }
+    }
+
+    /**
+     * Whether the pipeline is at rest right now, by the same reading the refusal uses. Sharing one
+     * definition is the point: a guard that judged "still stopped" differently from the refusal would
+     * pass exactly the pipelines the refusal exists to catch.
+     */
+    private boolean isAtRest(String id) {
+        return isAtRest(actualStateOf(id), intentOf(id));
+    }
+
+    private static boolean isAtRest(PipelineState actual, PipelineState intent) {
+        return RESTING.contains(actual) && !HEADED_UP.contains(intent);
+    }
+
+    private PipelineState actualStateOf(String id) {
+        return state.read(id)
+                .map(checkpoint -> StateJson.parse(checkpoint.stateJson()))
+                .orElse(PipelineState.NEW);
+    }
+
+    private PipelineState intentOf(String id) {
+        return desired.read(id).map(DesiredState::targetState).orElse(PipelineState.NEW);
     }
 
     private static TapstateException error(ArtifactError code, Map<String, Object> args) {
