@@ -203,6 +203,29 @@ class WhatAWindowHoldsBackKeepsTheFrontierBelowItTest {
                 .containsExactly(FAR_ABOVE);
     }
 
+    /**
+     * A level whose rows have stopped but whose bounds have not still has to let go on time. That is the
+     * ordinary shape of a source that has finished its backlog and is idling forward, and it is neither of
+     * the two cases already covered: no drain is settling, and a level being handed bounds is not
+     * necessarily a level the engine is calling idle. A window that only ends on those two would hold its
+     * last version of every document for as long as the bounds keep coming.
+     */
+    @Test
+    void aLevelFedOnlyBoundsStillLetsGoWhenTheWindowRunsOut() throws Exception {
+        AssemblerProcessor processor = throttled();
+        feed(processor, ROOT_ROWS, customer(1, "C1"));
+        clock.advance(1);
+        feed(processor, FROM_POLICIES, policyElement(200, "C1", "P1"));
+
+        clock.advance(WINDOW);
+        processor.tryProcessWatermark(FROM_POLICIES, new Watermark(FAR_ABOVE, AXES.axisOf(POLICIES)));
+
+        assertThat(drained().stream().filter(Envelope.class::isInstance).count())
+                .describedAs("nothing else is arriving to carry it and no drain is due; a bound is the only "
+                        + "thing this level is being handed, so it has to be enough")
+                .isEqualTo(1L);
+    }
+
     @Test
     void anElementWaitingForItsAncestorDoesNotHoldTheBoundBack() throws Exception {
         AssemblerProcessor processor = throttled();

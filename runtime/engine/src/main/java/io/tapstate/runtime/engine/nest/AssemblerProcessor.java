@@ -333,11 +333,15 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     @Override
     public boolean tryProcessWatermark(int ordinal, Watermark watermark) {
+        // Before the bound, and on this path as well as the other two, because a level whose rows have
+        // stopped while its bounds have not is neither draining nor idle - the ordinary shape of a source
+        // that has caught up. A window ending only on those two would hold its last version of every
+        // document for as long as the bounds kept arriving.
+        if (!sendWhatWindowsHaveRunOutOn()) {
+            return false;
+        }
         if (bounds == null) {
             return true;
-        }
-        if (!flush()) {
-            return false;
         }
         return bounds.advance(ordinal, watermark, this::tryEmit);
     }
