@@ -30,6 +30,14 @@ io.tapstate.runtime.engine.nest.NestElement :: field :: order :: io.tapstate.cor
 io.tapstate.runtime.engine.nest.NestElement :: field :: positions :: java.util.Map<java.lang.String, io.tapstate.core.event.ChainPosition>
 io.tapstate.runtime.engine.nest.NestElement :: field :: ref :: io.tapstate.runtime.engine.nest.ElementRef
 io.tapstate.runtime.engine.nest.NestElement :: record :: uid=0
+# A subtree between documents, and the address an entry of them is filed under. Both are written to a
+# store and read back by whatever build is running when the document that was owed the rows takes them,
+# which is every reason the state types below are pinned here.
+io.tapstate.runtime.engine.nest.ParkedSubtree :: field :: changes :: java.util.List<io.tapstate.runtime.engine.nest.NestElement>
+io.tapstate.runtime.engine.nest.ParkedSubtree :: record :: uid=0
+io.tapstate.runtime.engine.nest.ParkedSubtree$At :: field :: elementKey :: java.util.List<java.lang.Object>
+io.tapstate.runtime.engine.nest.ParkedSubtree$At :: field :: pathId :: java.util.List<java.lang.String>
+io.tapstate.runtime.engine.nest.ParkedSubtree$At :: record :: uid=0
 io.tapstate.runtime.engine.nest.ResolverState :: class :: uid=1
 io.tapstate.runtime.engine.nest.ResolverState :: field :: deleted :: boolean
 io.tapstate.runtime.engine.nest.ResolverState :: field :: order :: io.tapstate.core.event.SourceOrder

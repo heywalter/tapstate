@@ -1,5 +1,6 @@
 package io.tapstate.archtests;
 
+import io.tapstate.runtime.engine.nest.ParkedSubtree;
 import io.tapstate.runtime.engine.nest.ResolverState;
 import io.tapstate.runtime.engine.nest.RootAssembly;
 import java.io.IOException;
@@ -59,7 +60,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NestStateSerialFormGatesTest {
 
     /** The two values a state map holds. Everything the stored bytes contain is reached from one of them. */
-    private static final List<Class<?>> WHAT_IS_STORED = List.of(RootAssembly.class, ResolverState.class);
+    // Three roots, not two: a subtree between documents is written to a store of its own and read back by
+    // whatever build is running when the document that was owed it takes it, which is every reason the other
+    // two are here. Left out, the next change to it would go unnoticed until a hand-over that had outlived a
+    // deploy came back unreadable - from inside a read of state, reported as something else entirely.
+    private static final List<Class<?>> WHAT_IS_STORED =
+            List.of(RootAssembly.class, ResolverState.class, ParkedSubtree.class, ParkedSubtree.At.class);
 
     /** Ours to pin; anything outside it is a JDK type or user data that carries its own identity. */
     private static final String OURS = "io.tapstate.";
