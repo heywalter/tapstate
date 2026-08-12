@@ -47,6 +47,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <em>and</em> the survivor's has to remain, and a detach that cleared both would satisfy either half on
  * its own while breaking the chain for everyone left on it.
  *
+ * <p>The departed pipeline's own target is checked too, and it is checked against rows it was first shown
+ * to have landed. What a removal may reclaim is bookkeeping; delivered rows are the user's data and
+ * outlive the artifact that produced them. Measuring this on a target that never received anything would
+ * pass against every implementation, which is why the case waits for the rows before taking them away.
+ *
  * <p>One source feeds both pipelines, which is what puts them on one chain - chain identity is the physical
  * source coordinate, so two pipelines reading one source are two consumers of one capture by construction
  * rather than by an assertion this case would have to make about internals.
@@ -99,6 +104,15 @@ class ArtifactDeleteSharedSrsChainIT {
                             + documents.miningChainIds().stream().map(documents::consumersOf).toList());
             String chainId = onlyChain(documents);
 
+            // The departing pipeline has to have landed something before it goes, or "its target still
+            // holds what it wrote" is a claim about an empty file and passes no matter what is reclaimed.
+            Await.until(
+                    DEPARTING_ID + " to land the seeded rows, so what outlives its removal is data that "
+                            + "was demonstrably there",
+                    () -> files.count(directory.resolve(DEPARTING_TARGET).toString(), TABLE) == SEEDED_ROWS,
+                    () -> "rows at " + DEPARTING_TARGET + " = "
+                            + files.count(directory.resolve(DEPARTING_TARGET).toString(), TABLE));
+
             // The departing pipeline comes to rest first; the surviving one is left running throughout,
             // because what this case measures is whether it keeps going.
             control.lifecycle(DEPARTING_ID, LifecycleVerb.STOP);
@@ -106,6 +120,8 @@ class ArtifactDeleteSharedSrsChainIT {
                     DEPARTING_ID + " to reach " + PipelineState.STOPPED,
                     () -> control.state(DEPARTING_ID).filter(PipelineState.STOPPED::equals).isPresent(),
                     () -> String.valueOf(control.state(DEPARTING_ID)));
+
+            long departingTargetRows = files.count(directory.resolve(DEPARTING_TARGET).toString(), TABLE);
 
             control.deleteArtifact(DEPARTING_ID, control.contentHash(DEPARTING_ID));
 
@@ -120,6 +136,12 @@ class ArtifactDeleteSharedSrsChainIT {
                     .as("exactly who holds a cursor now - the departed one gone, the survivor's kept; a "
                             + "detach that cleared both would break the chain for everyone left on it")
                     .containsExactly(SURVIVING_ID);
+            assertThat(files.count(directory.resolve(DEPARTING_TARGET).toString(), TABLE))
+                    .as("the rows the departed pipeline had already landed, which are the user's data and "
+                            + "not bookkeeping the removal is entitled to reclaim; a removal that tidied "
+                            + "away 'its' target would destroy delivered data and report success")
+                    .isEqualTo(departingTargetRows)
+                    .isEqualTo(SEEDED_ROWS);
 
             // Everything above is still satisfied by an implementation that detached nothing but removed the
             // chain document too, and by one that detached correctly. What follows is what separates a
