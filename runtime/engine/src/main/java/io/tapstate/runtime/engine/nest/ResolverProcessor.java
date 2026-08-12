@@ -283,6 +283,16 @@ public final class ResolverProcessor extends AbstractProcessor {
         NestKeys.requireBeforeImageWhereKeysAreTracked(edge, event);
         Map<String, Object> row = NestKeys.rowOf(event);
         if (edge.pathId().equals(vertex.pathId())) {
+            if (edge.carriesDepartures()) {
+                // Nothing yet, and doing the ordinary thing here would be worse than nothing: this copy was
+                // routed by the identity the row is leaving, while everything below reads the identity it
+                // now has, so it would declare a mapping and file it under a key this instance does not
+                // hold. What belongs here is moving the entry the row is vacating - the identity it was
+                // filed under is changing - and until that exists this copy has no work to do. The half of
+                // a move that says "gone" already travels from the edge beside this one, where it is sent
+                // upward rather than written locally.
+                return;
+            }
             own(edge, event, row, touched);
         } else {
             List<Object> parent = NestKeys.valuesOf(row, edge.keyFields());

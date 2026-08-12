@@ -18,6 +18,7 @@ import io.tapstate.core.event.Envelope;
 import io.tapstate.core.model.EmbedAs;
 import io.tapstate.core.model.NestRoot;
 import io.tapstate.core.model.TransformBody;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -148,6 +149,53 @@ class AStreamThatTracksKeyChangesNeedsToSeeWhatTheRowWasTest {
 
         assertThatCode(() -> feed(policies, CLAIMS, claimDelete(1, "k1", "p1")))
                 .doesNotThrowAnyException();
+    }
+
+    /**
+     * A tracked stream reaches its vertex on two edges, and the second carries every row keyed by what it
+     * is leaving. For a vertex's <em>own</em> rows there is nothing to do with that copy yet, and doing the
+     * ordinary thing with it would be worse than nothing: it was routed by the identity the row is leaving,
+     * while everything read off the row names the identity it now has, so it would file a mapping under a
+     * key this instance does not hold - writing across instances, which is the whole failure the second
+     * edge exists to remove.
+     *
+     * <p>Asserted as "nothing came out" because that is the observable half of "nothing was written". A
+     * copy that had been handled would have travelled on as an element, exactly as its twin did.
+     */
+    @Test
+    void aVertexsOwnRowArrivingOnTheDepartureEdgeIsNotHandledTwice() throws Exception {
+        NestTopology topology = NestTopology.compile("p", "doc", POLICIES_TRACKED, tables());
+        NestVertex policies = topology.vertexAt(List.of("policies"));
+        int twin = departureTwinOf(policies, policies.pathId());
+        ResolverProcessor processor = new ResolverProcessor(policies, new HeapNestStore<>(), UNUSED);
+        TestOutbox outbox = new TestOutbox(256);
+        processor.init(outbox, new TestProcessorContext());
+
+        TestInbox inbox = new TestInbox();
+        inbox.queue().add(policyUpdateMoved(1, "P1", "C1", "C2"));
+        processor.process(twin, inbox);
+
+        List<Object> routed = new ArrayList<>();
+        outbox.drainQueueAndReset(0, routed, false);
+        assertThat(routed)
+                .describedAs("this copy belongs to the identity being vacated, which nothing handles yet")
+                .isEmpty();
+    }
+
+    private static int departureTwinOf(NestVertex vertex, List<String> pathId) {
+        for (NestInbound edge : vertex.inbound()) {
+            if (edge.carriesDepartures() && edge.pathId().equals(pathId)) {
+                return edge.ordinal();
+            }
+        }
+        throw new AssertionError("no departure edge carries " + pathId);
+    }
+
+    private static Envelope policyUpdateMoved(long seq, String policyId, String was, String is) {
+        return Envelope.update(seq, "policy",
+                row("policy_id", policyId, "customer_id", was, "policy_no", "PN-" + policyId),
+                row("policy_id", policyId, "customer_id", is, "policy_no", "PN-" + policyId), null)
+                .withOrder(at(seq));
     }
 
     /**
