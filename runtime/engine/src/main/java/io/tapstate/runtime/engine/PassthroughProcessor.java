@@ -63,7 +63,8 @@ public final class PassthroughProcessor extends AbstractProcessor {
                 ? PassthroughProcessor::new
                 // Holding nothing back is the whole of this vertex's own contribution: what it may promise
                 // is exactly the lowest of what its edges promised.
-                : () -> new PassthroughProcessor(new LevelBounds(chainsByOrdinal, axes, chain -> null));
+                : () -> new PassthroughProcessor(
+                        new LevelBounds(chainsByOrdinal, axes, LevelBounds.HOLDS_NOTHING));
         return ProcessorMetaSupplier.forceTotalParallelismOne(ProcessorSupplier.of(supplier));
     }
 

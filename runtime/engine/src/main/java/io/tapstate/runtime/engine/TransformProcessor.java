@@ -95,7 +95,7 @@ public final class TransformProcessor extends AbstractProcessor {
                 // Holding nothing back is the whole of this level's own contribution: what it may promise
                 // is exactly the lowest of what its edges promised.
                 : () -> new TransformProcessor(portFactory.get(),
-                        new LevelBounds(chainsByOrdinal, axes, chain -> null));
+                        new LevelBounds(chainsByOrdinal, axes, LevelBounds.HOLDS_NOTHING));
         return ProcessorMetaSupplier.forceTotalParallelismOne(ProcessorSupplier.of(supplier));
     }
 
