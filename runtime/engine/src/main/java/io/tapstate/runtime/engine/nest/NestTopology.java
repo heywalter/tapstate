@@ -109,7 +109,7 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         checkAppendMode(root, all);
         checkVertexCount(all, resolverVertexLimit);
 
-        return assemble(pipelineId, nodeId, root, rootIdentity, top, all);
+        return assemble(pipelineId, nodeId, root, rootIdentity, top, all, tables);
     }
 
     /**
@@ -188,7 +188,7 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
     }
 
     private static NestTopology assemble(String pipelineId, String nodeId, NestRoot root,
-            List<String> rootIdentity, List<Node> top, List<Node> all) {
+            List<String> rootIdentity, List<Node> top, List<Node> all, Function<String, NestTable> tables) {
         Map<List<String>, List<String>> identities = new LinkedHashMap<>();
         identities.put(List.of(), rootIdentity);
         for (Node node : all) {
@@ -198,13 +198,14 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         List<NestStream> streams = new ArrayList<>();
         for (Node node : all) {
             if (!node.children().isEmpty()) {
-                vertices.add(vertexOf(pipelineId, nodeId, node, identities.get(node.parentPathId())));
+                vertices.add(vertexOf(pipelineId, nodeId, node, identities.get(node.parentPathId()), tables));
             }
         }
         String assemblerName = vertexName(nodeId, List.of());
         vertices.add(new NestVertex(List.of(), assemblerName,
                 mapName(pipelineId, nodeId, List.of()), rootIdentity, List.of(),
-                edgesOf(root.from(), List.of(), List.of(), rootIdentity, top)));
+                edgesOf(root.from(), List.of(), List.of(), rootIdentity, top,
+                        Boolean.TRUE.equals(root.trackKeyChanges()), tables)));
 
         streams.add(new NestStream(root.from(), List.of(), 0, assemblerName, null));
         for (Node node : all) {
@@ -220,11 +221,13 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
                 !WriteMode.APPEND.yaml().equals(root.mode()));
     }
 
-    private static NestVertex vertexOf(String pipelineId, String nodeId, Node node, List<String> parentIdentity) {
+    private static NestVertex vertexOf(String pipelineId, String nodeId, Node node, List<String> parentIdentity,
+            Function<String, NestTable> tables) {
         return new NestVertex(node.pathId(), vertexName(nodeId, node.pathId()),
                 mapName(pipelineId, nodeId, node.pathId()), node.identity(),
                 joinFields(node.embed(), parentIdentity),
-                edgesOf(node.embed().from(), node.pathId(), node.arrayKey(), node.identity(), node.children()));
+                edgesOf(node.embed().from(), node.pathId(), node.arrayKey(), node.identity(), node.children(),
+                        Boolean.TRUE.equals(node.embed().trackKeyChanges()), tables));
     }
 
     /**
@@ -234,16 +237,37 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
      * there happens to be exactly one child.
      */
     private static List<NestInbound> edgesOf(String ownAlias, List<String> ownPathId, List<String> ownElementKey,
-            List<String> identity, List<Node> children) {
+            List<String> identity, List<Node> children, boolean ownTracksKeyChanges,
+            Function<String, NestTable> tables) {
         List<NestInbound> edges = new ArrayList<>();
-        edges.add(new NestInbound(0, ownAlias, ownPathId, identity, ownElementKey));
+        edges.add(new NestInbound(0, ownAlias, ownPathId, identity, ownElementKey, ownTracksKeyChanges,
+                tableBehind(ownAlias, ownTracksKeyChanges, tables)));
         for (Node child : children) {
+            boolean tracked = Boolean.TRUE.equals(child.embed().trackKeyChanges());
             edges.add(child.children().isEmpty()
                     ? new NestInbound(edges.size(), child.embed().from(), child.pathId(),
-                            joinFields(child.embed(), identity), child.arrayKey())
+                            joinFields(child.embed(), identity), child.arrayKey(), tracked,
+                            tableBehind(child.embed().from(), tracked, tables))
                     : new NestInbound(edges.size(), null, child.pathId(), List.of(), List.of()));
         }
         return edges;
+    }
+
+    /**
+     * The source table an edge's alias stands for, resolved only where key changes are tracked. Looked up
+     * for those alone because it is needed for one thing - saying which table has to start sending before
+     * images - and because an alias that resolves to no table is tolerated elsewhere whenever the tree
+     * declares what would otherwise be read off it.
+     */
+    private static String tableBehind(String alias, boolean tracked, Function<String, NestTable> tables) {
+        if (!tracked) {
+            return null;
+        }
+        NestTable table = tables.apply(alias);
+        if (table == null) {
+            throw new IllegalStateException("nest alias '" + alias + "' resolves to no table");
+        }
+        return table.name();
     }
 
     /**

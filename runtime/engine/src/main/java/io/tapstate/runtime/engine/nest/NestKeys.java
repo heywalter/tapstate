@@ -1,5 +1,6 @@
 package io.tapstate.runtime.engine.nest;
 
+import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.event.Op;
@@ -54,5 +55,27 @@ final class NestKeys {
     /** Whether this event removes what it names rather than putting a row there. */
     static boolean isDeletion(Envelope event) {
         return event.op() == Op.DELETE;
+    }
+
+    /**
+     * Stops the job on an update that arrives without the row it replaces, where the author asked for
+     * structural key changes to be followed on this stream.
+     *
+     * <p>The after image alone cannot answer the only question that matters here. A row that moved to
+     * another parent and a row that had an unrelated column edited arrive looking the same - a row sitting
+     * where it now sits - and following the first as though it were the second writes the element into its
+     * new place while leaving it in the old one, so the document keeps a copy the source no longer has.
+     * Nothing downstream can notice that, which is why it fails here instead of being worked around.
+     *
+     * <p>Only updates are refused. An insert has no earlier row at all and a deletion carries one as the
+     * only row it has, so refusing either would be refusing the shape of the event rather than a source
+     * that sends too little.
+     */
+    static void requireBeforeImageWhereKeysAreTracked(NestInbound edge, Envelope event) {
+        if (!edge.tracksKeyChanges() || event.op() != Op.UPDATE || event.before() != null) {
+            return;
+        }
+        throw new TapstateException(NestError.KEY_CHANGE_TRACKING_REQUIRES_BEFORE_IMAGE,
+                Map.of("alias", edge.alias(), "table", edge.table()), null);
     }
 }

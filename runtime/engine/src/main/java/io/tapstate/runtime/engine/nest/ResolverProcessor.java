@@ -280,6 +280,7 @@ public final class ResolverProcessor extends AbstractProcessor {
             return;
         }
         Envelope event = (Envelope) item;
+        NestKeys.requireBeforeImageWhereKeysAreTracked(edge, event);
         Map<String, Object> row = NestKeys.rowOf(event);
         if (edge.pathId().equals(vertex.pathId())) {
             own(edge, event, row, touched);

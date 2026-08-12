@@ -366,6 +366,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
             return;
         }
         Envelope event = (Envelope) item;
+        NestKeys.requireBeforeImageWhereKeysAreTracked(edge, event);
         Map<String, Object> row = NestKeys.rowOf(event);
         SourceOrder order = NestKeys.orderOf(event);
         if (edge.pathId().isEmpty()) {
