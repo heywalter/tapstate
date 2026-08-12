@@ -180,7 +180,7 @@ public final class Cli implements Runnable {
                     "Upload the workspace, or one artifact, creating or updating each resource.")),
             Map.entry("get", new VerbHelp("<id>",
                     "Fetch one stored artifact back as canonical YAML.")),
-            Map.entry("delete", new VerbHelp("<id> [--if-match <hash>]",
+            Map.entry("delete", new VerbHelp("<id> [--if-match <hash>] [-o text|json|yaml]",
                     "Remove one stored artifact for good; --if-match pins the version removed.")),
             Map.entry("connectors", new VerbHelp("[-o text|json|yaml]",
                     "List the connectors registered on the server.")),

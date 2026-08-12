@@ -30,7 +30,14 @@ public final class ControlOperations {
     public static final Operation ARTIFACT_VALIDATE = mcp(
             "artifact.validate", Scope.READ, false,
             "Validate a complete tapstate/v1 workspace without writing artifacts or audit records.");
-    public static final Operation ARTIFACT_GET = new Operation("artifact.get", Scope.READ, false, null, CLI_POC);
+    // The read every precondition-bearing write depends on. It is exposed alongside artifact.delete
+    // rather than on the CLI alone because the removal demands a content hash a remote caller cannot
+    // compute for itself; without this read on the same face, that verb is callable and unusable.
+    public static final Operation ARTIFACT_GET = mcp(
+            "artifact.get", Scope.READ, false,
+            "Read one applied resource of any kind by id, as its canonical tapstate/v1 YAML plus the "
+                    + "content hash of those exact bytes. Pass that hash back as the expectedContentHash "
+                    + "of a removal, or as a per-resource precondition when applying an edit.");
     public static final Operation ARTIFACT_LIST = new Operation("artifact.list", Scope.READ, false, null, CLI_POC);
     // The removal verb, one path for every kind. It destroys a named resource for good, which no other
     // operation on this surface does, so its description says so plainly rather than leaving a caller to

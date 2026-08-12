@@ -61,6 +61,7 @@ public final class ControlApiSchema {
         bind(refs, "artifact.validate", "ArtifactValidate");
         bind(refs, "artifact.apply", "ArtifactApply");
         bind(refs, "artifact.delete", "ArtifactDelete");
+        bind(refs, "artifact.get", "ArtifactGet");
         bind(refs, "pipeline.start", "PipelineStart");
         bind(refs, "pipeline.stop", "PipelineStop");
         bind(refs, "pipeline.status", "PipelineStatus");
@@ -149,6 +150,20 @@ public final class ControlApiSchema {
                         string("Content hash of the version being removed, as returned by a read of it")),
                 false);
         pair(defs, "ArtifactDelete", deleteRequest, opaque);
+
+        // The read's result is spelled out rather than left opaque: a caller reads this schema to learn
+        // that a hash comes back at all, and that hash is the only route to the precondition the removal
+        // above demands. An opaque result would leave the two halves connected only by prose.
+        Map<String, Object> artifactResult = object(
+                List.of("id", "kind", "canonicalForm", "contentHash"),
+                Map.of(
+                        "id", id,
+                        "kind", string("Resource kind: source, pipeline, transform, view or serve"),
+                        "canonicalForm", string("Canonical tapstate/v1 YAML as held by the store"),
+                        "contentHash",
+                        string("Content hash of those canonical bytes; pass back as a precondition")),
+                false);
+        pair(defs, "ArtifactGet", object(List.of("id"), Map.of("id", id), false), artifactResult);
 
         Map<String, Object> pipelineId = object(List.of("id"), Map.of("id", id), false);
         pair(defs, "PipelineStart", pipelineId, opaque);

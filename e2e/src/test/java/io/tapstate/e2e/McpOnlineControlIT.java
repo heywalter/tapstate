@@ -89,7 +89,7 @@ class McpOnlineControlIT {
                         {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
                         """);
                 List<?> tools = (List<?>) ((Map<?, ?>) receive(output).get("result")).get("tools");
-                assertThat(tools).hasSize(18);
+                assertThat(tools).hasSize(19);
                 assertThat(tools.stream()
                         .map(tool -> String.valueOf(((Map<?, ?>) tool).get("name")))
                         .toList())

@@ -3,6 +3,7 @@ package io.tapstate.control.core;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ControlOperationsTest {
@@ -159,10 +160,35 @@ class ControlOperationsTest {
                         "source.list", "source.get", "source.draft",
                         "connection.test", "connection.test-result",
                         "connection.discover-schema", "connection.schema",
-                        "artifact.validate", "artifact.apply", "artifact.delete",
+                        "artifact.validate", "artifact.apply", "artifact.delete", "artifact.get",
                         "pipeline.start", "pipeline.stop", "pipeline.status",
                         "pipeline.metrics", "pipeline.snapshot", "pipeline.logs");
         assertThat(registry.exposedOn(Frontend.REST, Maturity.GA)).isEmpty();
+    }
+
+    /**
+     * The precondition a removal demands has to be obtainable on the same face that offers the removal.
+     * artifact.delete requires a content hash, and a remote model cannot compute SHA-256 for itself, so
+     * its only route to one is reading the artifact here. Pinning the implication — "delete requires the
+     * hash" therefore "get is exposed on this face" — is what stops the two from drifting apart: the
+     * removal shipped on MCP while the read stayed CLI-only, which left the verb callable in principle
+     * and unusable in fact for every kind whose structured read does not carry a hash of its own.
+     */
+    @Test
+    void theMcpFaceCarriesAReadForThePreconditionItsRemovalDemands() {
+        Map<String, Object> deleteRequest =
+                ControlApiSchema.resolve(registry.resolve("artifact.delete").schema().params());
+        List<?> required = (List<?>) deleteRequest.get("required");
+        assertThat(required.stream().map(String::valueOf).toList()).contains("expectedContentHash");
+
+        Operation get = registry.resolve("artifact.get");
+        assertThat(get.exposure()).containsEntry(Frontend.MCP, Maturity.BETA);
+        assertThat(get.scope())
+                .as("the read that supplies a precondition must not itself need write access")
+                .isEqualTo(Scope.READ);
+        assertThat(get.audited())
+                .as("a read leaves no audit record")
+                .isFalse();
     }
 
     /**

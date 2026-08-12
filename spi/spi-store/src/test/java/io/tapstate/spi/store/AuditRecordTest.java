@@ -21,6 +21,24 @@ class AuditRecordTest {
     }
 
     @Test
+    void carriesTheVersionPreconditionACallerDeclaredWhenThereIsOne() {
+        AuditRecord record =
+                new AuditRecord(TS, "alice", "artifact.delete", "orders-source", "a".repeat(64));
+
+        assertThat(record.expectedContentHash()).isEqualTo("a".repeat(64));
+    }
+
+    @Test
+    void anOperationWithNoPreconditionToDeclareLeavesItAbsent() {
+        // Most audited operations declare no version at all — creating a token, probing a connection. The
+        // shorter form is what they use, and it must stay valid rather than force every caller to pass a
+        // null through: the field belongs to the operations that have one, not to the record's shape.
+        AuditRecord record = new AuditRecord(TS, "alice", "token.create", "tok-1");
+
+        assertThat(record.expectedContentHash()).isNull();
+    }
+
+    @Test
     void rejectsAMissingTimestamp() {
         assertThatThrownBy(() -> new AuditRecord(null, "alice", "artifact.apply", "orders-source"))
                 .isInstanceOf(IllegalArgumentException.class);

@@ -302,6 +302,10 @@ class ArtifactMutationServiceTest {
             assertThat(record.principal()).isEqualTo(PRINCIPAL);
             assertThat(record.operationId()).isEqualTo("artifact.delete");
             assertThat(record.resourceId()).isEqualTo("orders");
+            // A destroyed resource leaves nothing behind to compare a log entry against, so the version
+            // the caller declared it was destroying is the only thing that can tie this entry to a
+            // particular content later on.
+            assertThat(record.expectedContentHash()).isEqualTo(hash(orders));
         });
     }
 
@@ -358,6 +362,15 @@ class ArtifactMutationServiceTest {
         assertThat(auditStore.records).singleElement().satisfies(record -> {
             assertThat(record.operationId()).isEqualTo("artifact.delete");
             assertThat(record.resourceId()).isEqualTo("orders");
+            // The load-bearing assertion for what this field means. The record is written before the store
+            // compare runs, so the only version knowable at that moment is the one the caller declared —
+            // here a stale one, and deliberately not the version the store actually holds. An
+            // implementation that reads the current hash out of the store to fill this in would silently
+            // redefine the field from "what was claimed" to "what was there", which is both unknowable at
+            // audit time and, on this branch, a value the caller never mentioned.
+            assertThat(record.expectedContentHash())
+                    .isEqualTo("0".repeat(64))
+                    .isNotEqualTo(hash(source("orders")));
         });
     }
 

@@ -20,15 +20,26 @@ class McpToolCatalogTest {
 
     private static final List<String> READ_TOOLS = List.of(
             "connector_list", "connector_get", "source_list", "source_get", "source_draft",
-            "connection_test_result", "connection_schema", "artifact_validate",
+            "connection_test_result", "connection_schema", "artifact_validate", "artifact_get",
             "pipeline_status", "pipeline_metrics", "pipeline_snapshot", "pipeline_logs");
 
     private static final List<String> WRITE_TOOLS = List.of(
             "artifact_apply", "artifact_delete", "connection_test", "connection_discover_schema",
             "pipeline_start", "pipeline_stop");
 
+    /**
+     * The read that supplies the removal's precondition has to be reachable without write access.
+     * Landing it in the write bucket would make the hash obtainable only in a session that already
+     * holds the power to destroy, which defeats the point of reading before deciding to.
+     */
     @Test
-    void defaultSurfaceContainsExactlyTheTwelveReadTools() {
+    void theReadThatSuppliesTheRemovalPreconditionIsAvailableWithoutWriteAccess() {
+        assertThat(McpToolCatalog.operations(false).stream().map(McpToolCatalog::toolName))
+                .contains("artifact_get");
+    }
+
+    @Test
+    void defaultSurfaceContainsExactlyTheThirteenReadTools() {
         assertThat(McpToolCatalog.operations(false).stream().map(McpToolCatalog::toolName))
                 .containsExactlyInAnyOrderElementsOf(READ_TOOLS);
     }
@@ -42,7 +53,7 @@ class McpToolCatalogTest {
     /**
      * The one tool on this surface that destroys a named resource must not be reachable from a session
      * that was not started with write access. The exact-set assertions above would also catch it, but
-     * only as one name among eighteen; this says which property is load-bearing, so a future edit that
+     * only as one name among nineteen; this says which property is load-bearing, so a future edit that
      * re-scopes the operation fails against a test that explains why it may not.
      */
     @Test

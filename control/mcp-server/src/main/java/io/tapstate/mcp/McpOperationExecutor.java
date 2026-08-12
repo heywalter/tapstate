@@ -53,6 +53,7 @@ final class McpOperationExecutor {
                 case "artifact.validate" -> post(
                         "/api/artifacts:validate", args, RequestBudget.HEAVY);
                 case "artifact.apply" -> post("/api/artifacts:apply", args, RequestBudget.HEAVY);
+                case "artifact.get" -> get("/api/artifacts/" + segment(required(args, "id")));
                 case "artifact.delete" -> artifactDelete(args);
                 case "pipeline.start" -> pipelineAction(args, "start");
                 case "pipeline.stop" -> pipelineAction(args, "stop");

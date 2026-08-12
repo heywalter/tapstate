@@ -231,6 +231,55 @@ class McpOperationExecutorTest {
     }
 
     @Test
+    void artifactGetReadsOneArtifactByIdAndReturnsWhatTheServerHolds() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            method.set(exchange.getRequestMethod());
+            path.set(exchange.getRequestURI().toString());
+            answer(exchange, 200,
+                    "{\"id\":\"orders\",\"kind\":\"pipeline\",\"canonicalForm\":\"x\",\"contentHash\":\""
+                            + "c".repeat(64) + "\"}");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_GET, Map.of("id", "orders"));
+
+            assertThat(result.error()).isFalse();
+            assertThat(method.get()).isEqualTo("GET");
+            assertThat(path.get()).isEqualTo("/api/artifacts/orders");
+            // The hash is the whole reason this read is on the MCP face: a model that cannot see it here
+            // has no route to the precondition artifact.delete demands.
+            assertThat(String.valueOf(JsonWriter.write(result.body()))).contains("contentHash");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void artifactGetEncodesAnIdThatWouldOtherwiseChangeThePath() throws Exception {
+        // An id is user-chosen text on the way into a URL path. Without encoding, one containing a slash
+        // reads as a different endpoint entirely and the read silently targets something else.
+        AtomicReference<String> path = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            path.set(exchange.getRequestURI().getRawPath());
+            answer(exchange, 200, "{}");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            executor.execute(ControlOperations.ARTIFACT_GET, Map.of("id", "a/b"));
+
+            assertThat(path.get()).isEqualTo("/api/artifacts/a%2Fb");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void artifactDeleteRefusesBeforeAnyRequestWhenThePreconditionIsMissing() {
         // The precondition is required, so a model that omits it must be refused here rather than have a
         // hash-less delete reach the server, where the refusal would be indistinguishable from a bug.

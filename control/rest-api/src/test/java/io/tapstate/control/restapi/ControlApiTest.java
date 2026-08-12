@@ -201,6 +201,37 @@ class ControlApiTest {
     }
 
     @Test
+    void whatAReadReturnsAsItsHashIsAcceptedVerbatimAsTheRemovalPrecondition() {
+        // The round-trip that makes the removal usable by a caller that cannot hash for itself: read the
+        // artifact, hand the hash straight back as If-Match, and the removal is accepted. Asserting only
+        // that the field is present and 64 characters long would pass for a hash over the id, the raw
+        // draft, or a constant — every one of which answers 412 here.
+        applyDrafts(TGT_MY);
+
+        StoredArtifact got = client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody();
+
+        HttpStatusCode status = client().method(HttpMethod.DELETE).uri("/api/artifacts/tgt_my")
+                .header(HttpHeaders.IF_MATCH, "\"" + got.contentHash() + "\"")
+                .exchange((request, response) -> response.getStatusCode());
+
+        assertThat(status).isEqualTo(HttpStatus.NO_CONTENT);
+    }
+
+    @Test
+    void aListedArtifactCarriesTheSameHashItsOwnReadReturns() {
+        // A caller that lists and then removes must not need a second round trip to re-read each one.
+        applyDrafts(SRC_ORA, TGT_MY, PIPELINE);
+
+        ArtifactList listed = client().get().uri("/api/artifacts")
+                .retrieve().toEntity(ArtifactList.class).getBody();
+
+        assertThat(listed.artifacts()).allSatisfy(a -> assertThat(a.contentHash())
+                .isEqualTo(client().get().uri("/api/artifacts/" + a.id())
+                        .retrieve().toEntity(StoredArtifact.class).getBody().contentHash()));
+    }
+
+    @Test
     void getAnUnknownIdIsNotFound() {
         HttpStatusCode status = client().get().uri("/api/artifacts/no_such_id")
                 .exchange((request, response) -> response.getStatusCode());

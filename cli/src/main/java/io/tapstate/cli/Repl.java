@@ -673,11 +673,17 @@ final class Repl {
      * read. That is not the same as removing unconditionally: if the resource changes in between, the
      * server refuses rather than discarding an edit nobody here has seen. Supplying the flag pins a
      * version the caller already holds and skips the read.
+     *
+     * <p>{@code -o json|yaml} reports the removal as a document rather than a sentence, including the
+     * precondition that was actually used — which the caller has no other way to learn when the verb
+     * chose it. A refusal on those surfaces keeps the refusal's parameters, so a script can act on the
+     * same facts the text surface turns into a next step.
      */
     private int deleteOnline(List<String> words) {
         PrintWriter err = commandLine.getErr();
         String id = null;
         String ifMatch = null;
+        OutputFormat format = OutputFormat.TEXT;
         for (int i = 1; i < words.size(); i++) {
             String word = words.get(i);
             if (word.equals("--if-match")) {
@@ -685,6 +691,15 @@ final class Repl {
                     return deleteUsage("--if-match needs a hash");
                 }
                 ifMatch = words.get(++i);
+            } else if (word.equals("-o") || word.equals("--output")) {
+                if (i + 1 >= words.size()) {
+                    return deleteUsage("-o needs a format");
+                }
+                OutputFormat chosen = outputFormat(words.get(++i));
+                if (chosen == null) {
+                    return deleteUsage("unknown output format '" + words.get(i) + "'");
+                }
+                format = chosen;
             } else if (word.startsWith("-")) {
                 return deleteUsage("unknown option '" + word + "'");
             } else if (id == null) {
@@ -724,24 +739,36 @@ final class Repl {
 
         String hash = ifMatch;
         String removedKind = kind;
+        OutputFormat chosenFormat = format;
         DeleteOutcome outcome = withFailover(() ->
                 controlPlane.delete(session.landingNode(), session.credential(), target, hash),
                 o -> o instanceof DeleteOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
         return switch (outcome) {
             case DeleteOutcome.Removed removed -> {
-                out.println("deleted " + (removedKind == null ? "" : removedKind + "  ") + removed.id());
+                if (chosenFormat == OutputFormat.TEXT) {
+                    out.println("deleted " + (removedKind == null ? "" : removedKind + "  ") + removed.id());
+                } else {
+                    Map<String, Object> document = new LinkedHashMap<>();
+                    document.put("id", removed.id());
+                    putIfPresent(document, "kind", removedKind);
+                    document.put("removed", true);
+                    document.put("expectedContentHash", hash);
+                    out.println(chosenFormat == OutputFormat.JSON
+                            ? JsonOut.write(document) : YamlOut.write(document));
+                }
                 out.flush();
                 yield Cli.EXIT_OK;
             }
-            case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected);
+            case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected, chosenFormat);
             case DeleteOutcome.Unreachable ignored -> reportRequestFailed();
         };
     }
 
     private int deleteUsage(String reason) {
         PrintWriter err = commandLine.getErr();
-        err.println("delete: " + reason + " (usage: delete <id> [--if-match <hash>])");
+        err.println("delete: " + reason
+                + " (usage: delete <id> [--if-match <hash>] [-o text|json|yaml])");
         err.flush();
         return Cli.EXIT_USAGE;
     }
@@ -752,7 +779,22 @@ final class Repl {
      * resource, and what state the pipeline is really in — neither of which the caller can be expected
      * to work out from the code alone, and neither of which this verb does anything about on its own.
      */
-    private int renderDeleteRefusal(DeleteOutcome.Rejected rejected) {
+    private int renderDeleteRefusal(DeleteOutcome.Rejected rejected, OutputFormat format) {
+        if (format != OutputFormat.TEXT) {
+            // The machine surfaces carry the parameters too, not just the code and message. They are what
+            // the text surface below turns into the next step, so dropping them would leave a script with
+            // strictly less to act on than a person reading the same refusal.
+            Map<String, Object> error = errorObject(rejected.code(), rejected.message());
+            if (!rejected.params().isEmpty()) {
+                error.put("params", new LinkedHashMap<>(rejected.params()));
+            }
+            Map<String, Object> document = new LinkedHashMap<>();
+            document.put("error", error);
+            PrintWriter out = commandLine.getOut();
+            out.println(format == OutputFormat.JSON ? JsonOut.write(document) : YamlOut.write(document));
+            out.flush();
+            return Cli.EXIT_DIAGNOSTIC;
+        }
         int status = renderRejection(rejected.code(), rejected.message());
         PrintWriter err = commandLine.getErr();
         switch (rejected.code()) {

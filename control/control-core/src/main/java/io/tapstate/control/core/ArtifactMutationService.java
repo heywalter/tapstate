@@ -115,7 +115,11 @@ public final class ArtifactMutationService {
         // the store untouched. What the gate wraps is the destruction itself: the record lands before the
         // document does, so an audit backend that is down refuses the removal rather than destroying a
         // resource that leaves no trace behind.
-        auditGate.dispatch(ControlOperations.ARTIFACT_DELETE, new AuditContext(principal, id), () -> {
+        // The declared version travels with the record, not the one the store turns out to hold: this
+        // runs before the compare below, and on the branch where that compare refuses, the version the
+        // caller offered is the only one that describes the attempt.
+        AuditContext audit = new AuditContext(principal, id, expectedContentHash);
+        auditGate.dispatch(ControlOperations.ARTIFACT_DELETE, audit, () -> {
             switch (store.delete(id, expectedContentHash)) {
                 case DELETED -> {
                 }

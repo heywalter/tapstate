@@ -1116,6 +1116,80 @@ class ReplTest {
         assertThat(client.deleteCalls).isEmpty();
     }
 
+    @Test
+    void deleteOnTheMachineFaceEmitsAStructuredResultInsteadOfASentence() {
+        // A script removing resources needs to know what it removed, and "deleted source src_kfk" is a
+        // sentence, not a result. The precondition actually used is part of it: without --if-match the
+        // verb picks the version itself, and the caller has no other way to learn which one went.
+        String canonical = "kind: source\nid: src_kfk\n";
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = new GetOutcome.Found(new RemoteArtifact("src_kfk", "source", canonical));
+        client.deleteOutcome = new DeleteOutcome.Removed("src_kfk");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete src_kfk -o json")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out)
+                .contains("\"id\": \"src_kfk\"")
+                .contains("\"kind\": \"source\"")
+                .contains("\"removed\": true")
+                .contains("\"expectedContentHash\": \"" + CanonicalHash.of(canonical) + "\"");
+        assertThat(h.repl().lastExitCode()).isZero();
+    }
+
+    @Test
+    void deleteOnTheMachineFaceRendersYamlWhenAskedFor() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.deleteOutcome = new DeleteOutcome.Removed("src_kfk");
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete src_kfk --if-match " + "c".repeat(64) + " -o yaml")).isTrue();
+
+        assertThat(h.sink().toString().substring(mark))
+                .contains("id: src_kfk")
+                .contains("removed: true");
+    }
+
+    /**
+     * The machine face must not be a worse face. A refusal's parameters are what the text face turns into
+     * the next step — who is still referencing it, what state the pipeline is really in — so a machine
+     * document carrying only the code and the message would leave a script strictly less able to act than
+     * a person reading the same refusal, and the obvious implementation (reuse the shared error document)
+     * does exactly that.
+     */
+    @Test
+    void aRefusalOnTheMachineFaceKeepsTheParametersTheTextFaceTurnsIntoNextSteps() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.deleteOutcome = new DeleteOutcome.Rejected(
+                "artifact.in-use", "Resource 'src_kfk' is still referenced.",
+                Map.of("id", "src_kfk", "referrers", List.of("kfk2my", "kfk2pg")));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete src_kfk --if-match " + "d".repeat(64) + " -o json")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("\"code\": \"artifact.in-use\"");
+        assertThat(out).contains("kfk2my").contains("kfk2pg");
+        assertThat(h.repl().lastExitCode()).isNotZero();
+    }
+
+    @Test
+    void deleteRefusesAnOutputFormatItDoesNotKnow() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        Harness h = onlineSession(Path.of("tap-work"), client);
+
+        assertThat(h.repl().dispatch("delete src_kfk -o toml")).isTrue();
+
+        assertThat(h.repl().lastExitCode()).isEqualTo(Cli.EXIT_USAGE);
+        // Nothing was read and nothing was removed: an unparseable request stops before it acts.
+        assertThat(client.deleteCalls).isEmpty();
+        assertThat(client.getCalls).isEmpty();
+    }
+
     /**
      * A refusal has to leave the user with the next move, not just a code. Both grounds name something
      * the caller must decide on — and this verb deliberately does neither of them itself, so saying what
