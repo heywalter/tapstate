@@ -79,15 +79,21 @@ class NestKeepsTheFrontierMovingWhileARootChangesKeyTest {
     /** Every row that got past the nest, as {@code op:customer_id:policyCount}. */
     private static final List<String> DOCUMENTS = Collections.synchronizedList(new ArrayList<>());
 
+    /** What the member is configured with, and so the default parallelism every vertex is left at. */
+    private static final int COOPERATIVE_THREADS = 4;
+
     private HazelcastInstance member;
     private Job job;
+
+    /** The vertex the nest compiled to, kept so a test can ask what the graph settled about it. */
+    private Vertex assembled;
 
     @BeforeEach
     void startMember() {
         SEEN.clear();
         DOCUMENTS.clear();
         Config config = new Config();
-        config.getJetConfig().setEnabled(true).setCooperativeThreadCount(4);
+        config.getJetConfig().setEnabled(true).setCooperativeThreadCount(COOPERATIVE_THREADS);
         config.setProperty("hazelcast.phone.home.enabled", "false");
         config.setProperty("hazelcast.shutdownhook.enabled", "false");
         JoinConfig join = config.getNetworkConfig().getJoin();
@@ -129,6 +135,26 @@ class NestKeepsTheFrontierMovingWhileARootChangesKeyTest {
                         + "about that chain until both have promised - a twin nobody sends a bound to pins "
                         + "the chain for the life of the job with nothing anywhere reporting it")
                 .isTrue();
+    }
+
+    /**
+     * The premise the test below rests on, asserted rather than assumed: the graph does not pin the vertex
+     * that assembles documents to one instance, so the key being emptied and the key being filled are worked
+     * by different ones. Every other case covering a hand-over drives processors by hand, and a hand-driven
+     * pair is a pair the test chose - pinned to one instance here, the move would become a local rearrangement
+     * and this whole file would be green on an implementation that cannot cross an instance at all.
+     */
+    @Test
+    void theVertexHoldingDocumentsIsNotPinnedToOneInstance() {
+        run(true, true);
+
+        assertThat(assembled.getLocalParallelism())
+                .describedAs("left at the member's own default - a graph that pinned this to one would make "
+                        + "every hand-over local, and every case covering one would be testing nothing")
+                .isNotEqualTo(1);
+        assertThat(COOPERATIVE_THREADS)
+                .describedAs("and the default it is left at really is more than one on this member")
+                .isGreaterThan(1);
     }
 
     @Test
@@ -187,7 +213,7 @@ class NestKeepsTheFrontierMovingWhileARootChangesKeyTest {
 
         Map<String, String> chainOfAlias = Map.of("c", CUSTOMERS, "p", POLICIES);
         Map<Vertex, Integer> outbound = new HashMap<>();
-        Vertex assembled = NestDag.attach(dag,
+        assembled = NestDag.attach(dag,
                 NestTopology.compile("p", "doc", body, tables::get),
                 "doc", "c", "doc",
                 alias -> List.of(byAlias.get(alias)),
