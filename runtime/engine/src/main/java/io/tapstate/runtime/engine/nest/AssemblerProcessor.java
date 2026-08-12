@@ -70,6 +70,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
     /** How many records of deleted elements one document here may keep once what may go has gone. */
     private final long tombstoneLimit;
 
+    /** How many changes one entry of the parking area carries. Read once, where everything else is chosen. */
+    private final long migrationBatch;
+
     /**
      * Keys keeping the record of a deletion, which is where the sweep that drops them has to look. Kept for
      * the same reason as {@link #holding}: the store cannot be asked which of its keys hold anything.
@@ -231,6 +234,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 Objects.requireNonNull(settings, "settings").elementsAllowedIn(vertex.mapName());
         this.pendingLimit = settings.pendingAllowedIn(vertex.mapName());
         this.tombstoneLimit = settings.tombstonesAllowedIn(vertex.mapName());
+        this.migrationBatch = settings.migrationBatchIn(vertex.mapName());
         this.clock = Objects.requireNonNull(clock, "clock");
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
@@ -517,7 +521,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
             // The half that has never seen this document before. What it was is somewhere both halves can
             // reach, addressed by the key that arrived - which is the only thing this side knows.
             ParkedSubtree.At at = ParkedSubtree.At.ofRoot(key);
-            if (!collect(document.assembly, at)) {
+            if (!collect(key, document.assembly, at)) {
                 owed.put(at, new Owed(key, document.ts));
             }
         }
@@ -576,7 +580,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // each of those is waiting for something that is never coming, once per change, for as long as the
         // pipeline runs.
         ParkedSubtree.At at = ParkedSubtree.At.of(change);
-        if (!collect(assembly, at)) {
+        if (!collect(key, assembly, at)) {
             owed.put(at, new Owed(key, document.ts));
         }
     }
@@ -595,26 +599,70 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (subtree.isEmpty()) {
             return;
         }
-        ParkedSubtree waiting = parking.load(at);
-        ParkedSubtree now = new ParkedSubtree(subtree);
-        parking.save(at, waiting == null ? now : waiting.and(now));
+        ParkedSubtree held = parking.load(at);
+        int size = (int) Math.min(Integer.MAX_VALUE, migrationBatch);
+        List<NestElement> first = held == null ? null : held.changes();
+        int cursor = 0;
+        if (first == null) {
+            first = List.copyOf(subtree.subList(0, Math.min(size, subtree.size())));
+            cursor = first.size();
+        }
+        int pieces = held == null ? 0 : held.batches();
+        while (cursor < subtree.size()) {
+            int take = Math.min(size, subtree.size() - cursor);
+            parking.save(at.piece(++pieces), new ParkedSubtree(subtree.subList(cursor, cursor + take)));
+            cursor += take;
+        }
+        // The entry naming the rest is written last, and it is the only one anyone looks for. A failure part
+        // way through therefore leaves pieces nobody reads rather than an address promising pieces that are
+        // not there - and the change that started the move is replayed, because the frontier is held below
+        // it until it lands, so they are written again.
+        parking.save(at, new ParkedSubtree(first, pieces));
         handedOver.put(at, since);
     }
 
     /**
      * Takes whatever was parked for this element into the document that now holds it, and lets go of the
      * entry. Applied in the order it was handed over, so a parent is placed before its children.
+     *
+     * <p><b>The document is stored before the parking area is let go of.</b> Both are writes to a durable
+     * plane, and between them the rows exist in exactly one place; done the other way round, that one place
+     * is the one being emptied, and a failure in the gap loses them with the state consistent and nothing
+     * anywhere to say a hand-over was ever owed.
      */
-    private boolean collect(RootAssembly assembly, ParkedSubtree.At at) {
+    private boolean collect(Object key, RootAssembly assembly, ParkedSubtree.At at) {
         ParkedSubtree waiting = parking.load(at);
         if (waiting == null) {
             return false;
         }
-        waiting.changes().forEach(assembly::take);
-        parking.remove(at);
+        takeIn(assembly, at, waiting);
+        store.save(key, assembly);
+        letGoOf(at, waiting.batches());
         handedOver.remove(at);
         owed.remove(at);
         return true;
+    }
+
+    /** Applies a hand-over, whichever pieces it was written in, in the order they were written. */
+    private void takeIn(RootAssembly assembly, ParkedSubtree.At at, ParkedSubtree waiting) {
+        waiting.changes().forEach(assembly::take);
+        for (int piece = 1; piece <= waiting.batches(); piece++) {
+            ParkedSubtree more = parking.load(at.piece(piece));
+            if (more != null) {
+                more.changes().forEach(assembly::take);
+            }
+        }
+    }
+
+    /**
+     * Drops a hand-over, its own entry last. Dropped first, a failure in the gap would strand every piece
+     * behind it: the entry naming them is the only thing that says they exist.
+     */
+    private void letGoOf(ParkedSubtree.At at, int pieces) {
+        for (int piece = pieces; piece >= 1; piece--) {
+            parking.remove(at.piece(piece));
+        }
+        parking.remove(at);
     }
 
     /**
@@ -634,6 +682,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
             return;
         }
         Map<Object, Touched> landed = new LinkedHashMap<>();
+        Map<ParkedSubtree.At, Integer> taken = new LinkedHashMap<>();
         Iterator<Map.Entry<ParkedSubtree.At, Owed>> pending = owed.entrySet().iterator();
         while (pending.hasNext()) {
             Map.Entry<ParkedSubtree.At, Owed> entry = pending.next();
@@ -655,8 +704,8 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 landed.put(key, document);
             }
             document.ts = Math.max(document.ts, entry.getValue().ts());
-            waiting.changes().forEach(document.assembly::take);
-            parking.remove(entry.getKey());
+            takeIn(document.assembly, entry.getKey(), waiting);
+            taken.put(entry.getKey(), waiting.batches());
             handedOver.remove(entry.getKey());
             pending.remove();
         }
@@ -668,6 +717,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (!landed.isEmpty()) {
             settle(landed);
         }
+        // Only once the documents holding those rows have been stored, for the reason collect gives: between
+        // the two writes the rows exist in one place, and it must not be the one being emptied.
+        taken.forEach(this::letGoOf);
     }
 
     /**

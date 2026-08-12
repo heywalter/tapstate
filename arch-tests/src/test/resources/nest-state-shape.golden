@@ -37,10 +37,16 @@ io.tapstate.runtime.engine.nest.NestElement :: record :: uid=0
 # A subtree between documents, and the address an entry of them is filed under. Both are written to a
 # store and read back by whatever build is running when the document that was owed the rows takes them,
 # which is every reason the state types below are pinned here.
+# A hand-over gained two fields when it started being written in pieces, and the absent value is the
+# right answer for both, which is why the identity is not bumped. An entry written before there were
+# pieces holds all of its rows in `changes` and has no further ones - which is what `batches` reading 0
+# says - and it was written at the address of the hand-over itself, which is what `piece` reading 0 is.
+io.tapstate.runtime.engine.nest.ParkedSubtree :: field :: batches :: int
 io.tapstate.runtime.engine.nest.ParkedSubtree :: field :: changes :: java.util.List<io.tapstate.runtime.engine.nest.NestElement>
 io.tapstate.runtime.engine.nest.ParkedSubtree :: record :: uid=0
 io.tapstate.runtime.engine.nest.ParkedSubtree$At :: field :: elementKey :: java.util.List<java.lang.Object>
 io.tapstate.runtime.engine.nest.ParkedSubtree$At :: field :: pathId :: java.util.List<java.lang.String>
+io.tapstate.runtime.engine.nest.ParkedSubtree$At :: field :: piece :: int
 io.tapstate.runtime.engine.nest.ParkedSubtree$At :: record :: uid=0
 io.tapstate.runtime.engine.nest.ResolverState :: class :: uid=1
 io.tapstate.runtime.engine.nest.ResolverState :: field :: deleted :: boolean

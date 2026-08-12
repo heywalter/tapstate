@@ -36,13 +36,21 @@ final class NestStateKeys {
     /** Separates the embed an address names from the identity inside it. */
     private static final char WITHIN = '#';
 
+    /**
+     * Introduces which piece of a hand-over an address names, and appears only where there is one. It cannot
+     * be read into the name it follows: a name ends in the letters saying what kinds its values were, and no
+     * letter is this character or a digit.
+     */
+    private static final char PIECE = '@';
+
     private NestStateKeys() {
     }
 
     /** The name {@code key} is stored under - injective over keys, and readable at a glance. */
     static String nameOf(Object key) {
         if (key instanceof ParkedSubtree.At at) {
-            return nameOf(at.pathId(), at.elementKey());
+            String address = nameOf(at.pathId(), at.elementKey());
+            return at.piece() == 0 ? address : address + PIECE + at.piece();
         }
         StringBuilder types = new StringBuilder();
         if (key instanceof List<?> values) {

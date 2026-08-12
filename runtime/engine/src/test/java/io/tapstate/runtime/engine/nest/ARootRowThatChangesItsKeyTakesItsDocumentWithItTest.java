@@ -215,6 +215,54 @@ class ARootRowThatChangesItsKeyTakesItsDocumentWithItTest {
                 .isNotNull();
     }
 
+    /**
+     * What the source has cascaded follows the rename by itself. The child row carries the new value, so it
+     * is routed to the new key like any other row and needs nothing from the move at all - which is what
+     * makes the case beneath it mean something rather than being the only behaviour there is.
+     */
+    @Test
+    void aChildThatFollowedTheRenameLandsUnderTheNewKey() throws Exception {
+        AssemblerProcessor losing = assembler();
+        AssemblerProcessor gaining = assembler();
+        customer(losing, "C1");
+        renamed(losing, gaining, "C1", "C2");
+
+        policy(gaining, "P2", "C2");
+
+        assertThat(policiesOf("C2")).hasSize(1);
+    }
+
+    /**
+     * The source that did not cascade. The child row goes on naming a key the source no longer has, so it
+     * arrives at that key, finds no root there, and is shown to nobody - which is the faithful reading of a
+     * row the source itself has left orphaned, not a failure of the move.
+     *
+     * <p>Written down as a case because it is a promise about what does <em>not</em> happen: nothing guesses
+     * that these rows meant to follow, and nothing revives the key they name.
+     */
+    @Test
+    void aChildStillPointingAtTheKeyThatWentIsShownToNobody() throws Exception {
+        AssemblerProcessor losing = assembler();
+        AssemblerProcessor gaining = assembler();
+        customer(losing, "C1");
+        renamed(losing, gaining, "C1", "C2");
+
+        List<Object> emitted = new ArrayList<>();
+        TestInbox inbox = new TestInbox();
+        inbox.queue().add(Envelope.insert(3, "policy",
+                row("policy_id", "P3", "customer_id", "C1", "policy_no", "PN-P3"), null).withOrder(at(3)));
+        losing.process(POLICIES, inbox);
+        out.drainQueueAndReset(0, emitted, false);
+
+        assertThat(policiesOf("C2"))
+                .describedAs("nothing guesses that a row still naming the old key meant to follow")
+                .isEmpty();
+        assertThat(emitted)
+                .describedAs("and the key the source no longer has is not revived to carry it")
+                .noneMatch(item -> item instanceof Envelope event && event.op() != Op.DELETE
+                        && "C1".equals(keyOf(event)));
+    }
+
     /** Drives both halves of one rename, departure first, and answers with everything that went downstream. */
     private List<Object> renamed(AssemblerProcessor losing, AssemblerProcessor gaining, String was, String is)
             throws Exception {

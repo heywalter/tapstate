@@ -131,30 +131,50 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_SEND_WINDOW_MILLIS = 50L;
 
+    /**
+     * How many changes one entry of the parking area carries when nothing says otherwise.
+     *
+     * <p>Not a capacity and not a rate - it is how a hand-over is cut up on its way to the area both halves
+     * of a move reach. One value however wide the tree is would be no worse to write than the document it
+     * came out of, which is one entry of the same rows; what it would be worse at is the <em>second</em>
+     * hand-over onto the same address, which has to read everything already parked back and write all of it
+     * out again. In pieces, what is rewritten is one piece.
+     *
+     * <p><b>Sized by count rather than by bytes or by how long a batch takes.</b> Time was the criterion
+     * while these vertices shared the cooperative pool, where a long turn holds up everything else on the
+     * thread; they have taken a thread of their own since, so no other work is waiting on this one. What is
+     * left to size against is what is rewritten on the next hand-over, which is a number of changes.
+     */
+    public static final long DEFAULT_MIGRATION_BATCH = 512L;
+
     private final Map<String, Long> elementLimits;
     private final Map<String, Long> pendingLimits;
     private final Map<String, Long> tombstoneLimits;
     private final Map<String, Long> sendWindows;
+    private final Map<String, Long> migrationBatches;
     private final long entriesHeldInMemory;
 
     private NestSettings(Map<String, Long> elementLimits, Map<String, Long> pendingLimits,
-            Map<String, Long> tombstoneLimits, Map<String, Long> sendWindows, long entriesHeldInMemory) {
+            Map<String, Long> tombstoneLimits, Map<String, Long> sendWindows,
+            Map<String, Long> migrationBatches, long entriesHeldInMemory) {
         this.elementLimits = Map.copyOf(elementLimits);
         this.pendingLimits = Map.copyOf(pendingLimits);
         this.tombstoneLimits = Map.copyOf(tombstoneLimits);
         this.sendWindows = Map.copyOf(sendWindows);
+        this.migrationBatches = Map.copyOf(migrationBatches);
         this.entriesHeldInMemory = entriesHeldInMemory;
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of(), Map.of(), Map.of(), Map.of(), DEFAULT_ENTRIES_HELD_IN_MEMORY);
+        return new NestSettings(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                DEFAULT_ENTRIES_HELD_IN_MEMORY);
     }
 
     /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
     public NestSettings withElementLimit(String namespace, long limit) {
         return new NestSettings(with(elementLimits, namespace, limit, "elements"), pendingLimits,
-                tombstoneLimits, sendWindows, entriesHeldInMemory);
+                tombstoneLimits, sendWindows, migrationBatches, entriesHeldInMemory);
     }
 
     /**
@@ -163,7 +183,7 @@ public final class NestSettings implements Serializable {
      */
     public NestSettings withPendingLimit(String namespace, long limit) {
         return new NestSettings(elementLimits, with(pendingLimits, namespace, limit, "pending changes"),
-                tombstoneLimits, sendWindows, entriesHeldInMemory);
+                tombstoneLimits, sendWindows, migrationBatches, entriesHeldInMemory);
     }
 
     /**
@@ -173,7 +193,20 @@ public final class NestSettings implements Serializable {
     public NestSettings withTombstoneLimit(String namespace, long limit) {
         return new NestSettings(elementLimits, pendingLimits,
                 with(tombstoneLimits, namespace, limit, "records of deletion"), sendWindows,
-                entriesHeldInMemory);
+                migrationBatches, entriesHeldInMemory);
+    }
+
+    /**
+     * These settings, with a hand-over out of {@code namespace} written to the parking area {@code changes}
+     * at a time.
+     *
+     * <p>Here rather than beside the parking area itself, and here rather than in a configuration point of
+     * its own: this is the one place a nest is told what it is allowed to be, and a knob that lived next to
+     * the thing it governs would be a second place to set half of a decision.
+     */
+    public NestSettings withMigrationBatchSize(String namespace, long changes) {
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows,
+                with(migrationBatches, namespace, changes, "changes a batch"), entriesHeldInMemory);
     }
 
     /**
@@ -192,7 +225,8 @@ public final class NestSettings implements Serializable {
         }
         Map<String, Long> widened = new LinkedHashMap<>(sendWindows);
         widened.put(namespace, millis);
-        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, widened, entriesHeldInMemory);
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, widened, migrationBatches,
+                entriesHeldInMemory);
     }
 
     /**
@@ -214,7 +248,8 @@ public final class NestSettings implements Serializable {
                     Map.of("entries", entries,
                             "partitions", (long) NestMaps.SMALLEST_MEANINGFUL_MEMORY_BUDGET), null);
         }
-        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows, entries);
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows, migrationBatches,
+                entries);
     }
 
     /** How many entries each namespace keeps in memory before the rest is left to the layer behind it. */
@@ -249,6 +284,11 @@ public final class NestSettings implements Serializable {
      */
     public long sendWindowIn(String namespace) {
         return sendWindows.getOrDefault(namespace, DEFAULT_SEND_WINDOW_MILLIS);
+    }
+
+    /** How many changes one entry of {@code namespace}'s parking area carries. */
+    public long migrationBatchIn(String namespace) {
+        return migrationBatches.getOrDefault(namespace, DEFAULT_MIGRATION_BATCH);
     }
 
     private static Map<String, Long> with(Map<String, Long> limits, String namespace, long limit,

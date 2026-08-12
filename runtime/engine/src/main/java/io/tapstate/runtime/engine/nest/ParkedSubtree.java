@@ -19,11 +19,22 @@ import java.util.Objects;
  * <p>The changes are in the order they must be applied - a parent before its children - so whoever takes
  * them places them straight in rather than parking any of them as waiting for an ancestor.
  */
-public record ParkedSubtree(List<NestElement> changes) implements Serializable {
+public record ParkedSubtree(List<NestElement> changes, int batches) implements Serializable {
 
     public ParkedSubtree {
         Objects.requireNonNull(changes, "changes");
         changes = Collections.unmodifiableList(new ArrayList<>(changes));
+        if (batches < 0) {
+            throw new IllegalArgumentException("a hand-over cannot be in fewer than no further pieces");
+        }
+    }
+
+    /**
+     * A hand-over that fits in one entry, which is what nearly all of them are - and what every entry
+     * written before hand-overs were ever cut up is, since bytes with no count in them read as none.
+     */
+    public ParkedSubtree(List<NestElement> changes) {
+        this(changes, 0);
     }
 
     /**
@@ -35,11 +46,27 @@ public record ParkedSubtree(List<NestElement> changes) implements Serializable {
      * the keys either side of it are the keys of root rows, and two different things under one map must not
      * be able to collide on one.
      */
-    public record At(List<String> pathId, List<Object> elementKey) implements Serializable {
+    public record At(List<String> pathId, List<Object> elementKey, int piece) implements Serializable {
 
         public At {
             pathId = List.copyOf(Objects.requireNonNull(pathId, "pathId"));
             elementKey = List.copyOf(Objects.requireNonNull(elementKey, "elementKey"));
+            if (piece < 0) {
+                throw new IllegalArgumentException("a hand-over has no piece before its first");
+            }
+        }
+
+        /**
+         * The address of a hand-over itself, which is the piece both halves arrive at without being told:
+         * it carries the first of the rows and says how many further pieces there are.
+         */
+        public At(List<String> pathId, List<Object> elementKey) {
+            this(pathId, elementKey, 0);
+        }
+
+        /** The {@code piece}-th further entry of this hand-over, counting from one. */
+        public At piece(int piece) {
+            return new At(pathId, elementKey, piece);
         }
 
         /** Where the element this change is about sits, whichever half of the move the change is. */
