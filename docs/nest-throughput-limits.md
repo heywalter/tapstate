@@ -159,12 +159,25 @@ about the same at 64 B as at 100 KB - the commit dominates and the bytes barely 
 which is why this limit is expressed as a count. Above roughly 100 KB per document the byte
 term starts to matter and limits 2 and 3 take over.
 
-## What is not on this page
+## What is not on this page, and will not be
 
-**Absolute throughput numbers.** What one durable write costs on your storage, and what your
-sink's target can absorb, are properties of your deployment. The measurements above are
-ratios and counts, which travel; a documents-per-second figure from someone else's machine
-does not.
+**How much your target can absorb.** Tapstate does not publish a figure for it, and that is a
+decision rather than a gap: the write capability of the database, queue or table a nest feeds
+belongs to your deployment - its hardware, its schema, its indexes, its other load - and a
+number measured against someone else's would be read as a promise about yours. **This is the
+one input to the four limits above that you supply and we do not.**
+
+Measure it the way you would measure any target: apply the write your sink will be applying,
+at the size your documents actually are, and see what it sustains. Then put that number into
+limits 1 to 4 - they are written so that your number is the only thing missing.
+
+Two properties of the sink side that are ours to state, and are stated above: **one batch is
+in flight at a time**, and **a batch carries up to 1024 documents**, so the cost of a round
+trip falls as the backlog grows rather than being paid per document.
+
+**Absolute throughput numbers generally.** What one durable write costs on your storage is a
+property of your deployment for the same reason. The measurements on this page are ratios and
+counts, which travel; a documents-per-second figure from someone else's machine does not.
 
 ## Settings
 
