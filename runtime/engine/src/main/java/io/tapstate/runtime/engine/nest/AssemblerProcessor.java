@@ -120,6 +120,17 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     private final Map<Object, Window> windows = new LinkedHashMap<>();
 
+    /**
+     * The moves whose subtree is parked and not yet collected, against what the change that started each was
+     * covering. It is what keeps the durable frontier below a hand-over in flight: those rows are in no
+     * document at all while they sit there, so a frontier allowed past would leave a restart resuming above
+     * the move, with nothing to replay it and nothing to collect what was parked.
+     *
+     * <p>In memory, like the windows beside it, and for the same reason: a restart that has lost this has
+     * also not acknowledged the change that made the entry, so the move is replayed and recorded again.
+     */
+    private final Map<ParkedSubtree.At, Map<String, ChainPosition>> handedOver = new LinkedHashMap<>();
+
     /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream) {
@@ -444,7 +455,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     private void settle(RootAssembly assembly, NestElement change) {
         if (parking != null && change.departure() && assembly.holdsSubtreeAt(change.movedFrom())) {
-            hand(ParkedSubtree.At.of(change), assembly.detachSubtree(change.movedFrom()));
+            hand(ParkedSubtree.At.of(change), assembly.detachSubtree(change.movedFrom()), change);
             return;
         }
         assembly.take(change);
@@ -453,14 +464,24 @@ public final class AssemblerProcessor extends AbstractProcessor {
         }
     }
 
-    /** Leaves a subtree where the document gaining the element can be given it. */
-    private void hand(ParkedSubtree.At at, List<NestElement> subtree) {
+    /**
+     * Leaves a subtree where the document gaining the element can be given it, and keeps the frontier below
+     * the change that started the move until it has landed.
+     *
+     * <p>The bound is the whole reason a hand-over is not free. Those rows are in no document while they sit
+     * here: the one that had them has let them go and the one that will have them has not taken them. Let
+     * the frontier past the change that moved them and a restart resumes above it, so nothing replays the
+     * move, nothing collects what is parked, and the subtree is gone from both documents with the pipeline
+     * running and no error anywhere.
+     */
+    private void hand(ParkedSubtree.At at, List<NestElement> subtree, NestElement change) {
         if (subtree.isEmpty()) {
             return;
         }
         ParkedSubtree waiting = parking.load(at);
         ParkedSubtree now = new ParkedSubtree(subtree);
         parking.save(at, waiting == null ? now : waiting.and(now));
+        handedOver.put(at, change.positions());
     }
 
     /**
@@ -474,6 +495,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         }
         waiting.changes().forEach(assembly::take);
         parking.remove(at);
+        handedOver.remove(at);
     }
 
     /**
@@ -632,6 +654,12 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 continue;
             }
             ChainPosition held = window.unsent.get(chain);
+            if (held != null && (lowest == null || held.order().compareTo(lowest) < 0)) {
+                lowest = held.order();
+            }
+        }
+        for (Map<String, ChainPosition> since : handedOver.values()) {
+            ChainPosition held = since.get(chain);
             if (held != null && (lowest == null || held.order().compareTo(lowest) < 0)) {
                 lowest = held.order();
             }
