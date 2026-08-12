@@ -147,34 +147,69 @@ public final class NestSettings implements Serializable {
      */
     public static final long DEFAULT_MIGRATION_BATCH = 512L;
 
+    /**
+     * How many changes one hand-over may leave in the parking area when nothing says otherwise.
+     *
+     * <p>The fourth count that fails a run rather than being absorbed, and the only one bounding rows that
+     * are in no document at all. A tree on its way between two keys is held by neither, so nothing about the
+     * documents either side bounds it, and the durable frontier is kept below the change that started it for
+     * as long as it is there - which makes an unbounded one a source read position pinned without limit as
+     * well as memory spent without limit.
+     *
+     * <p>Set above what a document may itself hold, deliberately. A hand-over is a whole document's worth of
+     * rows in the widest case, so a limit below the width already allowed would fail moves that the data was
+     * always going to make - reporting a bound on migration as if it were a bound on the data.
+     */
+    public static final long DEFAULT_PARKING_LIMIT = 50_000L;
+
+    /**
+     * How long a hand-over may sit uncollected before it is given up on, when nothing says otherwise.
+     *
+     * <p>Not a capacity. What ends a hand-over is the other half of the move being worked, which is bounded
+     * by how far behind a queue is rather than by anything about the data - so a healthy one lands in
+     * milliseconds and this is never approached. What it is for is the unhealthy one: a half that is never
+     * coming leaves rows parked forever and, worse, leaves the frontier pinned at the change that moved them
+     * for the life of the job, with every count reading healthy.
+     *
+     * <p>Given up on rather than dropped: the rows go to the dead-letter channel, where they can be seen,
+     * and the hold is let go of so the frontier moves again. Long enough that no ordinary lag reaches it,
+     * short enough that a stuck move does not hold a source's read position past its retention.
+     */
+    public static final long DEFAULT_MIGRATION_PROTECTION_MILLIS = 600_000L;
+
     private final Map<String, Long> elementLimits;
     private final Map<String, Long> pendingLimits;
     private final Map<String, Long> tombstoneLimits;
     private final Map<String, Long> sendWindows;
     private final Map<String, Long> migrationBatches;
+    private final Map<String, Long> parkingLimits;
+    private final Map<String, Long> migrationProtections;
     private final long entriesHeldInMemory;
 
     private NestSettings(Map<String, Long> elementLimits, Map<String, Long> pendingLimits,
             Map<String, Long> tombstoneLimits, Map<String, Long> sendWindows,
-            Map<String, Long> migrationBatches, long entriesHeldInMemory) {
+            Map<String, Long> migrationBatches, Map<String, Long> parkingLimits,
+            Map<String, Long> migrationProtections, long entriesHeldInMemory) {
         this.elementLimits = Map.copyOf(elementLimits);
         this.pendingLimits = Map.copyOf(pendingLimits);
         this.tombstoneLimits = Map.copyOf(tombstoneLimits);
         this.sendWindows = Map.copyOf(sendWindows);
         this.migrationBatches = Map.copyOf(migrationBatches);
+        this.parkingLimits = Map.copyOf(parkingLimits);
+        this.migrationProtections = Map.copyOf(migrationProtections);
         this.entriesHeldInMemory = entriesHeldInMemory;
     }
 
     /** Every level on the default limit, which is what a deployment that configured nothing gets. */
     public static NestSettings defaults() {
-        return new NestSettings(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+        return new NestSettings(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
                 DEFAULT_ENTRIES_HELD_IN_MEMORY);
     }
 
     /** These settings, with each document of the nest at {@code namespace} allowed {@code limit} elements. */
     public NestSettings withElementLimit(String namespace, long limit) {
         return new NestSettings(with(elementLimits, namespace, limit, "elements"), pendingLimits,
-                tombstoneLimits, sendWindows, migrationBatches, entriesHeldInMemory);
+                tombstoneLimits, sendWindows, migrationBatches, parkingLimits, migrationProtections, entriesHeldInMemory);
     }
 
     /**
@@ -183,7 +218,7 @@ public final class NestSettings implements Serializable {
      */
     public NestSettings withPendingLimit(String namespace, long limit) {
         return new NestSettings(elementLimits, with(pendingLimits, namespace, limit, "pending changes"),
-                tombstoneLimits, sendWindows, migrationBatches, entriesHeldInMemory);
+                tombstoneLimits, sendWindows, migrationBatches, parkingLimits, migrationProtections, entriesHeldInMemory);
     }
 
     /**
@@ -193,7 +228,7 @@ public final class NestSettings implements Serializable {
     public NestSettings withTombstoneLimit(String namespace, long limit) {
         return new NestSettings(elementLimits, pendingLimits,
                 with(tombstoneLimits, namespace, limit, "records of deletion"), sendWindows,
-                migrationBatches, entriesHeldInMemory);
+                migrationBatches, parkingLimits, migrationProtections, entriesHeldInMemory);
     }
 
     /**
@@ -206,7 +241,8 @@ public final class NestSettings implements Serializable {
      */
     public NestSettings withMigrationBatchSize(String namespace, long changes) {
         return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows,
-                with(migrationBatches, namespace, changes, "changes a batch"), entriesHeldInMemory);
+                with(migrationBatches, namespace, changes, "changes a batch"), parkingLimits,
+                migrationProtections, entriesHeldInMemory);
     }
 
     /**
@@ -226,7 +262,7 @@ public final class NestSettings implements Serializable {
         Map<String, Long> widened = new LinkedHashMap<>(sendWindows);
         widened.put(namespace, millis);
         return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, widened, migrationBatches,
-                entriesHeldInMemory);
+                parkingLimits, migrationProtections, entriesHeldInMemory);
     }
 
     /**
@@ -249,7 +285,7 @@ public final class NestSettings implements Serializable {
                             "partitions", (long) NestMaps.SMALLEST_MEANINGFUL_MEMORY_BUDGET), null);
         }
         return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows, migrationBatches,
-                entries);
+                parkingLimits, migrationProtections, entries);
     }
 
     /** How many entries each namespace keeps in memory before the rest is left to the layer behind it. */
@@ -289,6 +325,36 @@ public final class NestSettings implements Serializable {
     /** How many changes one entry of {@code namespace}'s parking area carries. */
     public long migrationBatchIn(String namespace) {
         return migrationBatches.getOrDefault(namespace, DEFAULT_MIGRATION_BATCH);
+    }
+
+    /**
+     * These settings, with one hand-over out of {@code namespace} allowed to park {@code changes} rows
+     * before the job is failed.
+     */
+    public NestSettings withParkingLimit(String namespace, long changes) {
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows, migrationBatches,
+                with(parkingLimits, namespace, changes, "parked changes"), migrationProtections,
+                entriesHeldInMemory);
+    }
+
+    /** How many changes one hand-over out of {@code namespace} may park before the job is failed. */
+    public long parkingAllowedIn(String namespace) {
+        return parkingLimits.getOrDefault(namespace, DEFAULT_PARKING_LIMIT);
+    }
+
+    /**
+     * These settings, with a hand-over out of {@code namespace} given up on after {@code millis} of nobody
+     * collecting it.
+     */
+    public NestSettings withMigrationProtection(String namespace, long millis) {
+        return new NestSettings(elementLimits, pendingLimits, tombstoneLimits, sendWindows, migrationBatches,
+                parkingLimits, with(migrationProtections, namespace, millis, "milliseconds of protection"),
+                entriesHeldInMemory);
+    }
+
+    /** How long a hand-over out of {@code namespace} is protected before it is given up on. */
+    public long migrationProtectionIn(String namespace) {
+        return migrationProtections.getOrDefault(namespace, DEFAULT_MIGRATION_PROTECTION_MILLIS);
     }
 
     private static Map<String, Long> with(Map<String, Long> limits, String namespace, long limit,

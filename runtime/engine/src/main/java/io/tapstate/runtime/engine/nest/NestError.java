@@ -125,9 +125,18 @@ public enum NestError implements TapstateErrorCode {
     TOMBSTONE_LIMIT_EXCEEDED("nest.tombstone-limit-exceeded",
             Set.of("namespace", "key", "tombstones", "limit")),
 
-    /** Running: a subtree being moved to another document has parked more than the limit allows. */
+    /**
+     * Running: rows on their way between two documents have parked more than the limit allows. The fourth
+     * count that fails a run rather than being absorbed, and the only one over rows that are in no document
+     * at all - so nothing about the documents either side bounds it, and the frontier is held below the
+     * change that started the move for as long as they sit there.
+     *
+     * <p>Counted in changes rather than in bytes: a size would have to be arrived at by serializing the rows
+     * on every hand-over, which is the one cost the state layer is built to avoid, and every other limit
+     * here is a count an operator can weigh against the width they already allowed.
+     */
     MIGRATION_PARKING_LIMIT_EXCEEDED(
-            "nest.migration-parking-limit-exceeded", Set.of("newRootKey", "bytes", "limit")),
+            "nest.migration-parking-limit-exceeded", Set.of("address", "changes", "limit")),
 
     /**
      * Running: an event can never be placed in a document, because the row it hangs from is known to be

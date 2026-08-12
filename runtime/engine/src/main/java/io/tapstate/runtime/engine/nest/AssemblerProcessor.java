@@ -11,6 +11,7 @@ import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.LevelBounds;
 import io.tapstate.runtime.engine.ReplayFloor;
 
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Iterator;
@@ -73,6 +74,18 @@ public final class AssemblerProcessor extends AbstractProcessor {
     /** How many changes one entry of the parking area carries. Read once, where everything else is chosen. */
     private final long migrationBatch;
 
+    /** How many changes one hand-over may leave in the parking area before the job is failed. */
+    private final long parkingLimit;
+
+    /** How long a hand-over may sit uncollected before it is given up on. */
+    private final long migrationProtection;
+
+    /**
+     * Where rows that can never reach a document go. Reached only from the parking area here: everything else
+     * this vertex holds is in a document or on its way into one.
+     */
+    private final NestDeadLetter deadLetter;
+
     /**
      * Keys keeping the record of a deletion, which is where the sweep that drops them has to look. Kept for
      * the same reason as {@link #holding}: the store cannot be asked which of its keys hold anything.
@@ -132,7 +145,18 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * <p>In memory, like the windows beside it, and for the same reason: a restart that has lost this has
      * also not acknowledged the change that made the entry, so the move is replayed and recorded again.
      */
-    private final Map<ParkedSubtree.At, Map<String, ChainPosition>> handedOver = new LinkedHashMap<>();
+    private final Map<ParkedSubtree.At, Held> handedOver = new LinkedHashMap<>();
+
+    /**
+     * One hand-over in flight: what the change that started it was covering, when it was parked, how many
+     * pieces it was written in and how many changes it left there.
+     *
+     * <p>Here rather than in the entry itself, so that nothing about a hand-over's shape is written down and
+     * read back by a later build. A restart loses this - and has by definition not acknowledged the change
+     * that made the entry, since the frontier is held below it - so the move is replayed and recorded again.
+     */
+    private record Held(Map<String, ChainPosition> since, long parkedAt, int pieces, long changes) {
+    }
 
     /**
      * Documents owed a subtree that had not been parked when the element arrived, by the key of the document
@@ -218,7 +242,23 @@ public final class AssemblerProcessor extends AbstractProcessor {
             String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
             ReplayFloor floor, NestSettings settings, NestClock clock, NestSendPolicy sending,
             NestStore<ParkedSubtree> parking) {
+        // A run that hands nothing over needs nowhere to put what it gives up on, and one that does is built
+        // with the channel below. Left as something that fails loudly rather than as a channel that discards:
+        // reaching it would mean rows being dropped where the code says they are handed on.
+        this(vertex, slots, store, outputStream, axes, chainsByOrdinal, floor, settings, clock, sending,
+                parking, (from, released) -> {
+                    throw new IllegalStateException(
+                            "a hand-over was given up on with nowhere to put it: " + from.name());
+                });
+    }
+
+    /** The whole of it, with somewhere to put a hand-over nobody ever collected. */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
+            ReplayFloor floor, NestSettings settings, NestClock clock, NestSendPolicy sending,
+            NestStore<ParkedSubtree> parking, NestDeadLetter deadLetter) {
         this.parking = parking;
+        this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
@@ -235,6 +275,8 @@ public final class AssemblerProcessor extends AbstractProcessor {
         this.pendingLimit = settings.pendingAllowedIn(vertex.mapName());
         this.tombstoneLimit = settings.tombstonesAllowedIn(vertex.mapName());
         this.migrationBatch = settings.migrationBatchIn(vertex.mapName());
+        this.parkingLimit = settings.parkingAllowedIn(vertex.mapName());
+        this.migrationProtection = settings.migrationProtectionIn(vertex.mapName());
         this.clock = Objects.requireNonNull(clock, "clock");
         if (!vertex.isAssembler()) {
             throw new IllegalArgumentException("a resolver does not assemble documents: " + vertex.name());
@@ -258,6 +300,10 @@ public final class AssemblerProcessor extends AbstractProcessor {
             return false;
         }
         collectWhatIsOwed();
+        // After the look for what may still land and before anything is said about the frontier: an entry
+        // given up on stops holding it, and saying so on the same turn is what keeps a move that is never
+        // coming from costing a chain more than its protection.
+        giveUpOnHandOversNobodyCollected();
         if (!sendWhatWindowsHaveRunOutOn()) {
             return false;
         }
@@ -296,8 +342,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
             return false;
         }
         boolean letGo = false;
-        Iterator<Map.Entry<ParkedSubtree.At, Map<String, ChainPosition>>> outstanding =
-                handedOver.entrySet().iterator();
+        Iterator<Map.Entry<ParkedSubtree.At, Held>> outstanding = handedOver.entrySet().iterator();
         while (outstanding.hasNext()) {
             if (parking.load(outstanding.next().getKey()) == null) {
                 outstanding.remove();
@@ -305,6 +350,52 @@ public final class AssemblerProcessor extends AbstractProcessor {
             }
         }
         return letGo;
+    }
+
+    /**
+     * Gives up on the hand-overs nobody has collected within their protection, handing what was parked to the
+     * dead-letter channel and letting go of the hold.
+     *
+     * <p>Without it the unhealthy case has no end. What finishes a hand-over is the other half of the move
+     * being worked, and a half that is never coming leaves rows parked for the life of the job and - the part
+     * that costs more - leaves the durable frontier pinned at the change that moved them, so a source's read
+     * position never advances past it while every count reads healthy.
+     *
+     * <p><b>Handed over rather than dropped.</b> These rows were read out of a document and will not be sent
+     * again by anything, so dropping them loses data that no assertion about a document could ever see. And
+     * the hold is released in the same breath, deliberately: an entry given up on is no longer something a
+     * replay would finish, so keeping the frontier beneath it would be waiting for what has already been
+     * decided against.
+     */
+    private void giveUpOnHandOversNobodyCollected() {
+        if (parking == null || handedOver.isEmpty()) {
+            return;
+        }
+        long now = clock.millis();
+        Iterator<Map.Entry<ParkedSubtree.At, Held>> outstanding = handedOver.entrySet().iterator();
+        while (outstanding.hasNext()) {
+            Map.Entry<ParkedSubtree.At, Held> entry = outstanding.next();
+            Held held = entry.getValue();
+            if (now - held.parkedAt() < migrationProtection) {
+                continue;
+            }
+            ParkedSubtree waiting = parking.load(entry.getKey());
+            if (waiting != null) {
+                Duration heldFor = Duration.ofMillis(now - held.parkedAt());
+                waiting.changes().forEach(change ->
+                        deadLetter.unassemblable(vertex, new ReleasedChild(change, heldFor)));
+                for (int piece = 1; piece <= waiting.batches(); piece++) {
+                    ParkedSubtree more = parking.load(entry.getKey().piece(piece));
+                    if (more != null) {
+                        more.changes().forEach(change ->
+                                deadLetter.unassemblable(vertex, new ReleasedChild(change, heldFor)));
+                    }
+                }
+                letGoOf(entry.getKey(), waiting.batches());
+            }
+            owed.remove(entry.getKey());
+            outstanding.remove();
+        }
     }
 
     /**
@@ -600,6 +691,13 @@ public final class AssemblerProcessor extends AbstractProcessor {
             return;
         }
         ParkedSubtree held = parking.load(at);
+        Held outstanding = handedOver.get(at);
+        long parked = (outstanding == null ? 0L : outstanding.changes()) + subtree.size();
+        if (parked > parkingLimit) {
+            throw new TapstateException(NestError.MIGRATION_PARKING_LIMIT_EXCEEDED,
+                    Map.of("address", NestStateKeys.nameOf(at), "changes", parked, "limit", parkingLimit),
+                    null);
+        }
         int size = (int) Math.min(Integer.MAX_VALUE, migrationBatch);
         List<NestElement> first = held == null ? null : held.changes();
         int cursor = 0;
@@ -618,7 +716,12 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // not there - and the change that started the move is replayed, because the frontier is held below
         // it until it lands, so they are written again.
         parking.save(at, new ParkedSubtree(first, pieces));
-        handedOver.put(at, since);
+        // Kept from the first hand-over onto this address rather than reset by a later one: what the frontier
+        // must stay below is the earliest change still in flight, and how long this has been outstanding is
+        // measured from when it started rather than from the last thing added to it.
+        handedOver.put(at, outstanding == null
+                ? new Held(since, clock.millis(), pieces, parked)
+                : new Held(outstanding.since(), outstanding.parkedAt(), pieces, parked));
     }
 
     /**
@@ -882,8 +985,8 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 lowest = held.order();
             }
         }
-        for (Map<String, ChainPosition> since : handedOver.values()) {
-            ChainPosition held = since.get(chain);
+        for (Held outstanding : handedOver.values()) {
+            ChainPosition held = outstanding.since().get(chain);
             if (held != null && (lowest == null || held.order().compareTo(lowest) < 0)) {
                 lowest = held.order();
             }
