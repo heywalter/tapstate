@@ -78,4 +78,17 @@ final class NestKeys {
         throw new TapstateException(NestError.KEY_CHANGE_TRACKING_REQUIRES_BEFORE_IMAGE,
                 Map.of("alias", edge.alias(), "table", edge.table()), null);
     }
+
+    /**
+     * The row this event replaces, where there is one to compare against and the author asked for it to be
+     * compared. Absent everywhere else, which is what keeps a tree that tracks nothing on exactly the path
+     * it was on before: no comparison is made, so no source has to send anything more.
+     *
+     * <p>An update is the only event with two rows to compare. An insert puts an element somewhere for the
+     * first time and a deletion takes one away, and neither can be a row addressed one way arriving as the
+     * same row addressed another.
+     */
+    static Map<String, Object> replacedRow(NestInbound edge, Envelope event) {
+        return edge.tracksKeyChanges() && event.op() == Op.UPDATE ? event.before() : null;
+    }
 }

@@ -286,7 +286,11 @@ public final class ResolverProcessor extends AbstractProcessor {
             own(edge, event, row, touched);
         } else {
             List<Object> parent = NestKeys.valuesOf(row, edge.keyFields());
-            route(parent, element(edge, event, row, parentIdentity(edge, parent), null), touched);
+            Map<String, Object> was = NestKeys.replacedRow(edge, event);
+            Object parentWas = was == null ? null
+                    : parentIdentity(edge, NestKeys.valuesOf(was, edge.keyFields()));
+            route(parent, element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas),
+                    touched);
         }
     }
 
@@ -302,7 +306,11 @@ public final class ResolverProcessor extends AbstractProcessor {
         List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
         List<Object> parent = NestKeys.valuesOf(row, vertex.parentKeyFields());
         ResolverState state = stateFor(key, touched);
-        emit(new KeyedElement(parent, element(edge, event, row, parentIdentity(edge, parent), key)));
+        Map<String, Object> was = NestKeys.replacedRow(edge, event);
+        Object parentWas = was == null ? null
+                : parentIdentity(edge, NestKeys.valuesOf(was, vertex.parentKeyFields()));
+        emit(new KeyedElement(parent,
+                element(edge, event, row, parentIdentity(edge, parent), key, was, parentWas)));
         if (NestKeys.isDeletion(event)) {
             deleted.put(key, event.positions());
             for (ReleasedChild child : state.deleteMapping(order, clock.millis())) {
@@ -337,12 +345,22 @@ public final class ResolverProcessor extends AbstractProcessor {
         return edge.pathId().size() == 1 ? null : joinKey;
     }
 
+    /**
+     * One change as an element of the document, carrying where the element used to sit whenever the row it
+     * replaces says somewhere else.
+     *
+     * <p>Where it used to sit is built from the earlier row's own address and never from its identity: the
+     * identity is what rows beneath point at, not where this element is shown, and an entry filed under a
+     * value that has changed is moved by the level that holds it rather than by the document.
+     */
     private static NestElement element(NestInbound edge, Envelope event, Map<String, Object> row,
-            Object parentIdentity, Object identity) {
+            Object parentIdentity, Object identity, Map<String, Object> was, Object parentIdentityWas) {
         ElementRef ref = new ElementRef(edge.pathId(), parentIdentity,
                 NestKeys.valuesOf(row, edge.elementKey()), identity);
+        ElementRef from = was == null ? null : new ElementRef(edge.pathId(), parentIdentityWas,
+                NestKeys.valuesOf(was, edge.elementKey()), identity);
         return new NestElement(ref, NestKeys.isDeletion(event) ? null : row,
-                NestKeys.orderOf(event), event.positions());
+                NestKeys.orderOf(event), event.positions(), from);
     }
 
     private ResolverState stateFor(Object key, Map<Object, ResolverState> touched) {

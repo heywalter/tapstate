@@ -43,7 +43,8 @@ public record NestElement(
         ElementRef ref,
         Map<String, Object> fields,
         SourceOrder order,
-        Map<String, ChainPosition> positions) implements Serializable {
+        Map<String, ChainPosition> positions,
+        ElementRef movedFrom) implements Serializable {
 
     public NestElement {
         Objects.requireNonNull(ref, "ref");
@@ -51,10 +52,29 @@ public record NestElement(
         Objects.requireNonNull(positions, "positions");
         positions = Collections.unmodifiableMap(new LinkedHashMap<>(positions));
         fields = fields == null ? null : Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+        if (movedFrom != null && !movedFrom.pathId().equals(ref.pathId())) {
+            throw new IllegalArgumentException("an element moves within its own embed: " + movedFrom + " -> " + ref);
+        }
+    }
+
+    /** A change that puts the element where it already was - which is what nearly every change is. */
+    public NestElement(ElementRef ref, Map<String, Object> fields, SourceOrder order,
+            Map<String, ChainPosition> positions) {
+        this(ref, fields, order, positions, null);
     }
 
     /** Whether this change removes the element rather than putting a row there. */
     public boolean deletion() {
         return fields == null;
+    }
+
+    /**
+     * Whether this change says the element used to be somewhere else in the document, which is what a
+     * structural key change comes down to once it is read off a row: the same element, addressed
+     * differently. Asked instead of comparing refs so that a change putting an element where it already
+     * sits is never mistaken for one.
+     */
+    public boolean moves() {
+        return movedFrom != null && !movedFrom.equals(ref);
     }
 }

@@ -247,21 +247,36 @@ public final class RootAssembly implements Serializable {
         Objects.requireNonNull(to, "to");
         Objects.requireNonNull(fields, "fields");
         Objects.requireNonNull(order, "order");
-        if (!from.pathId().equals(to.pathId()) || !from.elementKey().equals(to.elementKey())) {
-            throw new IllegalArgumentException("a move names one element: " + from + " -> " + to);
-        }
+        return move(new NestElement(to, fields, order, positions, from));
+    }
+
+    /**
+     * Carries one element from where it was to where its row now says it is. Both halves of an address can
+     * change and either may change alone: the parent it hangs under, the key the document shows it by, or
+     * both at once when a tree keys an embed by the same column its children point at.
+     *
+     * <p>The node is carried rather than rebuilt, which is the whole of "the subtree travels": what hangs
+     * beneath is held by the node itself, and what points at it points at the node rather than at where it
+     * sat. So nothing beneath has to be visited, and nothing beneath can be left behind.
+     *
+     * <p>An element that is not where the change says it was is simply placed where it now belongs. That
+     * covers a replay of a move already applied and a source whose earlier row never reached this document,
+     * and both want the same answer: the element ends up where the row says, once.
+     */
+    private boolean move(NestElement change) {
+        ElementRef from = change.movedFrom();
+        ElementRef to = change.ref();
         Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
         Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
         ElementNode moved = slot == null ? null : slot.get(from.elementKey());
-        NestElement change = new NestElement(to, fields, order, positions);
         if (slot == null || moved == null || moved.deleted()) {
-            return mutate(change);
+            return place(change);
         }
-        if (!wins(order, moved.order())) {
+        if (!wins(change.order(), moved.order())) {
             return false;
         }
         slot.remove(from.elementKey());
-        moved.set(change.fields(), order, change.positions());
+        moved.set(change.fields(), change.order(), change.positions());
         absorbed(change);
         Map<String, Map<List<Object>, ElementNode>> target = containerFor(to);
         if (target == null) {
@@ -270,6 +285,9 @@ public final class RootAssembly implements Serializable {
             return true;
         }
         target.computeIfAbsent(to.field(), field -> new LinkedHashMap<>()).put(to.elementKey(), moved);
+        if (to.identity() != null) {
+            byIdentity.computeIfAbsent(to.pathId(), path -> new LinkedHashMap<>()).put(to.identity(), moved);
+        }
         return true;
     }
 
@@ -372,6 +390,10 @@ public final class RootAssembly implements Serializable {
     }
 
     private boolean mutate(NestElement change) {
+        return change.moves() ? move(change) : place(change);
+    }
+
+    private boolean place(NestElement change) {
         ElementRef ref = change.ref();
         Map<String, Object> fields = change.fields();
         SourceOrder order = change.order();

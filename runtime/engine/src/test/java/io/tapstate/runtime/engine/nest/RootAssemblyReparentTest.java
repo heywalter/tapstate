@@ -126,12 +126,40 @@ class RootAssemblyReparentTest {
                 .satisfies(claim -> assertThat(claim).containsEntry("claim_no", "CL1"));
     }
 
+    /**
+     * A move stays inside one embed. Both halves of an address may change at once - the parent a row hangs
+     * under and the key the document shows it by - but the embed it is an element of is what makes it the
+     * same element at all, so a move naming two of them names two elements.
+     */
     @Test
-    void aMoveNamesOneElement() {
+    void aMoveStaysWithinOneEmbed() {
         RootAssembly assembly = customerWithAClaimUnderP1();
-        ElementRef other = element(List.of("policies", "claims"), "P2", "CL9", "CL9");
+        ElementRef elsewhere = element(List.of("policies"), null, "CL1", "CL1");
 
         assertThatIllegalArgumentException().isThrownBy(() ->
-                assembly.reparentElement(claimUnder("P1"), other, row("claim_no", "CL1"), at(6), noPositions()));
+                assembly.reparentElement(claimUnder("P1"), elsewhere, row("claim_no", "CL1"), at(6),
+                        noPositions()));
+    }
+
+    /**
+     * The other half of the same relaxation, and the case a tree hits whenever an embed is keyed by the
+     * column its children point at: one row edited once moves the element to another parent and renames it
+     * in the document, and both have to land or the element is addressed by something nothing carries.
+     */
+    @Test
+    void bothHalvesOfAnAddressMayChangeAtOnce() {
+        RootAssembly assembly = customerWithAClaimUnderP1();
+        ElementRef renamedUnderP2 = element(List.of("policies", "claims"), "P2", "CL9", "CL1");
+
+        assertThat(assembly.reparentElement(claimUnder("P1"), renamedUnderP2,
+                row("claim_no", "CL9"), at(6), noPositions())).isTrue();
+
+        Map<String, Object> document = assembly.render(TREE).orElseThrow();
+        assertThat(listAt(document, "policies", "claims"))
+                .describedAs("nothing left behind under the policy it came from")
+                .isEmpty();
+        Map<String, Object> underP2 = listAt(document, "policies").get(1);
+        assertThat(listAt(underP2, "claims")).singleElement()
+                .satisfies(claim -> assertThat(claim).containsEntry("claim_no", "CL9"));
     }
 }

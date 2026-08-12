@@ -386,8 +386,11 @@ public final class AssemblerProcessor extends AbstractProcessor {
         document.ts = event.ts();
         ElementRef ref = new ElementRef(edge.pathId(), null,
                 NestKeys.valuesOf(row, edge.elementKey()), null);
-        document.assembly.take(
-                new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order, event.positions()));
+        Map<String, Object> was = NestKeys.replacedRow(edge, event);
+        ElementRef from = was == null ? null
+                : new ElementRef(edge.pathId(), null, NestKeys.valuesOf(was, edge.elementKey()), null);
+        document.assembly.take(new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
+                event.positions(), from));
     }
 
     /**
