@@ -38,6 +38,10 @@ import org.junit.jupiter.api.Test;
  * <p>The pair of tests is what makes this mean anything. Holding the bound down forever would be trivially
  * "safe" and would pin the frontier on every move ever made, so the second test is the one that says the
  * hold is released - and released by the hand-over landing, not by time passing.
+ *
+ * <p>The third says <em>wherever</em> it landed. The two documents are on different partitions, so the
+ * instance that let a subtree go and the instance that takes it in are in the normal case not the same one,
+ * and the first two tests cannot tell that apart from a local arrangement.
  */
 class AHandOverInFlightKeepsTheFrontierBelowItTest {
 
@@ -96,6 +100,36 @@ class AHandOverInFlightKeepsTheFrontierBelowItTest {
                 .containsExactly(FAR_ABOVE + 1);
     }
 
+    /**
+     * The one that says the hold is released by the hand-over landing rather than by this instance being the
+     * one that landed it. Two instances, one parking area between them - which is the shape a running pipeline
+     * has, since the document letting the subtree go and the document gaining it are keyed differently and so
+     * are worked by different processors.
+     *
+     * <p>Nothing further arrives to prompt the recount, deliberately: what a level may promise depends on what
+     * it holds as well as on what its edges said, and only the second of those turns up as a message. Measured
+     * before this was fixed - the hold was never let go of at all, and the chain stayed pinned at the change
+     * that started the move for the life of the job with every count reading healthy.
+     */
+    @Test
+    void theHoldIsReleasedByTheLandingWhereverTheSubtreeWasTakenIn() throws Exception {
+        AssemblerProcessor losing = assembler(store);
+        AssemblerProcessor gaining = assembler(new HeapNestStore<>());
+        givenAPolicyWithAClaimUnder("C1", losing);
+        feed(losing, FROM_POLICIES, departureOfP1From("C1"));
+        assertThat(boundsAfter(losing, FAR_ABOVE))
+                .containsExactly(FrontierOrders.pack(POLICIES, at(MOVED_AT)) - 1);
+
+        feed(gaining, ROOT_ROWS, customer(1, "C2"));
+        feed(gaining, FROM_POLICIES, arrivalOfP1At("C2"));
+        losing.tryProcess();
+
+        assertThat(boundsIn(drained()))
+                .describedAs("the subtree is in a document again, and the instance that let it go says so "
+                        + "on its own rather than waiting for a bound that may never come")
+                .containsExactly(FAR_ABOVE);
+    }
+
     private void givenAPolicyWithAClaimUnder(String customerId, AssemblerProcessor processor) {
         feed(processor, ROOT_ROWS, customer(1, customerId));
         feed(processor, FROM_POLICIES, policyElement(2, customerId));
@@ -103,7 +137,11 @@ class AHandOverInFlightKeepsTheFrontierBelowItTest {
     }
 
     private AssemblerProcessor assembler() throws Exception {
-        AssemblerProcessor processor = new AssemblerProcessor(TOPOLOGY.assembler(), TOPOLOGY.slots(), store,
+        return assembler(store);
+    }
+
+    private AssemblerProcessor assembler(NestStore<RootAssembly> documents) throws Exception {
+        AssemblerProcessor processor = new AssemblerProcessor(TOPOLOGY.assembler(), TOPOLOGY.slots(), documents,
                 "doc", AXES, CHAINS, ReplayFloor.NONE, NestSettings.defaults(), NestClock.SYSTEM,
                 NestSendPolicy.within(0), stores.forParking(TOPOLOGY.assembler()));
         processor.init(outbox, new TestProcessorContext());
@@ -161,8 +199,12 @@ class AHandOverInFlightKeepsTheFrontierBelowItTest {
 
     private List<Long> boundsAfter(AssemblerProcessor processor, long arriving) {
         processor.tryProcessWatermark(FROM_POLICIES, new Watermark(arriving, AXES.axisOf(POLICIES)));
+        return boundsIn(drained());
+    }
+
+    private static List<Long> boundsIn(List<Object> drained) {
         List<Long> bounds = new ArrayList<>();
-        for (Object item : drained()) {
+        for (Object item : drained) {
             if (item instanceof Watermark bound) {
                 bounds.add(bound.timestamp());
             }

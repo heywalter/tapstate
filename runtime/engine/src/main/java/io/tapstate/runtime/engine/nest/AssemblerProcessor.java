@@ -263,7 +263,36 @@ public final class AssemblerProcessor extends AbstractProcessor {
             }
         }
         forgetDeletionsReplayCannotReach();
-        return true;
+        // Only after the documents above have gone out, for the usual reason: a bound offered ahead of what is
+        // queued behind it would say it had left.
+        return !forgetHandOversThatHaveLanded() || bounds == null || bounds.release(this::tryEmit);
+    }
+
+    /**
+     * Lets go of the holds on hand-overs that are no longer in the parking area, and answers whether any were
+     * let go of.
+     *
+     * <p><b>The parking area is what is asked, not what this instance did.</b> A hand-over is between two
+     * documents whose keys are on different partitions, so the instance that let a subtree go and the instance
+     * that takes it in are, in the normal case, different instances - and taking it in is the only thing that
+     * ever removes the record locally. Measured: with the two on separate instances the hold was never let go
+     * of at all, so the chain stayed pinned at the change that started the move for the life of the job, every
+     * count reading healthy. Absence from the parking area is a condition both of them can see.
+     */
+    private boolean forgetHandOversThatHaveLanded() {
+        if (parking == null || handedOver.isEmpty()) {
+            return false;
+        }
+        boolean letGo = false;
+        Iterator<Map.Entry<ParkedSubtree.At, Map<String, ChainPosition>>> outstanding =
+                handedOver.entrySet().iterator();
+        while (outstanding.hasNext()) {
+            if (parking.load(outstanding.next().getKey()) == null) {
+                outstanding.remove();
+                letGo = true;
+            }
+        }
+        return letGo;
     }
 
     /**
