@@ -312,6 +312,19 @@ public final class RootAssembly implements Serializable {
      * held them, and what keeps the frontier below a hand-over in flight is the hand-over itself being
      * counted as still held — not a second copy of every position in the subtree.
      */
+    /**
+     * Whether the element at {@code from} is here and still holds something beneath it. Asked before a move
+     * is settled, because an element with nothing beneath it needs no hand-over at all and one with a
+     * subtree cannot be taken out without one.
+     */
+    public boolean holdsSubtreeAt(ElementRef from) {
+        Objects.requireNonNull(from, "from");
+        Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
+        Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
+        ElementNode held = slot == null ? null : slot.get(from.elementKey());
+        return held != null && !held.children().isEmpty();
+    }
+
     public List<NestElement> detachSubtree(ElementRef from) {
         Objects.requireNonNull(from, "from");
         Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);

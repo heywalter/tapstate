@@ -140,11 +140,19 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
      * <p>Narrower than {@link #statePaths()}, and deliberately so: a leaf has no namespace of its own, its
      * elements being filed inside its parent's state. Dropping the parent's namespace takes them with it,
      * so a set that named leaves would name places nothing was ever stored.
+     *
+     * <p>Two per vertex rather than one: the state itself, and the area where subtrees sit while they move
+     * between documents. The second is state as much as the first, and a set that named only the first
+     * would leave a move that was in flight behind whenever a pipeline was taken down.
      */
     public Set<String> stateNamespaces() {
         Set<String> namespaces = new LinkedHashSet<>();
         for (NestVertex vertex : vertices) {
             namespaces.add(vertex.mapName());
+            // Where a subtree sits while it moves between documents. Named here as well because it is state
+            // like any other: left out, a tree taken down would leave the rows of a move that was in flight
+            // behind it, under a name nothing would ever look at again.
+            namespaces.add(vertex.parkingMapName());
         }
         return namespaces;
     }

@@ -8,6 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.tapstate.core.model.EmbedAs;
 import io.tapstate.core.model.TransformBody;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -232,15 +233,23 @@ class NestTopologyTest {
     }
 
     @Test
-    void namesOneStateNamespacePerVertexAndNoneForALeaf() {
+    void namesEveryVertexsStateAndItsParkingAreaAndNothingForALeaf() {
         NestTopology topology = compiled();
 
         // A leaf keeps no namespace of its own - its elements are filed inside its parent's state - so a
         // set naming leaves too would name places nothing was ever stored, and a drop by it would look
         // like it had let go of more than it had.
-        assertThat(topology.stateNamespaces()).containsExactlyInAnyOrderElementsOf(
-                topology.vertices().stream().map(NestVertex::mapName).toList());
-        assertThat(topology.stateNamespaces()).hasSize(topology.resolvers().size() + 1);
+        //
+        // A vertex's parking area is named as well. What sits there is a subtree between documents, which is
+        // state like any other: left out of this set, a pipeline taken down mid-move would leave those rows
+        // behind under a name nothing would ever look at again.
+        List<String> expected = new ArrayList<>();
+        topology.vertices().forEach(vertex -> {
+            expected.add(vertex.mapName());
+            expected.add(vertex.parkingMapName());
+        });
+        assertThat(topology.stateNamespaces()).containsExactlyInAnyOrderElementsOf(expected);
+        assertThat(topology.stateNamespaces()).hasSize(2 * (topology.resolvers().size() + 1));
     }
 
     @Test

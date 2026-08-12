@@ -102,6 +102,13 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private final NestSendPolicy sending;
 
     /**
+     * Where subtrees sit while they move between documents, or null where this run has nowhere to hand one
+     * through. Not the same store as the documents: what is here belongs to no key of this vertex until the
+     * document gaining it takes it, and the sweeps here walk the keys of documents.
+     */
+    private final NestStore<ParkedSubtree> parking;
+
+    /**
      * The documents with a window open over them: when the window opened, and what a send folded into it is
      * keeping the frontier below. Only ever as many entries as there are roots changed within one window of
      * each other, and the sweep that ends them is what keeps it that way.
@@ -167,6 +174,22 @@ public final class AssemblerProcessor extends AbstractProcessor {
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
             ReplayFloor floor, NestSettings settings, NestClock clock, NestSendPolicy sending) {
+        this(vertex, slots, store, outputStream, axes, chainsByOrdinal, floor, settings, clock, sending, null);
+    }
+
+    /**
+     * All of the above, able to hand a subtree over to another document through {@code parking}.
+     *
+     * <p>Null where a run has nowhere to hand one through, which is not a degraded store but a different
+     * answer: an element that still holds a subtree then stays in the document it is in rather than being
+     * taken apart. A stale copy is a document that disagrees with its source and can be seen to; rows read
+     * out of one document and handed nowhere are gone, with nothing anywhere reporting it.
+     */
+    public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
+            String outputStream, ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal,
+            ReplayFloor floor, NestSettings settings, NestClock clock, NestSendPolicy sending,
+            NestStore<ParkedSubtree> parking) {
+        this.parking = parking;
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.slots = List.copyOf(slots);
         this.store = Objects.requireNonNull(store, "store");
@@ -362,7 +385,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private void handle(NestInbound edge, Object item, Map<Object, Touched> touched) {
         if (edge.isCascade()) {
             KeyedElement arrived = (KeyedElement) item;
-            touched(arrived.key(), touched).assembly.take(arrived.element());
+            settle(touched(arrived.key(), touched).assembly, arrived.element());
             return;
         }
         Envelope event = (Envelope) item;
@@ -391,7 +414,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 : new ElementRef(edge.pathId(), null, NestKeys.valuesOf(was, edge.elementKey()), null);
         NestElement arriving = new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
                 event.positions(), from);
-        document.assembly.take(arriving);
+        settle(document.assembly, arriving);
         if (was == null) {
             return;
         }
@@ -402,8 +425,55 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (!before.equals(key)) {
             Touched left = touched(before, touched);
             left.ts = event.ts();
-            left.assembly.take(new NestElement(ref, null, order, event.positions(), from));
+            settle(left.assembly, new NestElement(ref, null, order, event.positions(), from));
         }
+    }
+
+    /**
+     * Applies one change to one document, handing a subtree over or collecting one where the change is half
+     * of a move.
+     *
+     * <p>The half that stays behind reads the subtree out and parks it: those rows arrived long ago and
+     * nothing will send them again, so leaving them to be dropped with the element loses them silently. The
+     * half that arrives looks for one that was parked. Neither half knows whether the other is in the same
+     * document, the same drain, or even the same member - they are routed by two different keys - so each
+     * does its own side and the parking area is where they meet.
+     *
+     * <p>Order between the two does not matter for what is parked: an arrival that finds nothing simply
+     * finds nothing, and the subtree it is owed is collected when it is looked for again.
+     */
+    private void settle(RootAssembly assembly, NestElement change) {
+        if (parking != null && change.departure() && assembly.holdsSubtreeAt(change.movedFrom())) {
+            hand(ParkedSubtree.At.of(change), assembly.detachSubtree(change.movedFrom()));
+            return;
+        }
+        assembly.take(change);
+        if (parking != null && change.movedFrom() != null && !change.deletion()) {
+            collect(assembly, ParkedSubtree.At.of(change));
+        }
+    }
+
+    /** Leaves a subtree where the document gaining the element can be given it. */
+    private void hand(ParkedSubtree.At at, List<NestElement> subtree) {
+        if (subtree.isEmpty()) {
+            return;
+        }
+        ParkedSubtree waiting = parking.load(at);
+        ParkedSubtree now = new ParkedSubtree(subtree);
+        parking.save(at, waiting == null ? now : waiting.and(now));
+    }
+
+    /**
+     * Takes whatever was parked for this element into the document that now holds it, and lets go of the
+     * entry. Applied in the order it was handed over, so a parent is placed before its children.
+     */
+    private void collect(RootAssembly assembly, ParkedSubtree.At at) {
+        ParkedSubtree waiting = parking.load(at);
+        if (waiting == null) {
+            return;
+        }
+        waiting.changes().forEach(assembly::take);
+        parking.remove(at);
     }
 
     /**

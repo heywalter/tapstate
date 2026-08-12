@@ -92,6 +92,13 @@ public record NestBinding(
         NestStore<RootAssembly> forAssembler(NestVertex vertex);
 
         /**
+         * The store for subtrees between documents. Separate from the documents themselves because what is
+         * kept there is not one: it belongs to no key of this vertex until the document gaining it takes it,
+         * and mixing the two would put entries under keys the sweeps here walk.
+         */
+        NestStore<ParkedSubtree> forParking(NestVertex vertex);
+
+        /**
          * Binds as above, with somewhere for the stores to leave their namespaces' readings. Only the
          * supplier building a vertex's processors calls this, because only there is it known that a job is
          * what these are for; every other caller gets stores that report nothing, which is the honest
@@ -172,12 +179,21 @@ public record NestBinding(
                     : new MapNestStore<>(map, NestStateStats.of(member), gauge);
         }
 
+        @Override
+        public NestStore<ParkedSubtree> forParking(NestVertex vertex) {
+            return metered(mapNamed(vertex, vertex.parkingMapName()));
+        }
+
         private <S> IMap<Object, S> mapOf(NestVertex vertex) {
+            return mapNamed(vertex, vertex.mapName());
+        }
+
+        private <S> IMap<Object, S> mapNamed(NestVertex vertex, String name) {
             if (member == null) {
                 throw new IllegalStateException(
                         "nest stores were asked for " + vertex.name() + " before being bound to a member");
             }
-            return member.getMap(vertex.mapName());
+            return member.getMap(name);
         }
     }
 }

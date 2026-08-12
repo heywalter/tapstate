@@ -48,6 +48,15 @@ public record NestVertex(
     }
 
     /**
+     * Where subtrees in transit between this vertex's documents are held. Derived from the vertex's own map
+     * name so it inherits the same configuration and is taken down with it, and named in one place so the
+     * suffix cannot drift between what writes the entries and what drops them.
+     */
+    public String parkingMapName() {
+        return mapName + ".parking";
+    }
+
+    /**
      * The edge carrying the stream at {@code pathId}. Every stream reaching this vertex has exactly one,
      * so asking for a stream that does not arrive here is a wiring bug and bare-throws.
      */

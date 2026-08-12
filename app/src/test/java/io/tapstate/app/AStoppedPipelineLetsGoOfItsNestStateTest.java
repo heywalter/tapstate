@@ -111,15 +111,22 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
     }
 
     @Test
-    @DisplayName("the namespaces a stop drops are every vertex's, plus where the shape was written down")
+    @DisplayName("the namespaces a stop drops are every vertex's state and parking area, plus where the shape was written down")
     void namesEveryNamespaceTheTreeKeepsStateIn() {
         InMemoryStorePort store = seedStore();
 
         Set<String> namespaces = new StoreBackedDagSource(store).stateNamespacesOf(PIPELINE);
 
-        // One per compiled vertex - the resolver serving the embed that has children, and the assembler -
-        // and the record of the shape, which is state about the state and is let go of with it.
-        assertThat(namespaces).containsExactlyInAnyOrder(ROOT_NAMESPACE, ITEMS_NAMESPACE, SHAPE_NAMESPACE);
+        // Two per compiled vertex - the state itself and the area where a subtree sits while it moves
+        // between documents - for the resolver serving the embed that has children and for the assembler;
+        // plus the record of the shape, which is state about the state and is let go of with it.
+        //
+        // The parking areas are named here rather than left to be swept later because what sits in one is a
+        // hand-over that never landed: rows read out of a document that no longer holds them, which nothing
+        // will ever send again. A stop that dropped everything else and left those behind would keep them
+        // under a name no run afterwards looks at.
+        assertThat(namespaces).containsExactlyInAnyOrder(ROOT_NAMESPACE, ITEMS_NAMESPACE, SHAPE_NAMESPACE,
+                ROOT_NAMESPACE + ".parking", ITEMS_NAMESPACE + ".parking");
     }
 
     @Test

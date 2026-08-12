@@ -291,10 +291,10 @@ public final class ResolverProcessor extends AbstractProcessor {
             Object parentWas = was == null ? null : parentIdentity(edge, parentBefore);
             NestElement arriving =
                     element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas);
-            route(parent, arriving, touched);
             if (parentBefore != null && !parentBefore.equals(parent)) {
                 route(parentBefore, departureOf(arriving), touched);
             }
+            route(parent, arriving, touched);
         }
     }
 
@@ -336,8 +336,12 @@ public final class ResolverProcessor extends AbstractProcessor {
         List<Object> parentBefore = was == null ? null : NestKeys.valuesOf(was, vertex.parentKeyFields());
         Object parentWas = was == null ? null : parentIdentity(edge, parentBefore);
         NestElement arriving = element(edge, event, row, parentIdentity(edge, parent), key, was, parentWas);
-        emit(new KeyedElement(parent, arriving));
+        // The half that stays behind goes first, so whatever it hands over is already there when the half
+        // that arrives looks for it. Only an ordering, not a guarantee: the two are routed by different keys
+        // and may be worked by different members, so what makes the hand-over land is the arriving side
+        // looking again rather than the two being sent in this order.
         sendDeparture(parentBefore, parent, arriving);
+        emit(new KeyedElement(parent, arriving));
         if (NestKeys.isDeletion(event)) {
             deleted.put(key, event.positions());
             for (ReleasedChild child : state.deleteMapping(order, clock.millis())) {
