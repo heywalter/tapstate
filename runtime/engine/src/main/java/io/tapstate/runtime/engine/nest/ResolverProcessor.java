@@ -293,6 +293,10 @@ public final class ResolverProcessor extends AbstractProcessor {
                     element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas),
                     parentBefore, parent);
             if (parentBefore != null && !parentBefore.equals(parent)) {
+                // NOT SAFE ACROSS INSTANCES YET - the same constraint the assembler states where it settles
+                // both documents itself. This row arrived where its new key belongs, and the entry under the
+                // key it is leaving is held by another instance of this vertex; resolving against that entry
+                // reads and writes state this instance does not own.
                 route(parentBefore, departureOf(arriving), touched);
             }
             route(parent, arriving, touched);

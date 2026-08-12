@@ -445,6 +445,16 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // re-pointed at another root has to be taken out of the one it was in. Both are held here, so the
         // pair needs no routing: this vertex is where the two keys would have met anyway.
         if (departed) {
+            // NOT SAFE ACROSS INSTANCES YET, and this is the one place that says so. The edge carrying
+            // these rows is partitioned on the key read from the row as it now is, so a row whose join key
+            // changed only ever arrives where its new key belongs; the document under its old key is held
+            // by another instance of this vertex, and this reads and writes it anyway. Two instances
+            // touching one document lose each other's writes, and nothing about a lost write is visible
+            // afterwards. It holds on one member too - nothing here is pinned to a single instance.
+            //
+            // What makes it right is the departure being routed to that key rather than reached for, which
+            // needs an edge partitioned on the key the row is leaving. Until then this is correct for one
+            // instance and racy for more, and must not be read as finished.
             Touched left = touched(movedTo, touched);
             left.ts = event.ts();
             settle(movedTo, left.assembly,
