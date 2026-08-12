@@ -341,16 +341,68 @@ public final class RootAssembly implements Serializable {
     }
 
     /**
+     * Reads out everything this document holds and leaves it empty, handing back what hung here so the key
+     * this row now carries can be given all of it.
+     *
+     * <p>The whole of it rather than a subtree, because the row the source edited is the <b>root</b>. The key
+     * this document was filed under names a row the source no longer has, so nothing about this key will ever
+     * be sent again — not the root row, and not one of the elements. An element directly under the root is in
+     * exactly the same position as one four levels down, which is the one way this differs from
+     * {@link #detachSubtree}: there the element that moved arrives on its own as an ordinary change and so is
+     * left out, here there is no such row for any of them.
+     *
+     * <p>What was waiting for a parent that never arrived travels too. It is in this document's state and in
+     * nothing else; left behind under a key that is about to be deleted it goes with the key, and nothing
+     * anywhere reports that it went. Carried over, it simply goes on waiting under the new key.
+     *
+     * <p><b>Nothing is left held.</b> The positions of what has been taken in and not sent are dropped here
+     * along with the rows they belonged to: they are somebody else's to account for now, and what keeps the
+     * frontier below a move in flight is the move itself being counted as still held. Kept, they would leave
+     * the deleted key un-droppable for the life of the job with every count reading healthy.
+     */
+    public List<NestElement> detachEverything() {
+        List<NestElement> handedOver = new ArrayList<>();
+        collectFrom(children, List.of(), null, handedOver);
+        for (List<Pending> bucket : waiting.values()) {
+            for (Pending pending : bucket) {
+                NestElement held = pending.held();
+                handedOver.add(new NestElement(held.ref(), held.fields(), held.order(), Map.of()));
+                if (pending.node() != null) {
+                    // A node moved to a parent that had not arrived is attached as it stands, so its own
+                    // subtree is hanging off it and is here rather than in the tree above.
+                    collectFrom(pending.node().children(), held.ref().pathId(), held.ref().identity(),
+                            handedOver);
+                }
+            }
+        }
+        children.clear();
+        byIdentity.clear();
+        waiting.clear();
+        heldElements.clear();
+        return handedOver;
+    }
+
+    /**
      * Everything under one element, level by level so a parent is always listed before its children. Each
      * is rebuilt as the change that would put it back: where it hangs, the row it holds, and the order that
      * decides whether it still wins where it lands.
      */
     private void collectBeneath(ElementNode holder, List<String> holderPathId, Object holderIdentity,
             List<NestElement> into) {
+        collectFrom(holder.children(), holderPathId, holderIdentity, into);
+    }
+
+    /**
+     * The same, over a map of embeds rather than over the element holding them, so the root's own children
+     * are read out by the one path that reads out anyone else's. The root differs only in having no element
+     * above it: its path is empty and there is no identity for its children to name.
+     */
+    private void collectFrom(Map<String, Map<List<Object>, ElementNode>> embeds, List<String> holderPathId,
+            Object holderIdentity, List<NestElement> into) {
         List<ElementNode> nodes = new ArrayList<>();
         List<List<String>> paths = new ArrayList<>();
         List<Object> identities = new ArrayList<>();
-        for (Map.Entry<String, Map<List<Object>, ElementNode>> embed : holder.children().entrySet()) {
+        for (Map.Entry<String, Map<List<Object>, ElementNode>> embed : embeds.entrySet()) {
             List<String> pathId = deeper(holderPathId, embed.getKey());
             for (Map.Entry<List<Object>, ElementNode> held : embed.getValue().entrySet()) {
                 ElementNode node = held.getValue();

@@ -136,7 +136,15 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * owed it. Bounded by the moves actually in flight, because only a change whose old key was told it had
      * gone is ever recorded here.
      */
-    private final Map<ParkedSubtree.At, Object> owed = new LinkedHashMap<>();
+    private final Map<ParkedSubtree.At, Owed> owed = new LinkedHashMap<>();
+
+    /**
+     * A document owed a hand-over: which key it is, and the source's time for the change that made it owed.
+     * The time travels because the document goes out again once the rows land, and a send with no time on it
+     * would place a change downstream at the epoch rather than where the source put it.
+     */
+    private record Owed(Object key, long ts) {
+    }
 
     /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
@@ -435,7 +443,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private void handle(NestInbound edge, Object item, Map<Object, Touched> touched) {
         if (edge.isCascade()) {
             KeyedElement arrived = (KeyedElement) item;
-            settle(arrived.key(), touched(arrived.key(), touched).assembly, arrived.element());
+            settle(arrived.key(), touched(arrived.key(), touched), arrived.element());
             return;
         }
         Envelope event = (Envelope) item;
@@ -443,15 +451,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         Map<String, Object> row = NestKeys.rowOf(event);
         SourceOrder order = NestKeys.orderOf(event);
         if (edge.pathId().isEmpty()) {
-            List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
-            Touched document = touched(key, touched);
-            document.ts = event.ts();
-            if (NestKeys.isDeletion(event)) {
-                document.assembly.deleteRoot(order, event.positions());
-                document.rootDeleted = true;
-            } else {
-                document.assembly.applyRoot(row, order, event.positions());
-            }
+            handleRoot(edge, event, row, order, touched);
             return;
         }
         ElementRef ref = new ElementRef(edge.pathId(), null,
@@ -472,13 +472,80 @@ public final class AssemblerProcessor extends AbstractProcessor {
         }
         Touched document = touched(key, touched);
         document.ts = event.ts();
-        settle(key, document.assembly, edge.carriesDepartures()
+        settle(key, document, edge.carriesDepartures()
                 ? new NestElement(ref, null, order, event.positions(), from, true)
                 : new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
                         event.positions(), from, departed));
         // A leaf hanging straight off the root belongs to whichever document its join key names, so a row
         // re-pointed at another root has to be taken out of the one it was in. Both are held here, so the
         // pair needs no routing: this vertex is where the two keys would have met anyway.
+    }
+
+    /**
+     * Applies one root row: the document it names becomes what the row says, or is removed where the row is
+     * a deletion - and where the row has changed the very key it is filed under, the document changes
+     * identity and the whole tree goes with it.
+     *
+     * <p>That last case is the one thing the root has that an element does not: the key a document is filed
+     * under is read off the root row, so editing it ends one document and starts another. Both halves arrive
+     * here, the ordinary edge keyed by where the row now is and its twin keyed by where it was, so the
+     * instance holding each side does its own half and neither reaches across.
+     */
+    private void handleRoot(NestInbound edge, Envelope event, Map<String, Object> row, SourceOrder order,
+            Map<Object, Touched> touched) {
+        List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
+        Map<String, Object> was = NestKeys.replacedRow(edge, event);
+        List<Object> leaving = was == null ? null : NestKeys.valuesOf(was, vertex.partitionKey());
+        boolean movedKey = leaving != null && !leaving.equals(key);
+        if (edge.carriesDepartures()) {
+            // Every root row travels the twin edge, not only the ones that moved - an edge cannot filter.
+            // One that is leaving nowhere landed beside its twin, which has the row in hand already.
+            if (movedKey) {
+                letGoOfTheWholeDocument(leaving, key, order, event, touched);
+            }
+            return;
+        }
+        Touched document = touched(key, touched);
+        document.ts = event.ts();
+        if (NestKeys.isDeletion(event)) {
+            document.assembly.deleteRoot(order, event.positions());
+            document.rootDeleted = true;
+            return;
+        }
+        document.assembly.applyRoot(row, order, event.positions());
+        if (movedKey && parking != null) {
+            // The half that has never seen this document before. What it was is somewhere both halves can
+            // reach, addressed by the key that arrived - which is the only thing this side knows.
+            ParkedSubtree.At at = ParkedSubtree.At.ofRoot(key);
+            if (!collect(document.assembly, at)) {
+                owed.put(at, new Owed(key, document.ts));
+            }
+        }
+    }
+
+    /**
+     * Empties the document the root row is leaving into the parking area and removes it, so the key the row
+     * now carries can be given all of it.
+     *
+     * <p>The removal is not conditional on this instance having seen the root. State here can be cold or
+     * rebuilt from a floor, so "no document under that key" says nothing about what a sink is holding - and
+     * the source has just said that key no longer exists. Staying silent would leave a document downstream
+     * that nothing ever removes again.
+     *
+     * <p>With nowhere to hand the tree through, nothing moves at all: the document stays whole under the key
+     * it is on rather than being emptied into nothing. A stale copy disagrees with its source and can be
+     * seen to; rows read out and handed nowhere are gone, with nothing anywhere reporting it.
+     */
+    private void letGoOfTheWholeDocument(List<Object> leaving, List<Object> arriving, SourceOrder order,
+            Envelope event, Map<Object, Touched> touched) {
+        if (parking == null) {
+            return;
+        }
+        Touched document = touched(leaving, touched);
+        document.ts = event.ts();
+        hand(ParkedSubtree.At.ofRoot(arriving), document.assembly.detachEverything(), event.positions());
+        document.assembly.deleteRoot(order, event.positions());
+        document.rootDeleted = true;
     }
 
     /**
@@ -494,9 +561,10 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * <p>Order between the two does not matter for what is parked: an arrival that finds nothing simply
      * finds nothing, and the subtree it is owed is collected when it is looked for again.
      */
-    private void settle(Object key, RootAssembly assembly, NestElement change) {
+    private void settle(Object key, Touched document, NestElement change) {
+        RootAssembly assembly = document.assembly;
         if (parking != null && change.departure() && assembly.holdsSubtreeAt(change.movedFrom())) {
-            hand(ParkedSubtree.At.of(change), assembly.detachSubtree(change.movedFrom()), change);
+            hand(ParkedSubtree.At.of(change), assembly.detachSubtree(change.movedFrom()), change.positions());
             return;
         }
         assembly.take(change);
@@ -509,7 +577,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // pipeline runs.
         ParkedSubtree.At at = ParkedSubtree.At.of(change);
         if (!collect(assembly, at)) {
-            owed.put(at, key);
+            owed.put(at, new Owed(key, document.ts));
         }
     }
 
@@ -523,14 +591,14 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * move, nothing collects what is parked, and the subtree is gone from both documents with the pipeline
      * running and no error anywhere.
      */
-    private void hand(ParkedSubtree.At at, List<NestElement> subtree, NestElement change) {
+    private void hand(ParkedSubtree.At at, List<NestElement> subtree, Map<String, ChainPosition> since) {
         if (subtree.isEmpty()) {
             return;
         }
         ParkedSubtree waiting = parking.load(at);
         ParkedSubtree now = new ParkedSubtree(subtree);
         parking.save(at, waiting == null ? now : waiting.and(now));
-        handedOver.put(at, change.positions());
+        handedOver.put(at, since);
     }
 
     /**
@@ -565,19 +633,40 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (parking == null || owed.isEmpty()) {
             return;
         }
-        Iterator<Map.Entry<ParkedSubtree.At, Object>> pending = owed.entrySet().iterator();
+        Map<Object, Touched> landed = new LinkedHashMap<>();
+        Iterator<Map.Entry<ParkedSubtree.At, Owed>> pending = owed.entrySet().iterator();
         while (pending.hasNext()) {
-            Map.Entry<ParkedSubtree.At, Object> entry = pending.next();
+            Map.Entry<ParkedSubtree.At, Owed> entry = pending.next();
             ParkedSubtree waiting = parking.load(entry.getKey());
-            RootAssembly assembly = waiting == null ? null : store.load(entry.getValue());
-            if (assembly == null) {
+            if (waiting == null) {
                 continue;
             }
-            waiting.changes().forEach(assembly::take);
-            store.save(entry.getValue(), assembly);
+            Object key = entry.getValue().key();
+            // One document may be owed several hand-overs at once, and a store answers a second read with
+            // its own copy - so they are taken into one state here rather than each into a fresh read, where
+            // the last write would drop what the others had applied.
+            Touched document = landed.get(key);
+            if (document == null) {
+                RootAssembly assembly = store.load(key);
+                if (assembly == null) {
+                    continue;
+                }
+                document = new Touched(assembly);
+                landed.put(key, document);
+            }
+            document.ts = Math.max(document.ts, entry.getValue().ts());
+            waiting.changes().forEach(document.assembly::take);
             parking.remove(entry.getKey());
             handedOver.remove(entry.getKey());
             pending.remove();
+        }
+        // Sent, not merely stored. A document that gained rows this way changed after it had already gone
+        // out, and nothing else is due for that key - so without a send of its own the sink keeps the
+        // version without them for good, with the state correct, every reading healthy and no error counted.
+        // The hold on the frontier is let go of in the same breath, so a restart resumes above the change
+        // and nothing replays it either.
+        if (!landed.isEmpty()) {
+            settle(landed);
         }
     }
 

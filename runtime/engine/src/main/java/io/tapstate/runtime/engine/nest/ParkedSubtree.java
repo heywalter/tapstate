@@ -47,6 +47,21 @@ public record ParkedSubtree(List<NestElement> changes) implements Serializable {
             ElementRef ref = change.movedFrom() == null ? change.ref() : change.movedFrom();
             return new At(ref.pathId(), ref.elementKey());
         }
+
+        /**
+         * Where a whole document waits while its root row changes key: under the key it is bound for.
+         *
+         * <p>The empty path is what says "all of it" rather than "the embed at this path". It can be nothing
+         * else - an element's address always names the embed it belongs to and so is never empty - so the two
+         * kinds of entry share a map without being able to collide on one.
+         *
+         * <p>Addressed by the key it is going to and not by the one it came from, because the half that has
+         * to find it is the half that has never seen this document: it reads its own key off the row that
+         * arrived and asks for it. The half letting go knows both.
+         */
+        public static At ofRoot(List<Object> rootKey) {
+            return new At(List.of(), rootKey);
+        }
     }
 
     /** Whether this is holding nothing, which is not a thing worth keeping an entry for. */
