@@ -47,6 +47,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
@@ -174,19 +175,31 @@ public final class NestCrashHarness {
         System.exit(0);
     }
 
-    /** Waits for the document to stop growing, then reports whatever came back. */
+    /**
+     * Waits until every claim the killed process left behind has surfaced inside a document, and reports
+     * the ones that did.
+     *
+     * <p>What it waits for is that count, not a lull in it. An earlier version stopped at the first 200ms
+     * sample that added nothing, which says nothing about the run being over: the claims come back one
+     * policy at a time, and any gap between two of them wider than the sample - a read from the cold layer,
+     * a coalescing window, a thread not scheduled - reads exactly like the end of them. The run was then
+     * shut down with the rest still in flight and reported the few that had arrived, so what the witness
+     * compared against was settled by how fast the machine was rather than by what survived the kill: the
+     * same state passed here and failed on a slower machine.
+     *
+     * <p>The deadline stays, as the failure path, and it is what keeps this able to fail at all: a run that
+     * genuinely lost claims never reaches the count, reports the few it has, and is judged on those.
+     */
     private static void awaitRecovered() {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
-        int reported = 0;
-        while (System.nanoTime() < deadline) {
+        Set<Integer> surfaced = new TreeSet<>(List.copyOf(RECOVERED));
+        while (System.nanoTime() < deadline && surfaced.size() < CLAIMS) {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
-            List<Integer> seen = List.copyOf(RECOVERED);
-            if (seen.size() == reported && reported > 0) {
-                break;
-            }
-            reported = seen.size();
+            // Copied rather than iterated in place: the collector is still adding to it from the job's
+            // threads, and a synchronized list only synchronizes the call, not a traversal of it.
+            surfaced = new TreeSet<>(List.copyOf(RECOVERED));
         }
-        for (Integer claim : new TreeSet<>(RECOVERED)) {
+        for (Integer claim : surfaced) {
             report.line(RECOVERED_LINE + claim);
         }
         report.line("done");
