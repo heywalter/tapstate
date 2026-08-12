@@ -3,7 +3,6 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
-import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
@@ -355,7 +354,8 @@ class PipelineApiTest {
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import({ControlHttpFace.class, SourceDraftTestConfiguration.class, SourceServiceTestConfiguration.class})
+    @Import({ControlHttpFace.class, SourceDraftTestConfiguration.class, SourceServiceTestConfiguration.class,
+            AuditedSourceServiceTestConfiguration.class})
     static class TestApp {
 
         @Bean
@@ -441,11 +441,6 @@ class PipelineApiTest {
         @Bean
         ArtifactQueryService artifactQueryService(ArtifactStore store) {
             return new ArtifactQueryService(store);
-        }
-
-        @Bean
-        AuditedSourceService auditedSourceService(SourceService sources, AuditGate auditGate) {
-            return new AuditedSourceService(sources, auditGate);
         }
 
         // The connection / connector controllers come in with the whole ControlHttpFace bundle, so their
