@@ -475,13 +475,18 @@ class ArtifactMutationServiceTest {
         PipelineResource flow = pipeline("flow");
         store.save(flow);
         RuntimeException first = new IllegalArgumentException("desired store is down");
-        RuntimeException second = new IllegalArgumentException("observation store is down");
+        RuntimeException second = new IllegalArgumentException("state store is down");
+        RuntimeException third = new IllegalArgumentException("observation store is down");
         desired.failDeleteWith(first);
-        observations.failDeleteWith(second);
+        state.failDeleteWith(second);
+        observations.failDeleteWith(third);
 
+        // All three lifecycle steps are armed, not two: a step left out of the collecting wrapper
+        // would abort the reclaim at itself, and the steps after it would go unattempted while the
+        // artifact is already gone. The suppressed order also pins the sequence the reclaim runs in.
         assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
                 .isSameAs(first)
-                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second));
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second, third));
     }
 
     private static SourceResource source(String id) {
@@ -618,6 +623,10 @@ class ArtifactMutationServiceTest {
 
         void put(String pipelineId, PipelineState actual) {
             docs.put(pipelineId, CheckpointDoc.initial(pipelineId, StateJson.of(actual), Instant.EPOCH));
+        }
+
+        void failDeleteWith(RuntimeException failure) {
+            this.deleteFailure = failure;
         }
 
         @Override
