@@ -22,6 +22,10 @@ io.tapstate.runtime.engine.nest.ElementRef :: field :: parentIdentity :: java.la
 io.tapstate.runtime.engine.nest.ElementRef :: field :: pathId :: java.util.List<java.lang.String>
 io.tapstate.runtime.engine.nest.ElementRef :: record :: uid=0
 io.tapstate.runtime.engine.nest.NestElement :: field :: fields :: java.util.Map<java.lang.String, java.lang.Object>
+# movedFrom reads back absent as null, which is what "this change is not a move" is written as. Nothing
+# stored before the field existed could have been one - no path produced a move at all - so the absent
+# value is not merely tolerable here, it is the right answer. The identity therefore stays where it is.
+io.tapstate.runtime.engine.nest.NestElement :: field :: movedFrom :: io.tapstate.runtime.engine.nest.ElementRef
 io.tapstate.runtime.engine.nest.NestElement :: field :: order :: io.tapstate.core.event.SourceOrder
 io.tapstate.runtime.engine.nest.NestElement :: field :: positions :: java.util.Map<java.lang.String, io.tapstate.core.event.ChainPosition>
 io.tapstate.runtime.engine.nest.NestElement :: field :: ref :: io.tapstate.runtime.engine.nest.ElementRef
