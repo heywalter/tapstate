@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * The resource-type-agnostic apply pipeline. {@code plan} validates a batch (structural, reference
@@ -480,6 +481,51 @@ class ApplyServiceTest {
         });
         assertThat(auditStore.records).extracting(AuditRecord::resourceId)
                 .containsExactly("src_ora", "tgt_my");
+    }
+
+    @Test
+    void aVersionCheckedApplyRecordsTheVersionItDeclaredItWasEditing() {
+        // Without this the record is byte-identical to a blind overwrite of the same id, so the log
+        // cannot answer whether the writer had read what it replaced — which is the question a
+        // precondition exists to make answerable in the first place.
+        String current = service.apply("alice", List.of(draft(TGT_MY)))
+                .outcomes().get(0).contentHash();
+        auditStore.records.clear();
+
+        service.apply("alice", List.of(draft(TGT_MY_EDITED, current)));
+
+        assertThat(auditStore.records).singleElement().satisfies(record -> {
+            assertThat(record.resourceId()).isEqualTo("tgt_my");
+            assertThat(record.expectedContentHash()).isEqualTo(current);
+        });
+    }
+
+    @Test
+    void anApplyThatDeclaredNoVersionRecordsNone() {
+        // The absence has to mean something: a record with no declared version is the unconditional
+        // overwrite, and filling in the stored hash here would make every apply look version-checked.
+        service.apply("alice", List.of(draft(TGT_MY)));
+
+        assertThat(auditStore.records).singleElement()
+                .satisfies(record -> assertThat(record.expectedContentHash()).isNull());
+    }
+
+    @Test
+    void aBatchRecordsEachArtifactsOwnDeclaredVersionAndNotAnothers() {
+        // The drafts are matched to ids by what each one parsed to, not by position in the plan: the
+        // plan is built from the validated workspace, whose order is its own. Getting this wrong files
+        // one artifact's declared version under a different artifact's record.
+        String current = service.apply("alice", List.of(draft(TGT_MY)))
+                .outcomes().get(0).contentHash();
+        auditStore.records.clear();
+
+        service.apply("alice", List.of(draft(SRC_ORA_STANDALONE), draft(TGT_MY_EDITED, current)));
+
+        assertThat(auditStore.records)
+                .extracting(AuditRecord::resourceId, AuditRecord::expectedContentHash)
+                .containsExactlyInAnyOrder(
+                        tuple("src_ora", null),
+                        tuple("tgt_my", current));
     }
 
     @Test

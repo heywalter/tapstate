@@ -92,9 +92,16 @@ public final class ApplyService {
         // Preconditions are judged once every draft has parsed, so a malformed document is reported as
         // malformed rather than as a version conflict, and before the batch is validated, so an author
         // editing a version that has moved on is told that instead of being handed diagnostics about
-        // content they are about to rewrite.
+        // content they are about to rewrite. Each one declared is kept under the id it was declared
+        // against: this is the only point at which a draft and the id it parses to are both in hand.
+        Map<String, String> preconditions = new LinkedHashMap<>();
         for (int index = 0; index < drafts.size(); index++) {
-            requireCurrentVersion(drafts.get(index), resources.get(index));
+            ArtifactDraft draft = drafts.get(index);
+            Resource parsed = resources.get(index);
+            requireCurrentVersion(draft, parsed);
+            if (draft.expectedContentHash() != null) {
+                preconditions.put(parsed.id(), draft.expectedContentHash());
+            }
         }
         Workspace workspace = Workspace.of(resources, catalog.get());
         RowExpressionTypeRules.validate(resources, discoveredTables(resources));
@@ -103,7 +110,7 @@ public final class ApplyService {
             String canonicalForm = writer.write(resource);
             prepared.add(new PreparedArtifact(resource, canonicalForm, CanonicalHash.of(canonicalForm)));
         }
-        return new ApplyPlan(prepared);
+        return new ApplyPlan(prepared, preconditions);
     }
 
     /** Validates and plans a batch while performing no store or audit write. */
@@ -133,9 +140,10 @@ public final class ApplyService {
      * batch.
      *
      * <p>Apply is an audited write: the changed set passes the audit gate under {@code principal}, one
-     * record per changed artifact attributed by its own id, before any of it is stored. A no-op leaves no
-     * record because it changes nothing, and an audit-write failure refuses the whole apply
-     * ({@code control.audit-blocked}) with the store untouched.
+     * record per changed artifact attributed by its own id and carrying the version its draft declared
+     * it was editing, before any of it is stored. A no-op leaves no record because it changes nothing,
+     * and an audit-write failure refuses the whole apply ({@code control.audit-blocked}) with the store
+     * untouched.
      */
     public ApplyResult apply(String principal, List<ArtifactDraft> drafts) {
         Objects.requireNonNull(principal, "principal");
@@ -145,12 +153,12 @@ public final class ApplyService {
         List<AuditContext> audited = new ArrayList<>();
         for (PreparedArtifact prepared : plan.artifacts()) {
             ArtifactOutcome outcome = outcome(prepared);
-            ArtifactOutcome.Change change = outcome.change();
-            if (change != ArtifactOutcome.Change.UNCHANGED) {
+            if (outcome.change() != ArtifactOutcome.Change.UNCHANGED) {
                 toWrite.add(prepared.resource());
-            }
-            if (change != ArtifactOutcome.Change.UNCHANGED) {
-                audited.add(new AuditContext(principal, prepared.id()));
+                // The declared version travels with the record, so a version-checked edit is
+                // distinguishable in the audit trail from a blind overwrite of the same id. A draft that
+                // declared none records none, which is what that absence then means.
+                audited.add(new AuditContext(principal, prepared.id(), plan.precondition(prepared.id())));
             }
             outcomes.add(outcome);
         }

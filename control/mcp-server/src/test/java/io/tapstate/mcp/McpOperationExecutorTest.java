@@ -295,6 +295,49 @@ class McpOperationExecutorTest {
     }
 
     @Test
+    void artifactDeleteAnswersWithWhatItRemovedRatherThanTheServersEmptyBody() throws Exception {
+        // The server answers 204, which carries no body, and this is the one operation on the surface
+        // that cannot be undone and leaves nothing behind to read afterwards. An empty result gives a
+        // model no content-level evidence the removal happened, and nothing to tell it apart from an
+        // ambiguous one — which is exactly the state that invites a retry of an irreversible call.
+        HttpServer server = server(exchange -> answer(exchange, 204, ""));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_DELETE,
+                    Map.of("id", "orders", "expectedContentHash", "a".repeat(64)));
+
+            assertThat(result.error()).isFalse();
+            assertThat(result.body()).containsEntry("id", "orders").containsEntry("removed", true);
+            assertThat(result.body()).containsEntry("expectedContentHash", "a".repeat(64));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void aRefusedArtifactDeleteIsStillReportedAsTheServerStatedIt() throws Exception {
+        // The body added above must not swallow a refusal into a success: a delete the server rejected
+        // reported as {"removed": true} is worse than the empty body it replaced.
+        HttpServer server = server(exchange -> answer(exchange, 409,
+                "{\"code\":\"artifact.version-conflict\",\"message\":\"it changed\"}"));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_DELETE,
+                    Map.of("id", "orders", "expectedContentHash", "a".repeat(64)));
+
+            assertThat(result.error()).isTrue();
+            assertThat(JsonWriter.write(result.body())).contains("artifact.version-conflict");
+            assertThat(result.body()).doesNotContainKey("removed");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void unsupportedOperationsAreReturnedAsStructuredFailures() {
         try (HttpControlClient client = new HttpControlClient()) {
             McpOperationExecutor executor = new McpOperationExecutor(

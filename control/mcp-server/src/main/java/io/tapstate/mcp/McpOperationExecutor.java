@@ -81,12 +81,26 @@ final class McpOperationExecutor {
      * Both arguments are demanded before the request is built. The precondition is not optional here: a
      * removal sent without one is refused by the server anyway, and refusing it at this end names the
      * argument that was missing instead of returning a protocol-level refusal the caller has to decode.
+     *
+     * <p>A removal answers with what it removed, rather than with the empty body the server's 204 would
+     * otherwise become. This is the one operation on the surface that cannot be undone and leaves
+     * nothing behind to read afterwards, so an empty result would give the caller no content-level
+     * evidence the removal happened — and nothing to tell an ambiguous result apart from a completed
+     * one. A refusal is still returned exactly as the server stated it.
      */
     private McpResult artifactDelete(Map<String, Object> arguments) {
         String id = required(arguments, "id");
         String expectedContentHash = required(arguments, "expectedContentHash");
-        return McpResult.from(client.delete(
-                server, token, "/api/artifacts/" + segment(id), expectedContentHash));
+        ControlResponse response = client.delete(
+                server, token, "/api/artifacts/" + segment(id), expectedContentHash);
+        if (!(response instanceof ControlResponse.Success)) {
+            return McpResult.from(response);
+        }
+        Map<String, Object> removed = new LinkedHashMap<>();
+        removed.put("id", id);
+        removed.put("removed", true);
+        removed.put("expectedContentHash", expectedContentHash);
+        return McpResult.success(removed);
     }
 
     private McpResult connectionWrite(Map<String, Object> arguments, String path) {

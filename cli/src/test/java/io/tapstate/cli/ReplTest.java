@@ -1139,6 +1139,55 @@ class ReplTest {
         assertThat(h.repl().lastExitCode()).isZero();
     }
 
+    /**
+     * A read may be replayed on another member; a removal may not. The replay cannot tell its own first
+     * attempt's success apart from the id never having been there — both answer {@code
+     * artifact.not-found} — so a removal that landed and lost only its reply comes back reported as a
+     * failure, taking a scripted teardown down with it on the non-zero exit.
+     */
+    @Test
+    void aRemovalThatGetsNoAnswerIsSentOnceAndNeverReplayedElsewhere() {
+        FakeControlPlane client = new FakeControlPlane(
+                URI.create("http://n1:7900"), URI.create("http://n2:7900"));
+        client.loginOutcome = new LoginOutcome.Success("jwt");
+        Harness h = harness(Path.of("tap-work"), client, new ScriptedPrompter("pw"));
+        h.repl().dispatch("connect n1:7900,n2:7900");       // lands n1, members = [n1, n2]
+        h.repl().dispatch("login alice");
+        client.setHealthy(URI.create("http://n2:7900"));    // n1 takes the removal, then goes quiet
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete src_kfk --if-match " + "a".repeat(64))).isTrue();
+
+        // One call, to the node that went quiet — n2 is reachable and would have taken a replay.
+        assertThat(client.deleteCalls).hasSize(1);
+        assertThat(client.deleteCalls.get(0)).contains("http://n1:7900");
+        // And the report says which it is: neither "deleted" nor "not found", both of which would be
+        // asserting something nobody here knows.
+        assertThat(h.sink().toString().substring(mark)).contains("may or may not have been applied");
+        assertThat(h.repl().lastExitCode()).isEqualTo(Cli.EXIT_DIAGNOSTIC);
+    }
+
+    /**
+     * {@code -o json} has to hold for every way the verb can fail, not just the refusals. The implicit
+     * pre-read is an implementation detail of {@code delete} — the caller never asked for it — so its
+     * failures must answer in the shape the caller did ask for. A machine face that covers some failures
+     * and not others is one a script cannot parse against at all.
+     */
+    @Test
+    void aPreReadFailureOnTheMachineFaceIsStillADocument() {
+        FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));
+        client.getOutcome = new GetOutcome.Absent();
+        Harness h = onlineSession(Path.of("tap-work"), client);
+        int mark = h.sink().toString().length();
+
+        assertThat(h.repl().dispatch("delete nope -o json")).isTrue();
+
+        String out = h.sink().toString().substring(mark);
+        assertThat(out).contains("\"code\": \"artifact.not-found\"").contains("nope");
+        assertThat(client.deleteCalls).isEmpty();
+        assertThat(h.repl().lastExitCode()).isEqualTo(Cli.EXIT_DIAGNOSTIC);
+    }
+
     @Test
     void deleteOnTheMachineFaceRendersYamlWhenAskedFor() {
         FakeControlPlane client = new FakeControlPlane(URI.create("http://node1:7900"));

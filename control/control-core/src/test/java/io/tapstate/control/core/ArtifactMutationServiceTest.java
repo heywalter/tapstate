@@ -471,6 +471,51 @@ class ArtifactMutationServiceTest {
     }
 
     @Test
+    void aChainThatRefusesTheDetachNeverStopsTheRemainingChainsFromBeingDetached() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        // Seeded in iteration order, with the failure armed on the first: the two that follow are the
+        // discriminating ones. A loop that gives up at its first failure never reaches them, and their
+        // cursors are the residue that pins a shared chain's frontier for every other pipeline on it.
+        srsMeta.seed("chain-a", consumer("flow"));
+        srsMeta.seed("chain-b", consumer("flow"), consumer("other"));
+        srsMeta.seed("chain-c", consumer("flow"));
+        RuntimeException chainDown = new IllegalArgumentException("chain-a is unreachable");
+        srsMeta.failDetachOn("chain-a", chainDown);
+
+        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow))).isSameAs(chainDown);
+
+        assertThat(srsMeta.consumerIds("chain-b")).containsExactly("other");
+        assertThat(srsMeta.consumerIds("chain-c")).isEmpty();
+        // The armed chain really did keep the cursor, so the two above witness reach rather than a
+        // failure that never happened.
+        assertThat(srsMeta.consumerIds("chain-a")).containsExactly("flow");
+        // The rest of the reclaim runs too: one unreachable chain must not cost the pipeline's own
+        // bookkeeping as well, which no later run can clear because the artifact is already gone.
+        assertThat(desired.read("flow")).isEmpty();
+        assertThat(state.read("flow")).isEmpty();
+        assertThat(observations.read("flow")).isEmpty();
+    }
+
+    @Test
+    void everyChainFailureIsReportedAndNotJustTheFirst() {
+        PipelineResource flow = pipeline("flow");
+        store.save(flow);
+        srsMeta.seed("chain-a", consumer("flow"));
+        srsMeta.seed("chain-b", consumer("flow"));
+        RuntimeException first = new IllegalArgumentException("chain-a is unreachable");
+        RuntimeException second = new IllegalArgumentException("chain-b is unreachable");
+        srsMeta.failDetachOn("chain-a", first);
+        srsMeta.failDetachOn("chain-b", second);
+
+        // Both are carried out, not just the one that ended the loop: each names a different chain
+        // whose cursor is still there, and a caller shown only the first would clear one and leave one.
+        assertThatThrownBy(() -> service.delete(PRINCIPAL, "flow", hash(flow)))
+                .isSameAs(first)
+                .satisfies(thrown -> assertThat(thrown.getSuppressed()).containsExactly(second));
+    }
+
+    @Test
     void everyReclaimFailureIsReportedAndNotJustTheFirst() {
         PipelineResource flow = pipeline("flow");
         store.save(flow);
@@ -690,10 +735,16 @@ class ArtifactMutationServiceTest {
     private final class InMemorySrsMetaStore implements SrsMetaStore {
 
         private final Map<String, SrsMeta> chains = new LinkedHashMap<>();
+        private final Map<String, RuntimeException> detachFailures = new LinkedHashMap<>();
 
         void seed(String miningChainId, ConsumerOffset... consumers) {
             chains.put(miningChainId,
                     new SrsMeta(miningChainId, "srcpos-1", List.of(consumers), null, List.of(), null));
+        }
+
+        /** Arms one chain to refuse a detach, standing in for a chain whose store is momentarily down. */
+        void failDetachOn(String miningChainId, RuntimeException failure) {
+            detachFailures.put(miningChainId, failure);
         }
 
         List<String> consumerIds(String miningChainId) {
@@ -723,7 +774,9 @@ class ArtifactMutationServiceTest {
 
         @Override
         public void detachConsumer(String miningChainId, String pipelineId) {
-            step("srs", null);
+            // Fail before mutating, so an armed chain keeps the departing consumer's cursor — the residue
+            // the report is about has to really be there for the assertions to witness anything.
+            step("srs", detachFailures.get(miningChainId));
             SrsMeta chain = chains.get(miningChainId);
             List<ConsumerOffset> kept = chain.consumerOffsets().stream()
                     .filter(offset -> !offset.pipelineId().equals(pipelineId))

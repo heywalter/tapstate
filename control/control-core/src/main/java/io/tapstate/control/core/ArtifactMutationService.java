@@ -151,12 +151,7 @@ public final class ArtifactMutationService {
         attempt(failures, () -> desired.delete(id));
         attempt(failures, () -> state.delete(id));
         attempt(failures, () -> observations.delete(id));
-        if (failures.isEmpty()) {
-            return;
-        }
-        RuntimeException first = failures.get(0);
-        failures.stream().skip(1).forEach(first::addSuppressed);
-        throw first;
+        rethrowTogether(failures);
     }
 
     /**
@@ -164,11 +159,33 @@ public final class ArtifactMutationService {
      * them hold it, rather than derived from what the pipeline reads: chain identity is resolved where
      * captures are built, and a cursor left behind by an earlier shape of the pipeline would be invisible
      * to any derivation from its current one.
+     *
+     * <p>Each chain is detached independently, for the same reason the reclaim steps are: one chain's
+     * failure must not leave the departing consumer attached to the chains that come after it. That
+     * residue is the one this class's own contract calls out as harming a <em>different</em> pipeline,
+     * and it cannot be cleared afterwards — the artifact is gone by now, so the removal cannot be run
+     * again to finish the job. Detaching is idempotent, so a chain already detached costs nothing.
      */
     private void detachFromEveryChain(String id) {
+        List<RuntimeException> failures = new ArrayList<>();
         for (String miningChainId : srsMeta.miningChainIdsWithConsumer(id)) {
-            srsMeta.detachConsumer(miningChainId, id);
+            attempt(failures, () -> srsMeta.detachConsumer(miningChainId, id));
         }
+        rethrowTogether(failures);
+    }
+
+    /**
+     * Throws the first collected failure with the rest attached as suppressed, or returns quietly when
+     * nothing failed. Reporting them together is what lets every step be attempted: the caller still
+     * fails, and still sees each residue it has to clear.
+     */
+    private static void rethrowTogether(List<RuntimeException> failures) {
+        if (failures.isEmpty()) {
+            return;
+        }
+        RuntimeException first = failures.get(0);
+        failures.stream().skip(1).forEach(first::addSuppressed);
+        throw first;
     }
 
     /** Runs one reclaim step, collecting a coded or runtime failure instead of ending the reclaim. */

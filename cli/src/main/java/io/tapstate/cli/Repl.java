@@ -717,7 +717,13 @@ final class Repl {
      * <p>{@code -o json|yaml} reports the removal as a document rather than a sentence, including the
      * precondition that was actually used — which the caller has no other way to learn when the verb
      * chose it. A refusal on those surfaces keeps the refusal's parameters, so a script can act on the
-     * same facts the text surface turns into a next step.
+     * same facts the text surface turns into a next step. Every other way the verb can fail answers as
+     * a document too, the implicit read's failures included: a machine surface that covers only some of
+     * them is one nothing can parse against.
+     *
+     * <p>The removal itself is sent once, to the landing node, and is never re-sent elsewhere. Reads
+     * here may be retried; this one may not, because a replay cannot tell its own first attempt's
+     * success apart from the resource never having been there.
      */
     private int deleteOnline(List<String> words) {
         PrintWriter err = commandLine.getErr();
@@ -764,14 +770,24 @@ final class Repl {
                     kind = found.artifact().kind();
                 }
                 case GetOutcome.Absent ignored -> {
+                    if (format != OutputFormat.TEXT) {
+                        return renderDeleteErrorDocument(format, "artifact.not-found",
+                                "no artifact with id '" + target + "' is stored");
+                    }
                     err.println("not found: " + target);
                     err.flush();
                     return Cli.EXIT_DIAGNOSTIC;
                 }
                 case GetOutcome.Rejected rejected -> {
+                    if (format != OutputFormat.TEXT) {
+                        return renderDeleteErrorDocument(format, rejected.code(), rejected.message());
+                    }
                     return renderRejection(rejected.code(), rejected.message());
                 }
                 case GetOutcome.Unreachable ignored -> {
+                    if (format != OutputFormat.TEXT) {
+                        return renderDeleteErrorDocument(format, null, "the server is unreachable");
+                    }
                     return reportRequestFailed();
                 }
             }
@@ -780,9 +796,13 @@ final class Repl {
         String hash = ifMatch;
         String removedKind = kind;
         OutputFormat chosenFormat = format;
-        DeleteOutcome outcome = withFailover(() ->
-                controlPlane.delete(session.landingNode(), session.credential(), target, hash),
-                o -> o instanceof DeleteOutcome.Unreachable);
+        // The removal is sent once and never re-sent. Failing over replays it on another member, and a
+        // replay that follows a first attempt which landed but whose answer was lost comes back
+        // `artifact.not-found` — reporting the removal as failed at the exact moment it succeeded, and
+        // taking a scripted teardown down with it on the non-zero exit. A read may be retried freely;
+        // this is not one.
+        DeleteOutcome outcome =
+                controlPlane.delete(session.landingNode(), session.credential(), target, hash);
         PrintWriter out = commandLine.getOut();
         return switch (outcome) {
             case DeleteOutcome.Removed removed -> {
@@ -801,8 +821,42 @@ final class Repl {
                 yield Cli.EXIT_OK;
             }
             case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected, chosenFormat, target);
-            case DeleteOutcome.Unreachable ignored -> reportRequestFailed();
+            case DeleteOutcome.Unreachable ignored -> reportUnresolvedRemoval(target, chosenFormat);
         };
+    }
+
+    /**
+     * Reports a removal that got no answer. Nothing was retried, so whether it was applied is genuinely
+     * unknown, and the report says so rather than picking one of the two and sounding certain: a reply
+     * that never arrived is not evidence the request never landed. Reading the artifact settles it,
+     * which is why the next step is named here.
+     */
+    private int reportUnresolvedRemoval(String target, OutputFormat format) {
+        String message = "no answer from " + hostPort(session.landingNode())
+                + "; the removal of '" + target + "' may or may not have been applied";
+        if (format != OutputFormat.TEXT) {
+            return renderDeleteErrorDocument(format, null, message);
+        }
+        PrintWriter err = commandLine.getErr();
+        err.println("request failed: " + message);
+        err.println("  run `get " + target + "` to find out whether it is gone.");
+        err.flush();
+        return Cli.EXIT_DIAGNOSTIC;
+    }
+
+    /**
+     * Writes one delete failure as a machine document on the surface the caller asked for. Every way
+     * this verb can fail answers in the same shape — the implicit pre-read's failures included, since
+     * that read is an implementation detail of the verb rather than a separate command the caller
+     * chose. A {@code -o json} contract that holds for the refusals and not for the rest is one a
+     * script cannot rely on at all.
+     */
+    private int renderDeleteErrorDocument(OutputFormat format, String code, String message) {
+        PrintWriter out = commandLine.getOut();
+        Map<String, Object> document = errorDocument(code, message);
+        out.println(format == OutputFormat.JSON ? JsonOut.write(document) : YamlOut.write(document));
+        out.flush();
+        return Cli.EXIT_DIAGNOSTIC;
     }
 
     private int applyUsage(String reason) {
