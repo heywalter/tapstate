@@ -170,6 +170,24 @@ class EverythingADocumentHoldsCanBeHandedToAnotherRootKeyTest {
                 .isEmpty();
     }
 
+    /**
+     * What travels carries no position of its own, which is what stops one change from being counted as
+     * covered twice - once by the document that let it go and again by the document that gains it. What keeps
+     * the frontier below a move in flight is the move being outstanding, not a second copy of every position
+     * in the tree; and a position reported as covered by two documents is a frontier past a change only one
+     * of them really carried, which no assertion about either document would ever show.
+     */
+    @Test
+    void whatTravelsCarriesNoPositionOfItsOwn() {
+        RootAssembly had = documentWithTwoPoliciesAndADeeperSubtree();
+        had.take(new NestElement(CLAIM, row("claim_id", "K1"), at(30),
+                Map.of("chain-a", new ChainPosition(new SourceOrder(1L, 30L), "t30"))));
+
+        assertThat(had.detachEverything())
+                .describedAs("a hand-over is rows, not the accounting for them")
+                .allMatch(change -> change.positions().isEmpty());
+    }
+
     /** Nothing to hand over is the answer for a document with no elements, not a failure. */
     @Test
     void aDocumentWithNoElementsHandsOverNothing() {
