@@ -93,6 +93,43 @@ class AnElementWithASubtreeReachesTheDocumentThatGainsItTest {
         assertThat(claimsUnder(policiesOf("C2").get(0))).isEmpty();
     }
 
+    /**
+     * The two halves are routed by different keys and may be worked by different members, so the arriving
+     * half can perfectly well run before anything has been parked for it - and it is the only one that will
+     * ever ask. Looking once would leave those rows sitting there and the document that should have them
+     * never asking again.
+     *
+     * <p>Driven as the two members it really is: one assembler takes the arrival and finds nothing, another
+     * takes the departure and parks, and the first is then given a turn with nothing coming in. Both share
+     * the stores, because that is what a distributed map is.
+     */
+    @Test
+    void aHandOverParkedAfterTheElementArrivedIsStillCollected() throws Exception {
+        ResolverProcessor policies = policies();
+        AssemblerProcessor gaining = assembler();
+        AssemblerProcessor losing = assembler();
+        root(gaining, "C1");
+        root(gaining, "C2");
+        upward(gaining, through(policies, OWN_ROWS, policy(2, "P1", "C1")));
+        upward(gaining, through(policies, CLAIMS, claim(3, "K1", "P1")));
+
+        List<Object> pair = through(policies, OWN_ROWS, policyMoved(4, "P1", "C1", "C2"));
+        assertThat(pair).describedAs("a move sends two halves").hasSize(2);
+        upward(gaining, List.of(pair.get(1)));
+
+        assertThat(claimsUnder(policiesOf("C2").get(0)))
+                .describedAs("nothing had been parked when the element arrived")
+                .isEmpty();
+
+        upward(losing, List.of(pair.get(0)));
+        gaining.tryProcess();
+
+        assertThat(claimsUnder(policiesOf("C2").get(0)))
+                .describedAs("the second look is what makes a hand-over land when the halves are worked "
+                        + "in the order neither of them chose")
+                .hasSize(1);
+    }
+
     /** Nothing is left behind in the parking area once the document that was owed it has taken it. */
     @Test
     void whatWasHandedOverIsNotKeptOnceItHasLanded() throws Exception {

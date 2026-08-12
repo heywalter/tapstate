@@ -289,8 +289,9 @@ public final class ResolverProcessor extends AbstractProcessor {
             Map<String, Object> was = NestKeys.replacedRow(edge, event);
             List<Object> parentBefore = was == null ? null : NestKeys.valuesOf(was, edge.keyFields());
             Object parentWas = was == null ? null : parentIdentity(edge, parentBefore);
-            NestElement arriving =
-                    element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas);
+            NestElement arriving = departing(
+                    element(edge, event, row, parentIdentity(edge, parent), null, was, parentWas),
+                    parentBefore, parent);
             if (parentBefore != null && !parentBefore.equals(parent)) {
                 route(parentBefore, departureOf(arriving), touched);
             }
@@ -317,7 +318,22 @@ public final class ResolverProcessor extends AbstractProcessor {
     /** The half of a move that stays behind: the same change with no row, so it places nothing. */
     private static NestElement departureOf(NestElement arriving) {
         return new NestElement(arriving.ref(), null, arriving.order(), arriving.positions(),
-                arriving.movedFrom());
+                arriving.movedFrom(), true);
+    }
+
+    /**
+     * Marks a change as one whose old key is being told the element has gone. Only this level can say it -
+     * whether the element changed documents is decided by the key it joins on, and this is where both values
+     * of that key are read - and the level that receives it needs it, or it would wait for a hand-over after
+     * every rename of an element that never left the document it was in.
+     */
+    private static NestElement departing(NestElement arriving, List<Object> parentBefore,
+            List<Object> parent) {
+        if (parentBefore == null || parentBefore.equals(parent)) {
+            return arriving;
+        }
+        return new NestElement(arriving.ref(), arriving.fields(), arriving.order(), arriving.positions(),
+                arriving.movedFrom(), true);
     }
 
     /**
@@ -335,7 +351,9 @@ public final class ResolverProcessor extends AbstractProcessor {
         Map<String, Object> was = NestKeys.replacedRow(edge, event);
         List<Object> parentBefore = was == null ? null : NestKeys.valuesOf(was, vertex.parentKeyFields());
         Object parentWas = was == null ? null : parentIdentity(edge, parentBefore);
-        NestElement arriving = element(edge, event, row, parentIdentity(edge, parent), key, was, parentWas);
+        NestElement arriving = departing(
+                element(edge, event, row, parentIdentity(edge, parent), key, was, parentWas),
+                parentBefore, parent);
         // The half that stays behind goes first, so whatever it hands over is already there when the half
         // that arrives looks for it. Only an ordering, not a guarantee: the two are routed by different keys
         // and may be worked by different members, so what makes the hand-over land is the arriving side

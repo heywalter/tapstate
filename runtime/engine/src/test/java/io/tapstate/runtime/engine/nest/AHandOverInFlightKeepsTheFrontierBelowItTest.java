@@ -135,17 +135,21 @@ class AHandOverInFlightKeepsTheFrontierBelowItTest {
                 Map.of(POLICIES, new ChainPosition(at(seq), null))));
     }
 
-    /** The half of the move that stays behind, as the policies resolver would have routed it. */
+    /**
+     * The half of the move that stays behind, as the policies resolver would have routed it. Both halves say
+     * a departure was sent, because one was: that is what tells the arriving side it may be owed a subtree,
+     * and an element merely renamed inside its own document says the opposite.
+     */
     private static KeyedElement departureOfP1From(String customerId) {
         return new KeyedElement(List.of(customerId), new NestElement(policyRef(), null, at(MOVED_AT),
-                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef()));
+                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef(), true));
     }
 
     /** The half that arrives, which is what collects whatever was parked for the element. */
     private static KeyedElement arrivalOfP1At(String customerId) {
         return new KeyedElement(List.of(customerId), new NestElement(policyRef(),
                 row("policy_id", "P1", "policy_no", "PN-P1"), at(MOVED_AT),
-                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef()));
+                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef(), true));
     }
 
     private void feed(AssemblerProcessor processor, int ordinal, Object... items) {

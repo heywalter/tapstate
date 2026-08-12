@@ -21,6 +21,10 @@ io.tapstate.runtime.engine.nest.ElementRef :: field :: identity :: java.lang.Obj
 io.tapstate.runtime.engine.nest.ElementRef :: field :: parentIdentity :: java.lang.Object
 io.tapstate.runtime.engine.nest.ElementRef :: field :: pathId :: java.util.List<java.lang.String>
 io.tapstate.runtime.engine.nest.ElementRef :: record :: uid=0
+# departed reads back absent as false, which is what "nothing was sent to the key this came from" is
+# written as - and nothing stored before the field existed had anything sent, because no path sent one.
+# So the absent value is the right answer here too, and the identity stays where it is.
+io.tapstate.runtime.engine.nest.NestElement :: field :: departed :: boolean
 io.tapstate.runtime.engine.nest.NestElement :: field :: fields :: java.util.Map<java.lang.String, java.lang.Object>
 # movedFrom reads back absent as null, which is what "this change is not a move" is written as. Nothing
 # stored before the field existed could have been one - no path produced a move at all - so the absent

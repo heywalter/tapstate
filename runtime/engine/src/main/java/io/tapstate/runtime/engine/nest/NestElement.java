@@ -44,7 +44,8 @@ public record NestElement(
         Map<String, Object> fields,
         SourceOrder order,
         Map<String, ChainPosition> positions,
-        ElementRef movedFrom) implements Serializable {
+        ElementRef movedFrom,
+        boolean departed) implements Serializable {
 
     public NestElement {
         Objects.requireNonNull(ref, "ref");
@@ -60,7 +61,13 @@ public record NestElement(
     /** A change that puts the element where it already was - which is what nearly every change is. */
     public NestElement(ElementRef ref, Map<String, Object> fields, SourceOrder order,
             Map<String, ChainPosition> positions) {
-        this(ref, fields, order, positions, null);
+        this(ref, fields, order, positions, null, false);
+    }
+
+    /** A change that knows where the element was, and that nothing was sent to where it came from. */
+    public NestElement(ElementRef ref, Map<String, Object> fields, SourceOrder order,
+            Map<String, ChainPosition> positions, ElementRef movedFrom) {
+        this(ref, fields, order, positions, movedFrom, false);
     }
 
     /** Whether this change removes the element rather than putting a row there. */
@@ -91,5 +98,20 @@ public record NestElement(
      */
     public boolean departure() {
         return fields == null && movedFrom != null;
+    }
+
+    /**
+     * Whether something was sent to the key this element used to hang from, saying it has gone. It is the
+     * one thing the arriving half cannot work out for itself: whether the element changed documents is
+     * decided by the key it joins on, and the level that read the row is the only one that saw both values
+     * of it.
+     *
+     * <p>Without it, an arrival would have to treat every change that knows its old address as one that may
+     * be owed a subtree - and most of them are an element renamed inside the document it is already in, for
+     * which nothing was ever sent anywhere. Waiting for those is waiting for something that will never come,
+     * once per change, for as long as the pipeline runs.
+     */
+    public boolean departed() {
+        return departed;
     }
 }

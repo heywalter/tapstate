@@ -131,6 +131,13 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     private final Map<ParkedSubtree.At, Map<String, ChainPosition>> handedOver = new LinkedHashMap<>();
 
+    /**
+     * Documents owed a subtree that had not been parked when the element arrived, by the key of the document
+     * owed it. Bounded by the moves actually in flight, because only a change whose old key was told it had
+     * gone is ever recorded here.
+     */
+    private final Map<ParkedSubtree.At, Object> owed = new LinkedHashMap<>();
+
     /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public AssemblerProcessor(NestVertex vertex, List<EmbedSlot> slots, NestStore<RootAssembly> store,
             String outputStream) {
@@ -238,6 +245,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (!flush()) {
             return false;
         }
+        collectWhatIsOwed();
         if (!sendWhatWindowsHaveRunOutOn()) {
             return false;
         }
@@ -355,6 +363,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // Here as well as on the idle path, because a vertex fed steadily on one key never reaches the idle
         // path at all - and the document whose window ran out while that was going on is the one nothing
         // else is coming for.
+        collectWhatIsOwed();
         sendWhatWindowsHaveRunOutOn();
     }
 
@@ -371,6 +380,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // stopped while its bounds have not is neither draining nor idle - the ordinary shape of a source
         // that has caught up. A window ending only on those two would hold its last version of every
         // document for as long as the bounds kept arriving.
+        collectWhatIsOwed();
         if (!sendWhatWindowsHaveRunOutOn()) {
             return false;
         }
@@ -396,7 +406,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private void handle(NestInbound edge, Object item, Map<Object, Touched> touched) {
         if (edge.isCascade()) {
             KeyedElement arrived = (KeyedElement) item;
-            settle(touched(arrived.key(), touched).assembly, arrived.element());
+            settle(arrived.key(), touched(arrived.key(), touched).assembly, arrived.element());
             return;
         }
         Envelope event = (Envelope) item;
@@ -423,20 +433,22 @@ public final class AssemblerProcessor extends AbstractProcessor {
         Map<String, Object> was = NestKeys.replacedRow(edge, event);
         ElementRef from = was == null ? null
                 : new ElementRef(edge.pathId(), null, NestKeys.valuesOf(was, edge.elementKey()), null);
+        List<Object> movedTo = was == null ? null : NestKeys.valuesOf(was, edge.keyFields());
+        boolean departed = movedTo != null && !movedTo.equals(key);
         NestElement arriving = new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
-                event.positions(), from);
-        settle(document.assembly, arriving);
+                event.positions(), from, departed);
+        settle(key, document.assembly, arriving);
         if (was == null) {
             return;
         }
         // A leaf hanging straight off the root belongs to whichever document its join key names, so a row
         // re-pointed at another root has to be taken out of the one it was in. Both are held here, so the
         // pair needs no routing: this vertex is where the two keys would have met anyway.
-        List<Object> before = NestKeys.valuesOf(was, edge.keyFields());
-        if (!before.equals(key)) {
-            Touched left = touched(before, touched);
+        if (departed) {
+            Touched left = touched(movedTo, touched);
             left.ts = event.ts();
-            settle(left.assembly, new NestElement(ref, null, order, event.positions(), from));
+            settle(movedTo, left.assembly,
+                    new NestElement(ref, null, order, event.positions(), from, true));
         }
     }
 
@@ -453,14 +465,22 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * <p>Order between the two does not matter for what is parked: an arrival that finds nothing simply
      * finds nothing, and the subtree it is owed is collected when it is looked for again.
      */
-    private void settle(RootAssembly assembly, NestElement change) {
+    private void settle(Object key, RootAssembly assembly, NestElement change) {
         if (parking != null && change.departure() && assembly.holdsSubtreeAt(change.movedFrom())) {
             hand(ParkedSubtree.At.of(change), assembly.detachSubtree(change.movedFrom()), change);
             return;
         }
         assembly.take(change);
-        if (parking != null && change.movedFrom() != null && !change.deletion()) {
-            collect(assembly, ParkedSubtree.At.of(change));
+        if (parking == null || !change.departed() || change.deletion()) {
+            return;
+        }
+        // Only where something really was sent to the key it came from. Every other change knowing its old
+        // address is an element renamed inside the document it never left, and waiting for a hand-over after
+        // each of those is waiting for something that is never coming, once per change, for as long as the
+        // pipeline runs.
+        ParkedSubtree.At at = ParkedSubtree.At.of(change);
+        if (!collect(assembly, at)) {
+            owed.put(at, key);
         }
     }
 
@@ -488,14 +508,48 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * Takes whatever was parked for this element into the document that now holds it, and lets go of the
      * entry. Applied in the order it was handed over, so a parent is placed before its children.
      */
-    private void collect(RootAssembly assembly, ParkedSubtree.At at) {
+    private boolean collect(RootAssembly assembly, ParkedSubtree.At at) {
         ParkedSubtree waiting = parking.load(at);
         if (waiting == null) {
-            return;
+            return false;
         }
         waiting.changes().forEach(assembly::take);
         parking.remove(at);
         handedOver.remove(at);
+        owed.remove(at);
+        return true;
+    }
+
+    /**
+     * Looks again for the hand-overs this vertex is owed and had not been given when the element arrived.
+     *
+     * <p>The two halves of a move are routed by different keys and may be worked by different members, so
+     * which of them runs first is not something either can decide. The arriving half looking once is enough
+     * only when the other has already been through; otherwise the rows sit parked and the document that
+     * should have them never asks again.
+     *
+     * <p>Run wherever the windows are swept, and for the same reason: nothing about a hand-over landing
+     * produces an event of its own, so it has to travel on somebody else's. A vertex that is never idle
+     * still drains, and one fed nothing but bounds still gets those.
+     */
+    private void collectWhatIsOwed() {
+        if (parking == null || owed.isEmpty()) {
+            return;
+        }
+        Iterator<Map.Entry<ParkedSubtree.At, Object>> pending = owed.entrySet().iterator();
+        while (pending.hasNext()) {
+            Map.Entry<ParkedSubtree.At, Object> entry = pending.next();
+            ParkedSubtree waiting = parking.load(entry.getKey());
+            RootAssembly assembly = waiting == null ? null : store.load(entry.getValue());
+            if (assembly == null) {
+                continue;
+            }
+            waiting.changes().forEach(assembly::take);
+            store.save(entry.getValue(), assembly);
+            parking.remove(entry.getKey());
+            handedOver.remove(entry.getKey());
+            pending.remove();
+        }
     }
 
     /**
