@@ -72,6 +72,15 @@ public final class ResolverProcessor extends AbstractProcessor {
     /** How many changes one key here may hold for a parent that has not arrived. */
     private final long pendingLimit;
 
+    /**
+     * Where children waiting under an identity sit while that identity is being vacated, or null where this
+     * run has nowhere to hand them through. A row whose identity column changes leaves behind everything
+     * that was waiting on the old value: the mapping rebuilds itself where the row now belongs, but those
+     * children asked a question of a value nothing answers to any more, and left where they are they wait
+     * for an answer that can never come.
+     */
+    private NestStore<ParkedSubtree> parking;
+
     /** A resolver in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter) {
         this(vertex, store, deadLetter, null, null, ReplayFloor.NONE);
@@ -122,6 +131,18 @@ public final class ResolverProcessor extends AbstractProcessor {
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
             ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
             NestClock clock, NestSettings settings) {
+        this(vertex, store, deadLetter, axes, chainsByOrdinal, floor, clock, settings, null);
+    }
+
+    /**
+     * All of the above, able to carry what was waiting under an identity a row is vacating. Null where a run
+     * has nowhere to carry it through, which leaves those children where they are rather than moving them
+     * somewhere they cannot be found.
+     */
+    public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter,
+            ChainAxes axes, Map<Integer, List<String>> chainsByOrdinal, ReplayFloor floor,
+            NestClock clock, NestSettings settings, NestStore<ParkedSubtree> parking) {
+        this.parking = parking;
         this.pendingLimit =
                 Objects.requireNonNull(settings, "settings").pendingAllowedIn(vertex.mapName());
         this.vertex = Objects.requireNonNull(vertex, "vertex");
@@ -284,13 +305,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         Map<String, Object> row = NestKeys.rowOf(event);
         if (edge.pathId().equals(vertex.pathId())) {
             if (edge.carriesDepartures()) {
-                // Nothing yet, and doing the ordinary thing here would be worse than nothing: this copy was
-                // routed by the identity the row is leaving, while everything below reads the identity it
-                // now has, so it would declare a mapping and file it under a key this instance does not
-                // hold. What belongs here is moving the entry the row is vacating - the identity it was
-                // filed under is changing - and until that exists this copy has no work to do. The half of
-                // a move that says "gone" already travels from the edge beside this one, where it is sent
-                // upward rather than written locally.
+                vacate(edge, event, row, touched);
                 return;
             }
             own(edge, event, row, touched);
@@ -386,7 +401,65 @@ public final class ResolverProcessor extends AbstractProcessor {
             for (NestElement child : state.declare(parent, order)) {
                 emit(new KeyedElement(parent, child));
             }
+            collectVacated(key, state);
         }
+    }
+
+    /**
+     * Lets go of what was waiting under the identity a row is vacating, and leaves it where the identity the
+     * row now has can be given it.
+     *
+     * <p>This copy of the row was routed by the value it is leaving, so the entry it reads is this
+     * instance's own - which is the whole reason the second edge exists. The mapping itself is not carried:
+     * the row declares it again wherever it now belongs. What cannot rebuild itself is the children that
+     * arrived before their parent and are waiting under the old value, because nothing answers to that
+     * value any more; left there they wait for an answer that can never come and hold the frontier below
+     * them for as long as the job runs.
+     */
+    private void vacate(NestInbound edge, Envelope event, Map<String, Object> row,
+            Map<Object, ResolverState> touched) {
+        Map<String, Object> was = NestKeys.replacedRow(edge, event);
+        if (was == null || parking == null) {
+            return;
+        }
+        List<Object> leaving = NestKeys.valuesOf(was, vertex.partitionKey());
+        List<Object> joining = NestKeys.valuesOf(row, vertex.partitionKey());
+        if (leaving.equals(joining)) {
+            return;
+        }
+        List<NestElement> waiting = stateFor(leaving, touched).handOverWaiting();
+        if (waiting.isEmpty()) {
+            return;
+        }
+        ParkedSubtree.At at = new ParkedSubtree.At(vertex.pathId(), joining);
+        ParkedSubtree held = parking.load(at);
+        ParkedSubtree now = new ParkedSubtree(waiting);
+        parking.save(at, held == null ? now : held.and(now));
+    }
+
+    /**
+     * Takes in whatever was waiting under an identity this key has just taken over, offering each child the
+     * mapping that now exists. Offered rather than released outright: the row that declares this key may not
+     * have arrived, in which case they go on waiting - here, where something will answer them.
+     */
+    private void collectVacated(List<Object> key, ResolverState state) {
+        if (parking == null) {
+            return;
+        }
+        ParkedSubtree.At at = new ParkedSubtree.At(vertex.pathId(), key);
+        ParkedSubtree waiting = parking.load(at);
+        if (waiting == null) {
+            return;
+        }
+        for (NestElement child : waiting.changes()) {
+            switch (state.resolve(child, clock.millis())) {
+                case RESOLVED -> emit(new KeyedElement(state.parentKey(), child));
+                case HELD -> { }
+                case PARENT_ABSENT ->
+                        deadLetter.unassemblable(vertex, new ReleasedChild(child, Duration.ZERO));
+            }
+        }
+        parking.remove(at);
     }
 
     /** One change from beneath, offered to the key its join field names. */
