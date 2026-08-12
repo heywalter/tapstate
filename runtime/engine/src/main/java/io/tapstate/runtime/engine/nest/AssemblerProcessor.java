@@ -170,7 +170,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * The time travels because the document goes out again once the rows land, and a send with no time on it
      * would place a change downstream at the epoch rather than where the source put it.
      */
-    private record Owed(Object key, long ts) {
+    private record Owed(Object key, long ts, long awaitedSince) {
     }
 
     /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
@@ -613,7 +613,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
             // reach, addressed by the key that arrived - which is the only thing this side knows.
             ParkedSubtree.At at = ParkedSubtree.At.ofRoot(key);
             if (!collect(key, document.assembly, at)) {
-                owed.put(at, new Owed(key, document.ts));
+                owed.put(at, new Owed(key, document.ts, clock.millis()));
             }
         }
     }
@@ -672,7 +672,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // pipeline runs.
         ParkedSubtree.At at = ParkedSubtree.At.of(change);
         if (!collect(key, assembly, at)) {
-            owed.put(at, new Owed(key, document.ts));
+            owed.put(at, new Owed(key, document.ts, clock.millis()));
         }
     }
 
@@ -786,14 +786,26 @@ public final class AssemblerProcessor extends AbstractProcessor {
         }
         Map<Object, Touched> landed = new LinkedHashMap<>();
         Map<ParkedSubtree.At, Integer> taken = new LinkedHashMap<>();
+        long now = clock.millis();
         Iterator<Map.Entry<ParkedSubtree.At, Owed>> pending = owed.entrySet().iterator();
         while (pending.hasNext()) {
             Map.Entry<ParkedSubtree.At, Owed> entry = pending.next();
             ParkedSubtree waiting = parking.load(entry.getKey());
+            Object key = entry.getValue().key();
             if (waiting == null) {
+                // Nothing has been parked for this document yet. Waiting is right until it stops being: the
+                // half that would complete it may never be worked at all, and a document held for something
+                // that is not coming is one nothing ever sends - the same silence holding it back was for.
+                if (now - entry.getValue().awaitedSince() >= migrationProtection) {
+                    RootAssembly asItStands = store.load(key);
+                    if (asItStands != null) {
+                        Touched document = landed.computeIfAbsent(key, ignored -> new Touched(asItStands));
+                        document.ts = Math.max(document.ts, entry.getValue().ts());
+                    }
+                    pending.remove();
+                }
                 continue;
             }
-            Object key = entry.getValue().key();
             // One document may be owed several hand-overs at once, and a store answers a second read with
             // its own copy - so they are taken into one state here rather than each into a fresh read, where
             // the last write would drop what the others had applied.
@@ -846,6 +858,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
             document.assembly.render(slots).ifPresentOrElse(
                     rendered -> {
                         deleted.remove(key);
+                        if (isOwedAHandOver(key)) {
+                            return;
+                        }
                         if (mayGoOutNow(key)) {
                             outgoing.add(Envelope.insert(document.ts, outputStream, rendered, null)
                                     .withPositions(document.assembly.covered()));
@@ -875,6 +890,35 @@ public final class AssemblerProcessor extends AbstractProcessor {
                 keeping.remove(key);
             }
         });
+    }
+
+    /**
+     * Whether this document is still waiting for rows that belong in it, in which case it is not shown at
+     * all until they arrive.
+     *
+     * <p>A key gaining a tree routinely has its root row in hand before anything has been parked for it, and
+     * rendered then, what goes downstream is a document with its whole tree missing. The version after it is
+     * correct, so nothing stays wrong; what is wrong is that anything reading in between sees a document the
+     * source never had, and a sink that fans out has already passed it on. Held back, a reader sees the state
+     * before the move for a moment longer and then the whole thing.
+     *
+     * <p>Deliberately not the window mechanism beside it. A window ends on a clock and would send the half
+     * built document when it ran out, which is the one outcome this exists to prevent; what ends this is the
+     * rows arriving, or the wait being given up on where they never do.
+     *
+     * <p>Asked by walking what is owed rather than by keeping a second index of it: the map is bounded by the
+     * moves actually in flight, and a mirror of it is one more thing that can disagree with the truth.
+     */
+    private boolean isOwedAHandOver(Object key) {
+        if (owed.isEmpty()) {
+            return false;
+        }
+        for (Owed awaited : owed.values()) {
+            if (awaited.key().equals(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
