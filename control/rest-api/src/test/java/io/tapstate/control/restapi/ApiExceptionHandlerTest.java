@@ -136,6 +136,19 @@ class ApiExceptionHandlerTest {
     }
 
     /**
+     * The one code in this domain that is deliberately not client-attributable. It does not mean the
+     * caller asked for something impermissible — the request was valid and was carried out, and the
+     * server's own follow-up work is what failed. Answering it as a 4xx would tell the caller to fix
+     * their request and try again, which is the one thing that cannot work: the artifact is gone, so
+     * a retry can only ever answer {@code artifact.not-found}.
+     */
+    @Test
+    void aPartlyExecutedRemovalIsAServerErrorRatherThanOneMoreClientRefusal() {
+        assertThat(ApiExceptionHandler.statusFor(ArtifactError.RECLAIM_INCOMPLETE))
+                .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    /**
      * The refusal body must carry the parameters the caller acts on, not just a status. A caller told
      * only "409" cannot tell "something references this" from "the pipeline is running", and the two
      * next steps are different — read the referrers, or stop the pipeline.

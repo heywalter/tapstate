@@ -331,7 +331,9 @@ class McpOperationExecutorTest {
 
             assertThat(result.error()).isTrue();
             assertThat(JsonWriter.write(result.body())).contains("artifact.version-conflict");
-            assertThat(result.body()).doesNotContainKey("removed");
+            // Asserted non-empty first: "does not contain" is satisfied by a body that carries nothing
+            // at all, which is the outcome this whole test exists to rule out.
+            assertThat(result.body()).isNotEmpty().doesNotContainKey("removed");
         } finally {
             server.stop(0);
         }
