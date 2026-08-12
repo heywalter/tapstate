@@ -21,17 +21,29 @@ import java.util.List;
  * <p>A key value of a kind that has no letter here is a programmer error - the engine chose the
  * partitioning fields, and a kind nothing can name is a defect in that choice rather than anything a user
  * did. It crashes bare rather than being given a name that might collide with another kind's.
+ *
+ * <p><b>Not every key here is a tuple of partition values.</b> What is held between documents is filed by an
+ * address - which embed, and which element inside it - because that address is the one thing both halves of
+ * a move arrive at without either knowing anything about the other. Those get {@link #nameOf(List, List)},
+ * and the two shapes cannot be read as one another: a rendered path is a balanced JSON array and so ends
+ * where it ends, and the character following it is the one that says which shape this is.
  */
 final class NestStateKeys {
 
     /** Separates the rendered values from the letters naming their kinds. */
     private static final char TYPES = '~';
 
+    /** Separates the embed an address names from the identity inside it. */
+    private static final char WITHIN = '#';
+
     private NestStateKeys() {
     }
 
     /** The name {@code key} is stored under - injective over keys, and readable at a glance. */
     static String nameOf(Object key) {
+        if (key instanceof ParkedSubtree.At at) {
+            return nameOf(at.pathId(), at.elementKey());
+        }
         StringBuilder types = new StringBuilder();
         if (key instanceof List<?> values) {
             for (Object value : values) {
@@ -41,6 +53,24 @@ final class NestStateKeys {
             types.append(letterOf(key));
         }
         return JsonWriter.write(key) + TYPES + types;
+    }
+
+    /**
+     * The name an address is filed under: which embed, then the identity inside it. Both are needed - one
+     * embed's element and another's can carry the same key value, and the same value under two embeds is two
+     * different elements.
+     *
+     * <p>Injective, on the same footing as the tuple form and by one further argument. The embed is rendered
+     * as a JSON array and is therefore self-delimiting: no rendering of one path is a prefix of another's,
+     * since a strict prefix of a balanced array is not itself balanced. So the two halves cannot be read into
+     * each other - a deeper path holding less is never the same name as a shallower one holding more - and
+     * the identity beside it carries its own types for the reason every key here does.
+     *
+     * <p>It cannot be read as a tuple's name either. Both begin with a balanced array where the tuple is one,
+     * and what follows that array says which this is: the separator here, the types marker there.
+     */
+    static String nameOf(List<String> pathId, List<Object> elementKey) {
+        return JsonWriter.write(pathId) + WITHIN + nameOf(elementKey);
     }
 
     /**

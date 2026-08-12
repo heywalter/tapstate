@@ -1,7 +1,6 @@
 package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.core.HazelcastInstance;
-import io.tapstate.core.common.JsonWriter;
 import io.tapstate.spi.store.NestDeadLetterRecord;
 import io.tapstate.spi.store.NestDeadLetterStore;
 
@@ -48,9 +47,6 @@ public final class DurableNestDeadLetter implements NestDeadLetter {
      * correctly.
      */
     public static final String USER_CONTEXT_KEY = "tapstate.nest.dead-letters";
-
-    /** Separates the embed a discarded element belonged to from its identity within that embed. */
-    private static final char WITHIN = '#';
 
     private final NestClock clock;
 
@@ -168,13 +164,12 @@ public final class DurableNestDeadLetter implements NestDeadLetter {
      * identity inside that embed. Both are needed - a vertex hands over changes from the embeds beneath it
      * as well as its own, and two embeds can carry the same key value for different elements.
      *
-     * <p>Injective, which is what stops one discarded row being filed over another's record. The embed is a
-     * JSON array and so is self-delimiting: no rendering of one path is a prefix of another's, since a
-     * strict prefix of a balanced array is not itself balanced. The identity beside it carries its own types
-     * for the reason keys in the state layer do.
+     * <p>Named the way the state layer names an address rather than in a way of its own, which is what stops
+     * one discarded row being filed over another's record: the injectivity is argued once, where the naming
+     * is, and a record here and an entry there can never disagree about what an element is called.
      */
     private static String elementOf(NestElement child) {
-        return JsonWriter.write(child.ref().pathId()) + WITHIN + NestStateKeys.nameOf(child.ref().elementKey());
+        return NestStateKeys.nameOf(child.ref().pathId(), child.ref().elementKey());
     }
 
     /** The streams the change covered, which is what a reader needs to know where to go looking. */
