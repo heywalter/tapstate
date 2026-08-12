@@ -189,9 +189,20 @@ public final class NestCrashHarness {
      *
      * <p>The deadline stays, as the failure path, and it is what keeps this able to fail at all: a run that
      * genuinely lost claims never reaches the count, reports the few it has, and is judged on those.
+     *
+     * <p><b>Its length is set by how long a healthy run can take on the slowest machine this is run on, not
+     * by how long one usually takes.</b> Measured: the whole case takes about 7 seconds on an idle developer
+     * machine and about 29 on the same machine loaded past its cores, and on a shared two-core runner the same
+     * tree has finished in 7 seconds and been unfinished at 60 - the claims arriving in the same order in both,
+     * simply fewer of them. So a minute is a bound on the machine rather than on the state, and the two are
+     * told apart by which of them the number is chosen from.
+     *
+     * <p>Lengthening it costs nothing in what this can catch. A run that lost claims never reaches the count
+     * however long it waits, so the deadline only decides how late that verdict arrives; what a short one buys
+     * is a red build on a busy machine, which says nothing about the state at all.
      */
     private static void awaitRecovered() {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(3);
         Set<Integer> surfaced = new TreeSet<>(List.copyOf(RECOVERED));
         while (System.nanoTime() < deadline && surfaced.size() < CLAIMS) {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));

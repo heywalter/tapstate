@@ -70,6 +70,9 @@ class WhatTheFrontierHasPassedSurvivesAKillIT {
      */
     private static final long SAVE_DELAY_MILLIS = 250;
 
+    /** How much of a forked run's own output a failure carries: enough to name a cause, not the whole run. */
+    private static final int EVIDENCE_LINES = 20;
+
     @TempDir
     private Path work;
 
@@ -116,16 +119,18 @@ class WhatTheFrontierHasPassedSurvivesAKillIT {
         Path recoverReport = work.resolve("recover.report");
         Files.createFile(recoverReport);
         Process recovering = fork(recoverReport, "recover");
-        assertThat(recovering.waitFor(120, TimeUnit.SECONDS))
-                .describedAs("the run over the surviving state never finished; report was %s",
-                        readQuietly(recoverReport))
+        // Longer than the deadline the run holds itself to, or this fires first and takes the report with it -
+        // the run's own verdict on what it recovered is the evidence, and killing it to ask is not asking.
+        assertThat(recovering.waitFor(5, TimeUnit.MINUTES))
+                .describedAs("the run over the surviving state never finished; report was %s, and the run "
+                        + "itself said %s", readQuietly(recoverReport), troubleFrom("recover"))
                 .isTrue();
 
         List<String> recoverLines = Files.readAllLines(recoverReport);
         assertThat(recovered(recoverLines))
                 .describedAs("every claim the killed process had been allowed to forget came back out of "
-                        + "the store and into the document; what was assembled was %s",
-                        linesStartingWith(recoverLines, "document="))
+                        + "the store and into the document; what was assembled was %s, and the run itself "
+                        + "said %s", linesStartingWith(recoverLines, "document="), troubleFrom("recover"))
                 .containsExactlyElementsOf(everyClaim());
     }
 
@@ -207,6 +212,33 @@ class WhatTheFrontierHasPassedSurvivesAKillIT {
             }
         }
         return claims;
+    }
+
+    /**
+     * What the forked run itself said, which is the one thing a failure here has never carried.
+     *
+     * <p>The report holds the run's answers; this holds its own account of what happened while it was
+     * answering, and when a run answers with less than it should it is the second that says why. It is written
+     * beside the report and goes away with the working directory, so a failure that does not carry it leaves
+     * nothing to read afterwards - measured, at the cost of a whole session spent deriving a cause that had
+     * been printed and thrown away.
+     *
+     * <p>Whatever names a fault, or the tail of it when nothing does: enough to say what went wrong without
+     * carrying a run's entire output into an assertion message.
+     */
+    private List<String> troubleFrom(String mode) {
+        List<String> said = readQuietly(work.resolve(mode + ".log"));
+        List<String> trouble = new ArrayList<>();
+        for (String line : said) {
+            if (line.contains("SEVERE") || line.contains("Exception") || line.contains("Caused by")
+                    || line.contains("ERROR")) {
+                trouble.add(line);
+            }
+        }
+        List<String> evidence = trouble.isEmpty() ? said : trouble;
+        return evidence.size() <= EVIDENCE_LINES
+                ? evidence
+                : evidence.subList(evidence.size() - EVIDENCE_LINES, evidence.size());
     }
 
     /** The evidence a failure needs, kept out of the thousands of bound lines around it. */
