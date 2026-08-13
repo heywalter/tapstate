@@ -100,4 +100,12 @@ final class EngineLifecycleActuator implements LifecycleActuator {
         // Either surfaces here so the converge side drives the pipeline into the observable FAILED state.
         return engine.failureOf(pipelineId).or(() -> captureCoordinator.captureFailure(pipelineId));
     }
+
+    @Override
+    public boolean isCarryingAJob(String pipelineId) {
+        // The job side alone. A capture that died while the job runs is a failure, reported above; what
+        // is asked here is whether anything is running this pipeline at all, and a process that has just
+        // come up to a checkpoint an earlier one wrote answers no.
+        return engine.hasLiveJob(pipelineId);
+    }
 }

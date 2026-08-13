@@ -256,6 +256,55 @@ class PipelineConvergerTest {
         assertThat(actuator.calls()).containsExactly("stop:p1");
     }
 
+    /**
+     * A process that comes up to a checkpoint saying RUNNING has to put a job behind it. This is the
+     * restart case, and every signal the loop had before this one reads healthy in it: the desired
+     * intent says RUNNING, the recorded state already says RUNNING, and nothing has failed - because
+     * from this process's point of view nothing has happened at all. It never ran the job, so it has no
+     * failure to report about one.
+     *
+     * <p>What it costs to miss: the loop converges, the read faces answer RUNNING with no errors, and
+     * no job reads the source or writes a sink. The pipeline is stopped in every way except the one a
+     * user or an operator can see. Measured in an end-to-end restart, where the second process
+     * published observations for three minutes over a data plane that never started.
+     */
+    @Test
+    @DisplayName("a process that comes up to a RUNNING checkpoint with no job behind it starts one")
+    void aRunningCheckpointWithNoJobBehindItIsActuated() {
+        converge(RUNNING); // a previous process left the checkpoint at RUNNING
+        actuator.reset();
+        actuator.carryingNothing(); // this process has never run it: no job, and no failure to report
+
+        ConvergeResult result = converger.converge("p1");
+
+        assertThat(result.status()).isEqualTo(CONVERGED);
+        assertThat(state.read("p1").orElseThrow().stateJson())
+                .as("the pipeline is still meant to be running, so its recorded state does not move")
+                .isEqualTo(StateJson.of(RUNNING));
+        assertThat(actuator.calls())
+                .as("a job has to be put behind the checkpoint, or nothing is carrying this pipeline")
+                .containsExactly("start:p1");
+    }
+
+    /**
+     * And the tick after that one does not submit a second time. The guard is "no job is carrying it",
+     * not "this process did not start it": once one is, the loop has nothing left to do, or every tick
+     * would re-submit for the life of the pipeline.
+     */
+    @Test
+    @DisplayName("once a job is carrying it again, later ticks actuate nothing")
+    void aRestartedJobIsNotSubmittedOnEveryTick() {
+        converge(RUNNING);
+        actuator.carryingNothing();
+        converger.converge("p1"); // puts a job behind it
+        actuator.reset();
+
+        ConvergeResult again = converger.converge("p1");
+
+        assertThat(again.status()).isEqualTo(CONVERGED);
+        assertThat(actuator.calls()).isEmpty();
+    }
+
     @Test
     @DisplayName("a failed pipeline is not re-driven toward a still-RUNNING target, so a dead job is not restarted")
     void aFailedPipelineIsNotRestarted() {

@@ -59,6 +59,20 @@ public final class PipelineConverger {
                         .map(checkpoint -> ConvergeResult.failed(checkpoint, failure.get()))
                         .orElse(driven);
             }
+            // Nothing failed and nothing is carrying it: this process has come up to a checkpoint an
+            // earlier one wrote. The state already matches the intent, so the drive below would call
+            // this converged and actuate nothing - which is how a pipeline ends up reporting RUNNING,
+            // with no errors, over a data plane that does not exist. Put a job behind it instead.
+            //
+            // A start rather than a resume: a resume continues a job that is being held, and there is
+            // no job here to continue. The fresh run re-reads its source position from the store, which
+            // is where the previous process's progress was recorded, so this resumes the work without
+            // resuming the job. Submitting is absent-safe, and the guard is "no job is carrying it"
+            // rather than "this process did not start it", so the next tick actuates nothing.
+            if (!actuator.isCarryingAJob(pipelineId)) {
+                actuator.start(pipelineId);
+                return ConvergeResult.converged(actualDoc.orElseThrow());
+            }
         }
 
         if (target == PipelineState.RUNNING && actual == PipelineState.FAILED) {

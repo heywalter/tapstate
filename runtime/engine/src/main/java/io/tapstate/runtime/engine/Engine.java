@@ -145,6 +145,24 @@ public final class Engine {
      * is a real answer rather than a failure - the caller is expected to have a way of finishing later
      * what it could not safely do now.
      */
+    /**
+     * Whether a job for this pipeline exists here and has not ended. A member that has never run the
+     * pipeline answers false, which is the whole reason this is asked: a process that has just come up
+     * cannot tell "running elsewhere in my own past" from "not running" through any failure it holds,
+     * because it holds none.
+     *
+     * <p>A suspended job counts as carrying the pipeline. It is being held on purpose and a resume
+     * continues it; treating it as absent would submit a second job over a paused one.
+     */
+    public boolean hasLiveJob(String pipelineId) {
+        Job job = member.getJet().getJob(pipelineId);
+        if (job == null) {
+            return false;
+        }
+        JobStatus status = job.getStatus();
+        return status != JobStatus.FAILED && status != JobStatus.COMPLETED;
+    }
+
     public boolean awaitTerminal(String pipelineId, Duration budget) {
         Job job = member.getJet().getJob(pipelineId);
         if (job == null) {

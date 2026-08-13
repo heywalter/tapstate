@@ -34,4 +34,16 @@ public interface LifecycleActuator {
      * a stop's own cancellation is not a failure and must not be reported as one.
      */
     Optional<Throwable> failure(String pipelineId);
+
+    /**
+     * Whether a job is running this pipeline right now, as this actuator sees it.
+     *
+     * <p>Asked because {@link #failure} cannot answer it. That query reports empty for a job that is
+     * running, for a pipeline that has no job at all, and for one a stop ended - three states that a
+     * pipeline believed to be RUNNING has to tell apart. The one they hide is a process that has come
+     * up to a checkpoint an earlier one wrote: nothing failed, from this actuator's point of view
+     * nothing has happened at all, and the pipeline's recorded state already matches its intent, so
+     * without this query there is nothing left to notice that no job is carrying it.
+     */
+    boolean isCarryingAJob(String pipelineId);
 }
