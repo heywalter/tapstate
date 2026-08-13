@@ -118,6 +118,28 @@ class CanonicalRoundTripTest {
 
         String canonical = writer.write(parser.parse(raw));
 
+        assertThat(canonical)
+                .contains("tables: [\"/^(?!timezone_test$).*/\"]");
+
+        assertThat(writer.write(parser.parse(canonical))).isEqualTo(canonical);
+    }
+
+    @Test
+    void sourceRegexWithColonSurvivesCanonicalRoundTrip() {
+        String raw = """
+                version: tapstate/v1
+                kind: source
+                id: mysql_feynman
+                connector: mysql
+                mode: cdc
+                tables:
+                - /^orders:[0-9]+$/
+                """;
+
+        String canonical = writer.write(parser.parse(raw));
+
+        assertThat(canonical)
+                .contains("tables: [\"/^orders:[0-9]+$/\"]");
         assertThat(writer.write(parser.parse(canonical))).isEqualTo(canonical);
     }
 
