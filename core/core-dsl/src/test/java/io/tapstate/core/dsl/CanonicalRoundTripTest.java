@@ -102,6 +102,25 @@ class CanonicalRoundTripTest {
                 .isFalse();
     }
 
+    @Test
+    void sourceRegexWithNegativeLookaheadSurvivesCanonicalRoundTrip() {
+        String raw = """
+                version: tapstate/v1
+                kind: source
+                id: mysql_feynman
+                metadata:
+                  description: MySQL source for feynman database
+                connector: mysql
+                mode: cdc
+                tables:
+                - /^(?!timezone_test$).*/
+                """;
+
+        String canonical = writer.write(parser.parse(raw));
+
+        assertThat(writer.write(parser.parse(canonical))).isEqualTo(canonical);
+    }
+
     /** Every resource of every valid scenario, paired with its canonical text. */
     static Stream<Arguments> canonicalResources() throws IOException {
         CanonicalWriter writer = new CanonicalWriter();
