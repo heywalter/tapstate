@@ -14,6 +14,7 @@ import com.hazelcast.jet.core.test.TestProcessorContext;
 import io.tapstate.core.event.Envelope;
 import io.tapstate.core.model.EmbedAs;
 import io.tapstate.core.model.TransformBody;
+import io.tapstate.runtime.engine.ReplayFloor;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -169,6 +170,74 @@ class AnElementThatMovesToAnotherParentLeavesTheOneItCameFromTest {
                 .doesNotContainKey("profile");
         assertThat(documents.load(List.of("C2")).render(topology.slots()).orElseThrow())
                 .containsKey("profile");
+    }
+
+    /**
+     * The same move, read off what leaves the vertex rather than off what it stored.
+     *
+     * <p>The witness above reads the store, and the store being right is precisely the condition under
+     * which this can be wrong: a document held back is a document stored correctly and shown to nobody.
+     * The arriving half is told whether something was sent to the key the element used to hang from, and
+     * takes that as "a subtree is on its way to me" - so it holds the document back until it collects one.
+     * A leaf owns no subtree, nothing is ever parked for it, and the wait has no end: the element is in
+     * neither document downstream, the run reports RUNNING with no errors, and the frontier stops moving
+     * because the change that started it is still held.
+     *
+     * <p>Asserting the departure alone would not catch it either - the old document really does go out
+     * without the element. It is the document that gains it that never leaves, so that is what is read.
+     */
+    @Test
+    void aLeafOnTheRootMovedToAnotherCustomerGoesOutUnderTheNewOne() throws Exception {
+        NestTopology topology = NestTopology.compile("p", "doc", TRACKED_LEAF_ON_ROOT, tables());
+        HeapNestStore<RootAssembly> documents = new HeapNestStore<>();
+        // Built with somewhere to hand a subtree through, which is what a run actually has. Without one the
+        // arriving half never looks for a hand-over at all, so every witness above is blind to this by
+        // construction rather than by what it asserts.
+        NestBinding.NestStores stores = HeapNestStores.onHeap();
+        AssemblerProcessor assembler = new AssemblerProcessor(topology.assembler(), topology.slots(),
+                documents, "doc", null, null, ReplayFloor.NONE, NestSettings.defaults(), NestClock.SYSTEM,
+                NestSendPolicy.within(0), stores.forParking(topology.assembler()));
+        TestOutbox out = new TestOutbox(256);
+        assembler.init(out, new TestProcessorContext());
+        feed(assembler, out, 0, Envelope.insert(1, "customer", row("customer_id", "C1"), null).withOrder(at(1)));
+        feed(assembler, out, 0, Envelope.insert(1, "customer", row("customer_id", "C2"), null).withOrder(at(1)));
+        feed(assembler, out, 1, Envelope.insert(2, "profile",
+                row("customer_id", "C1", "tier", "gold"), null).withOrder(at(2)));
+
+        Envelope moved = Envelope.update(3, "profile",
+                row("customer_id", "C1", "tier", "gold"),
+                row("customer_id", "C2", "tier", "gold"), null).withOrder(at(3));
+        List<Object> emitted = new ArrayList<>();
+        feedKeeping(assembler, out, 1, moved, emitted);
+        feedKeeping(assembler, out, departureTwin(topology, List.of("profile")), moved, emitted);
+
+        assertThat(documentsAmong(emitted, "C2"))
+                .describedAs("what left the vertex for the document that gained the element")
+                .isNotEmpty();
+        assertThat(documentsAmong(emitted, "C2").get(documentsAmong(emitted, "C2").size() - 1))
+                .describedAs("the last thing said about the document that gained it")
+                .containsKey("profile");
+    }
+
+    /** Every document that left the vertex naming {@code customerId}, in the order they left. */
+    private static List<Map<String, Object>> documentsAmong(List<Object> emitted, String customerId) {
+        List<Map<String, Object>> documents = new ArrayList<>();
+        for (Object item : emitted) {
+            if (item instanceof Envelope envelope && envelope.after() != null
+                    && customerId.equals(envelope.after().get("customer_id"))) {
+                documents.add(envelope.after());
+            }
+        }
+        return documents;
+    }
+
+    /** Feeds one event and keeps what the vertex emitted, rather than discarding it like {@link #feed}. */
+    private static void feedKeeping(
+            AssemblerProcessor processor, TestOutbox out, int ordinal, Envelope event, List<Object> emitted) {
+        TestInbox inbox = new TestInbox();
+        inbox.queue().add(event);
+        processor.process(ordinal, inbox);
+        out.drainQueueAndReset(0, emitted, false);
     }
 
     /**

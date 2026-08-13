@@ -570,10 +570,21 @@ public final class AssemblerProcessor extends AbstractProcessor {
         settle(key, document, edge.carriesDepartures()
                 ? new NestElement(ref, null, order, event.positions(), from, true)
                 : new NestElement(ref, NestKeys.isDeletion(event) ? null : row, order,
-                        event.positions(), from, departed));
+                        event.positions(), from, false));
         // A leaf hanging straight off the root belongs to whichever document its join key names, so a row
         // re-pointed at another root has to be taken out of the one it was in. Both are held here, so the
         // pair needs no routing: this vertex is where the two keys would have met anyway.
+        //
+        // The arriving half claims no hand-over, whatever the join key did. Everything that reaches this
+        // vertex as a row of its own is a leaf of the tree - anything with children below it arrives having
+        // cascaded, already routed, and is settled above - and a leaf has no subtree for the half it left
+        // behind to park. The half that stays behind agrees: it parks only what the document actually holds
+        // beneath the element, which for a leaf is nothing.
+        //
+        // Claiming one anyway is the exact failure the flag exists to prevent, arrived at from the other
+        // side: the document is owed something nobody will ever send, so it is stored and never emitted,
+        // the element is in neither document downstream, and the change that started the move goes on
+        // holding the frontier down - with the run reporting RUNNING and no error.
     }
 
     /**
