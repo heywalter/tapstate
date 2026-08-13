@@ -17,10 +17,13 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -146,12 +149,16 @@ class RealMysqlToMongoSnapshotIT {
                 for (long id = 1; id <= rows; id++) {
                     insert.setLong(1, id);
                     insert.setString(2, "order-" + id);
-                    insert.setTimestamp(3, Timestamp.from(CREATED_AT));
+                    insert.setTimestamp(3, Timestamp.from(CREATED_AT), utcCalendar());
                     insert.addBatch();
                 }
                 insert.executeBatch();
             }
         }
+    }
+
+    private static Calendar utcCalendar() {
+        return Calendar.getInstance(TimeZone.getTimeZone(ZoneOffset.UTC));
     }
 
     /**
