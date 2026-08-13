@@ -2,6 +2,7 @@ package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
+import com.hazelcast.jet.core.Processor;
 import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.ChainPosition;
@@ -80,6 +81,13 @@ public final class ResolverProcessor extends AbstractProcessor {
      * for an answer that can never come.
      */
     private final NestStore<ParkedSubtree> parking;
+
+    /**
+     * Where what killed this vertex is written down before Jet is told, so a nest's own code reaches the
+     * read faces rather than the generic engine failure. Resolved on the member in {@code init}; a vertex
+     * driven directly by a test never gets one and records nothing.
+     */
+    private NestFailureRecording failures = NestFailureRecording.of(null);
 
     /**
      * Identities that took over from another and had nothing waiting for them yet. Which of the two copies
@@ -194,8 +202,18 @@ public final class ResolverProcessor extends AbstractProcessor {
      * sweep is - reading the durable plane costs more than the work a change does, and reclaiming late
      * costs nothing.
      */
+    /** Resolves where this vertex writes down what killed it; see {@link NestFailureRecording}. */
+    @Override
+    protected void init(Processor.Context context) {
+        this.failures = NestFailureRecording.of(context);
+    }
+
     @Override
     public boolean tryProcess() {
+        return failures.recording(this::tryProcessRecording);
+    }
+
+    private boolean tryProcessRecording() {
         // Anything already worked out goes first, and what this turn works out goes after it. A second look
         // that finds something has something to send, and a path that never empties what it queued would
         // leave it there until an event happened to arrive - which for an identity nobody writes to again is
@@ -266,6 +284,13 @@ public final class ResolverProcessor extends AbstractProcessor {
 
     @Override
     public void process(int ordinal, Inbox inbox) {
+        failures.recording(() -> {
+            processRecording(ordinal, inbox);
+            return null;
+        });
+    }
+
+    private void processRecording(int ordinal, Inbox inbox) {
         if (!flush()) {
             return;
         }

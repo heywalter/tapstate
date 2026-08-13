@@ -2,6 +2,7 @@ package io.tapstate.runtime.engine.nest;
 
 import com.hazelcast.jet.core.AbstractProcessor;
 import com.hazelcast.jet.core.Inbox;
+import com.hazelcast.jet.core.Processor;
 import com.hazelcast.jet.core.Watermark;
 import io.tapstate.core.common.TapstateException;
 import io.tapstate.core.event.ChainPosition;
@@ -123,6 +124,13 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * document gaining it takes it, and the sweeps here walk the keys of documents.
      */
     private final NestStore<ParkedSubtree> parking;
+
+    /**
+     * Where what killed this vertex is written down before Jet is told, so a nest's own code reaches the
+     * read faces rather than the generic engine failure. Resolved on the member in {@code init}; a vertex
+     * driven directly by a test never gets one and records nothing, which is what the default stands for.
+     */
+    private NestFailureRecording failures = NestFailureRecording.of(null);
 
     /**
      * The documents with a window open over them: when the window opened, and what a send folded into it is
@@ -296,6 +304,10 @@ public final class AssemblerProcessor extends AbstractProcessor {
      */
     @Override
     public boolean tryProcess() {
+        return failures.recording(this::tryProcessRecording);
+    }
+
+    private boolean tryProcessRecording() {
         if (!flush()) {
             return false;
         }
@@ -455,8 +467,21 @@ public final class AssemblerProcessor extends AbstractProcessor {
         return !covered.isEmpty();
     }
 
+    /** Resolves where this vertex writes down what killed it; see {@link NestFailureRecording}. */
+    @Override
+    protected void init(Processor.Context context) {
+        this.failures = NestFailureRecording.of(context);
+    }
+
     @Override
     public void process(int ordinal, Inbox inbox) {
+        failures.recording(() -> {
+            processRecording(ordinal, inbox);
+            return null;
+        });
+    }
+
+    private void processRecording(int ordinal, Inbox inbox) {
         if (!flush()) {
             return;
         }
