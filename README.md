@@ -195,9 +195,10 @@ teams who want to try the engine, follow development, and help shape the project
 ## Building and running from source
 
 The vision above is where tapstate is going; this section is the real, working
-path today. You describe integration resources — sources, pipelines, transforms,
-views, and publish surfaces — as small declarative `.tap.yml` documents, and
-tapstate moves and reshapes the data. The repository ships an **offline authoring
+path today. You describe the preview's implemented path — sources and pipelines
+with inline transforms and MongoDB sync materialization — as small declarative
+`.tap.yml` documents, and tapstate moves and reshapes the data. The repository
+ships an **offline authoring
 CLI** (a single native binary that creates, validates, and explores `.tap.yml`
 resources with no server, database, or network) plus an early **preview runtime**
 that executes those resources as live pipelines.
