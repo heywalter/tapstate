@@ -453,6 +453,16 @@ class CaptureRunUnitTest {
      * wiring without a store backend.
      */
     private static final class InMemoryMeta implements SrsMetaStore {
+        @Override
+        public java.util.List<String> miningChainIdsWithConsumer(String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
+        @Override
+        public void detachConsumer(String miningChainId, String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
         final List<String> created = new ArrayList<>();
         private final Map<String, SrsMeta> records = new LinkedHashMap<>();
 

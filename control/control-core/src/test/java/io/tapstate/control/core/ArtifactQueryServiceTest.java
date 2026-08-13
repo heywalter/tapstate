@@ -3,6 +3,7 @@ package io.tapstate.control.core;
 import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.model.Resource;
+import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactStore;
 import org.junit.jupiter.api.Test;
@@ -92,6 +93,56 @@ class ArtifactQueryServiceTest {
     @Test
     void listIsEmptyWhenNothingIsStored() {
         assertThat(query.list()).isEmpty();
+    }
+
+    @Test
+    void aReadCarriesTheContentHashOfTheVersionItReturns() {
+        // The hash is the precondition an edit or a removal has to supply, and a remote model calling
+        // this read cannot compute SHA-256 for itself, so the read is what hands it over. It is taken
+        // from the very bytes this read returned: get then delete needs no second source for it.
+        apply.apply("alice", List.of(draft(TGT_MY)));
+
+        StoredArtifact got = query.get("tgt_my").orElseThrow();
+
+        assertThat(got.contentHash()).isEqualTo(CanonicalHash.of(got.canonicalForm()));
+    }
+
+    @Test
+    void theHashAReadReturnsIsTheOneTheWriteSideIssued() {
+        // The read hash and the write hash must be the same value, not merely the same shape: a removal
+        // compares what a caller read against what the store holds. Deriving the read hash from anything
+        // else — the raw draft text before canonicalization, a second writer — still yields a well-formed
+        // 64-char string that every shape assertion accepts, and every delete-after-get then fails as a
+        // version conflict. Pinning it against the apply outcome is what catches that.
+        ApplyResult applied = apply.apply("alice", List.of(draft(TGT_MY)));
+        String issuedOnWrite = applied.outcomes().stream()
+                .filter(o -> o.id().equals("tgt_my"))
+                .findFirst().orElseThrow()
+                .contentHash();
+
+        assertThat(query.get("tgt_my").orElseThrow().contentHash()).isEqualTo(issuedOnWrite);
+    }
+
+    @Test
+    void aChangedArtifactReadsBackWithADifferentHash() {
+        // Discriminating against a hash taken over the id (or any other per-resource constant): the id is
+        // unchanged across this edit, so such an implementation returns the same hash for both versions
+        // and a stale precondition would be accepted as current.
+        apply.apply("alice", List.of(draft(TGT_MY)));
+        String before = query.get("tgt_my").orElseThrow().contentHash();
+
+        apply.apply("alice", List.of(draft(TGT_MY_CHANGED)));
+
+        assertThat(query.get("tgt_my").orElseThrow().contentHash()).isNotEqualTo(before);
+    }
+
+    @Test
+    void everyListedArtifactCarriesTheHashItsOwnGetReturns() {
+        apply.apply("alice", List.of(draft(SRC_ORA), draft(TGT_MY), draft(PIPELINE)));
+
+        assertThat(query.list()).allSatisfy(a ->
+                assertThat(a.contentHash())
+                        .isEqualTo(query.get(a.id()).orElseThrow().contentHash()));
     }
 
     @Test

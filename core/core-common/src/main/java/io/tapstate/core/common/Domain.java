@@ -46,6 +46,10 @@ public enum Domain {
     // observation read faces: reading a pipeline's store-backed status / metrics / snapshot;
     // diagnosable failures such as reading a pipeline that has published no observation (control)
     MONITOR,
+    // resource-type-agnostic artifact operations: editing an already-applied resource under an
+    // optimistic-concurrency precondition, and removing one — including the reference and lifecycle
+    // grounds on which a removal is refused (control)
+    ARTIFACT,
     // source-specific control operations: identity, optimistic concurrency and reference protection
     SOURCE,
     // local MCP presentation: sidecar input, connector-spec and upstream-response failures

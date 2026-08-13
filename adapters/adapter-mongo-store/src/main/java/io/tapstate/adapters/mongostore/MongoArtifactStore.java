@@ -102,19 +102,39 @@ public final class MongoArtifactStore implements ArtifactStore {
 
     @Override
     public void saveAll(List<Resource> artifacts) {
+        saveAll(artifacts, Map.of());
+    }
+
+    @Override
+    public Optional<String> saveAll(List<Resource> artifacts, Map<String, String> expectedContentHashes) {
         Objects.requireNonNull(artifacts, "artifacts");
+        Objects.requireNonNull(expectedContentHashes, "expectedContentHashes");
         if (artifacts.isEmpty()) {
-            // An empty batch writes nothing, and opens no transaction.
-            return;
+            // An empty batch writes nothing, and opens no transaction. A precondition declared against a
+            // batch that writes nothing has nothing to guard, so it is not read either.
+            return Optional.empty();
         }
         // The batch is one atomic unit: every upsert runs inside a single multi-document transaction, so
         // a failure on any one write aborts the whole transaction and no partial batch is stored. Each
         // upsert is by the top-level id (the document _id) — a full replacement that overwrites in place
         // rather than accumulating documents.
+        //
+        // The declared versions are compared inside that same transaction, ahead of the writes. Reading
+        // them here rather than before it is the whole point: a comparison outside the transaction is a
+        // check-then-act, and the write that follows would happily overwrite a version that landed in
+        // between. Inside it, the documents compared are the documents written, so a concurrent writer
+        // either loses the write conflict or is seen by the comparison.
+        List<String> conflicted = new ArrayList<>(1);
         StoreIo.run(() -> {
             try (ClientSession session = client.startSession()) {
                 session.startTransaction();
                 try {
+                    String stale = firstStalePrecondition(session, expectedContentHashes);
+                    if (stale != null) {
+                        conflicted.add(stale);
+                        session.abortTransaction();
+                        return;
+                    }
                     for (Resource artifact : artifacts) {
                         collection.replaceOne(session, new Document("_id", artifact.id()), toDocument(artifact),
                                 new ReplaceOptions().upsert(true));
@@ -136,6 +156,28 @@ public final class MongoArtifactStore implements ArtifactStore {
                 session.commitTransaction();
             }
         });
+        return conflicted.isEmpty() ? Optional.empty() : Optional.of(conflicted.get(0));
+    }
+
+    /**
+     * The first id whose stored content hash is not the one declared against it, or null when every
+     * declared version still holds. An id with no stored document is stale too: it has no version at
+     * all, so it cannot be the one the caller read.
+     *
+     * <p>Only the hash field is read — the canonical body is never reconstructed here, so a sibling the
+     * running version cannot parse does not veto a batch that merely declares a version of it.
+     */
+    private String firstStalePrecondition(ClientSession session, Map<String, String> expectedContentHashes) {
+        for (Map.Entry<String, String> expected : expectedContentHashes.entrySet()) {
+            Document stored = collection
+                    .find(session, new Document("_id", expected.getKey()))
+                    .projection(new Document("contentHash", 1))
+                    .first();
+            if (stored == null || !expected.getValue().equals(stored.getString("contentHash"))) {
+                return expected.getKey();
+            }
+        }
+        return null;
     }
 
     @Override

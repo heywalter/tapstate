@@ -78,6 +78,11 @@ class PipelineStatusWatchHandlerTest {
     private static ObservationStore emptyObservations() {
         return new ObservationStore() {
             @Override
+            public void delete(String pipelineId) {
+                throw new UnsupportedOperationException("removal is not exercised by this double");
+            }
+
+            @Override
             public void save(Observation observation) {
             }
 
@@ -164,6 +169,11 @@ class PipelineStatusWatchHandlerTest {
         Observation running = new Observation("orders", PipelineState.RUNNING, Map.of(), Map.of());
         ObservationStore store = new ObservationStore() {
             @Override
+            public void delete(String pipelineId) {
+                throw new UnsupportedOperationException("removal is not exercised by this double");
+            }
+
+            @Override
             public void save(Observation observation) {
             }
 
@@ -192,6 +202,11 @@ class PipelineStatusWatchHandlerTest {
                 Map.of(), Map.of(), new io.tapstate.core.lifecycle.ObservationFailure(
                         "engine.job-failed", Map.of("pipeline", "orders", "cause", "sink refused the batch")));
         ObservationStore store = new ObservationStore() {
+            @Override
+            public void delete(String pipelineId) {
+                throw new UnsupportedOperationException("removal is not exercised by this double");
+            }
+
             @Override
             public void save(Observation observation) {
             }

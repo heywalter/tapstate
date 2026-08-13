@@ -1,6 +1,7 @@
 package io.tapstate.control.restapi;
 
 import io.tapstate.control.core.ApplyService;
+import io.tapstate.control.core.ArtifactMutationService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
 import io.tapstate.control.core.BootstrapService;
@@ -443,6 +444,16 @@ class PipelineApiTest {
             return new ArtifactQueryService(store);
         }
 
+        // The removal controller comes in with the whole ControlHttpFace bundle, so its service must be
+        // present for the context to stand up. This suite exercises the lifecycle verbs, not the removal,
+        // so the dependent stores refuse rather than pretend: a reclaim reached from here is a defect.
+        @Bean
+        ArtifactMutationService artifactMutationService(ArtifactStore store, AuditGate auditGate) {
+            return new ArtifactMutationService(
+                    store, NoReclaimStores.desired(), NoReclaimStores.state(),
+                    NoReclaimStores.observations(), NoReclaimStores.srsMeta(), auditGate);
+        }
+
         // The connection / connector controllers come in with the whole ControlHttpFace bundle, so their
         // services must be present for the context to stand up. This suite exercises the pipeline verbs, not
         // the probe / registration, so these only need to construct — their probes and stores are inert.
@@ -550,6 +561,11 @@ class PipelineApiTest {
             // controller up so the full-face bundle boots. The read faces are proven in PipelineObservationApiTest.
             return new ObservationStore() {
                 @Override
+                public void delete(String pipelineId) {
+                    throw new UnsupportedOperationException("removal is not exercised by this double");
+                }
+
+                @Override
                 public void save(Observation observation) {
                 }
 
@@ -612,6 +628,11 @@ class PipelineApiTest {
 
     /** An in-memory desired store, last write wins per pipeline id. */
     static final class FakeDesiredStore implements DesiredStore {
+        @Override
+        public void delete(String pipelineId) {
+            throw new UnsupportedOperationException("removal is not exercised by this double");
+        }
+
         private final Map<String, DesiredState> byId = new LinkedHashMap<>();
 
         void clear() {

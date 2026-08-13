@@ -8,10 +8,21 @@ import java.util.Objects;
  * and re-validates the raw text — it never trusts a client-parsed model — which is why a draft
  * carries text, not a resource. A {@code null} source means an unnamed origin (the diagnostic then
  * carries no source label).
+ *
+ * <p>{@code expectedContentHash} is an optional precondition: the content hash of the stored version
+ * this edit was written against. Supplied, the apply is refused unless that is still the stored
+ * version, so two authors editing the same resource cannot silently overwrite each other. Omitted,
+ * the apply overwrites whatever is stored — the original behaviour, kept so that a caller who never
+ * asked for the check is never refused by it.
  */
-public record ArtifactDraft(String source, String content) {
+public record ArtifactDraft(String source, String content, String expectedContentHash) {
 
     public ArtifactDraft {
         Objects.requireNonNull(content, "draft content");
+    }
+
+    /** A draft submitted with no precondition, overwriting whatever is stored under its id. */
+    public ArtifactDraft(String source, String content) {
+        this(source, content, null);
     }
 }

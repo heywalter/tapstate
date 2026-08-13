@@ -45,7 +45,9 @@ class TapstateMcpApplicationTest {
             assertThat(context.isRunning()).isTrue();
             assertThat(context.getBean(McpOptions.class).allowWrite()).isTrue();
             assertThat(context.getBean(McpOperationExecutor.class)).isNotNull();
-            assertThat((List<?>) context.getBean("mcpTools")).hasSize(15);
+            // The whole write surface: eleven reads plus six writes. Pinned as a count here and by name
+            // in McpToolCatalogTest, so a tool that appears by accident fails one of the two.
+            assertThat((List<?>) context.getBean("mcpTools")).hasSize(17);
         }
     }
 }

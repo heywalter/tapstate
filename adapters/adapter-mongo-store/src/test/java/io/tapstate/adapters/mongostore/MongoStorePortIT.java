@@ -11,6 +11,7 @@ import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.spi.store.ConnectionConfig;
 import io.tapstate.spi.store.ConnectionTestItem;
 import io.tapstate.spi.store.ConnectionTestResult;
+import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.DiscoveredSourceModel;
 import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.spi.store.SourceModel;
@@ -116,6 +117,57 @@ class MongoStorePortIT {
                         .isEqualTo(1);
                 assertThat(database.getCollection(MongoStorePort.SRS_META).countDocuments()).isEqualTo(1);
             }
+        }
+    }
+
+    @Test
+    void reclaimingAPipelineEmptiesItsThreeLifecycleStoresAndLeavesTheSharedChainStanding() {
+        String uri = REPLICA_SET.getReplicaSetUrl();
+        MongoConnectionSettings settings = new MongoConnectionSettings(uri, null, Duration.ofSeconds(5));
+        try (MongoConnection connection = new MongoConnection(settings)) {
+            connection.verify();
+            MongoStorePort port = new MongoStorePort(connection);
+            // The suite shares one replica-set across tests, so the counts below only mean what they say
+            // once this test owns these four collections outright.
+            dropLifecycleStorage(uri);
+            port.state().create("doomed", "{\"state\":\"STOPPED\"}", Instant.parse("2026-07-06T00:00:00Z"));
+            port.desired().save(new DesiredState("doomed", PipelineState.STOPPED, "rev-abc"));
+            port.observations().save(new Observation("doomed", PipelineState.STOPPED,
+                    Map.of(), Map.of(), Map.of("orders", "w7")));
+            port.meta().create("orders@mysql-1", "7d");
+            port.meta().upsertConsumerOffset("orders@mysql-1", new ConsumerOffset("doomed", Map.of("orders", 5L), "w7"));
+            port.meta().upsertConsumerOffset("orders@mysql-1", new ConsumerOffset("survivor", Map.of("orders", 9L), "w9"));
+
+            port.state().delete("doomed");
+            port.desired().delete("doomed");
+            port.observations().delete("doomed");
+            port.meta().miningChainIdsWithConsumer("doomed")
+                    .forEach(chain -> port.meta().detachConsumer(chain, "doomed"));
+
+            String databaseName = new ConnectionString(uri).getDatabase();
+            try (MongoClient raw = MongoClients.create(uri)) {
+                MongoDatabase database = raw.getDatabase(databaseName);
+                // The three that belong to this pipeline alone go; each has its own storage, so this is
+                // three separate removals rather than one that happens to catch them all.
+                assertThat(database.getCollection(MongoStorePort.PIPELINE_STATE).countDocuments()).isZero();
+                assertThat(database.getCollection(MongoStorePort.PIPELINE_DESIRED).countDocuments()).isZero();
+                assertThat(database.getCollection(MongoStorePort.PIPELINE_OBSERVATION).countDocuments()).isZero();
+                // The chain is shared, so it stays — with only the departing consumer taken off it.
+                assertThat(database.getCollection(MongoStorePort.SRS_META).countDocuments()).isEqualTo(1);
+            }
+            assertThat(port.meta().read("orders@mysql-1").orElseThrow().consumerOffsets())
+                    .containsExactly(new ConsumerOffset("survivor", Map.of("orders", 9L), "w9"));
+        }
+    }
+
+    /** Empties the four collections this test counts, so a sibling test's writes cannot answer for it. */
+    private static void dropLifecycleStorage(String uri) {
+        try (MongoClient raw = MongoClients.create(uri)) {
+            MongoDatabase database = raw.getDatabase(new ConnectionString(uri).getDatabase());
+            database.getCollection(MongoStorePort.PIPELINE_STATE).drop();
+            database.getCollection(MongoStorePort.PIPELINE_DESIRED).drop();
+            database.getCollection(MongoStorePort.PIPELINE_OBSERVATION).drop();
+            database.getCollection(MongoStorePort.SRS_META).drop();
         }
     }
 }

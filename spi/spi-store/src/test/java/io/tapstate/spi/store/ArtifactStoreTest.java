@@ -58,6 +58,52 @@ class ArtifactStoreTest {
         assertThat(store.storedCanonical("orders")).isEqualTo(canonicalBeforeReplace);
     }
 
+    @Test
+    void aConditionalBatchWritesEverythingOrNothingAndNamesTheVersionThatMovedOn() {
+        ContractStore store = new ContractStore();
+        Resource stored = source("localhost");
+        Resource edited = source("replica");
+        Resource sibling = source("customers", "localhost");
+        store.create(stored);
+
+        assertThat(store.saveAll(List.of(edited), Map.of("orders", hash(stored)))).isEmpty();
+        assertThat(store.storedCanonical("orders")).isEqualTo(WRITER.write(edited));
+
+        // The stale batch names its own loser and writes none of itself — the valid sibling included,
+        // since the batch is one unit. A store that wrote the sibling would leave the caller half an
+        // edit it never asked to be split.
+        assertThat(store.saveAll(List.of(source("stale-writer"), sibling), Map.of("orders", hash(stored))))
+                .contains("orders");
+        assertThat(store.storedCanonical("orders")).isEqualTo(WRITER.write(edited));
+        assertThat(store.get("customers")).isEmpty();
+    }
+
+    @Test
+    void anIdThatIsNoLongerStoredFailsItsDeclaredVersionRatherThanBeingRecreated() {
+        ContractStore store = new ContractStore();
+        Resource stored = source("localhost");
+        store.create(stored);
+        store.delete("orders", hash(stored));
+
+        // A declared version says "I am editing what I read". Nothing is stored, so nothing equals it —
+        // upserting here would silently resurrect a resource its author believes they are amending.
+        assertThat(store.saveAll(List.of(source("replica")), Map.of("orders", hash(stored))))
+                .contains("orders");
+        assertThat(store.get("orders")).isEmpty();
+    }
+
+    @Test
+    void anEmptyPreconditionMapIsTheUnconditionalBatch() {
+        ContractStore store = new ContractStore();
+        // The compatibility case the default relies on: a caller that declares nothing keeps writing
+        // exactly as it did, and a store that implements no conditional batch still serves it.
+        assertThat(new DefaultingStore().saveAll(List.of(source("localhost")), Map.of())).isEmpty();
+        assertThatThrownBy(() -> new DefaultingStore()
+                .saveAll(List.of(source("localhost")), Map.of("orders", hash(source("localhost")))))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(store.saveAll(List.of(source("localhost")), Map.of())).isEmpty();
+    }
+
     private static Resource source(String host) {
         return source("orders", host);
     }
@@ -71,6 +117,32 @@ class ArtifactStoreTest {
         return CanonicalHash.of(WRITER.write(artifact));
     }
 
+    /**
+     * A store that implements only the unconditional batch, to witness what the port's default does for
+     * an adapter that has not implemented the conditional one: it serves an empty precondition map and
+     * refuses a non-empty one, rather than quietly writing unconditionally and leaving every caller
+     * believing in a check that was never made.
+     */
+    private static final class DefaultingStore implements ArtifactStore {
+
+        private final Map<String, Resource> resources = new LinkedHashMap<>();
+
+        @Override
+        public void saveAll(List<Resource> artifacts) {
+            artifacts.forEach(artifact -> resources.put(artifact.id(), artifact));
+        }
+
+        @Override
+        public Optional<Resource> get(String id) {
+            return Optional.ofNullable(resources.get(id));
+        }
+
+        @Override
+        public List<Resource> list() {
+            return new ArrayList<>(resources.values());
+        }
+    }
+
     /** Minimal canonical-byte store used only to witness the SPI's required outcomes. */
     private static final class ContractStore implements ArtifactStore {
 
@@ -78,9 +150,21 @@ class ArtifactStoreTest {
 
         @Override
         public void saveAll(List<Resource> artifacts) {
+            saveAll(artifacts, Map.of());
+        }
+
+        @Override
+        public Optional<String> saveAll(List<Resource> artifacts, Map<String, String> expectedContentHashes) {
+            for (Map.Entry<String, String> expected : expectedContentHashes.entrySet()) {
+                Resource current = resources.get(expected.getKey());
+                if (current == null || !hash(current).equals(expected.getValue())) {
+                    return Optional.of(expected.getKey());
+                }
+            }
             for (Resource artifact : artifacts) {
                 resources.put(artifact.id(), artifact);
             }
+            return Optional.empty();
         }
 
         @Override

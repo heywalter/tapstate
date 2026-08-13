@@ -21,23 +21,58 @@ class McpToolCatalogTest {
     private static final List<String> READ_TOOLS = List.of(
             "connector_list", "connector_get",
             "source_draft",
-            "connection_test_result", "connection_schema", "artifact_validate",
+            "connection_test_result", "connection_schema", "artifact_validate", "artifact_get",
             "pipeline_status", "pipeline_metrics", "pipeline_snapshot", "pipeline_logs");
 
     private static final List<String> WRITE_TOOLS = List.of(
-            "artifact_apply", "connection_test", "connection_discover_schema",
+            "artifact_apply", "artifact_delete", "connection_test", "connection_discover_schema",
             "pipeline_start", "pipeline_stop");
 
+    /**
+     * The read that supplies the removal's precondition has to be reachable without write access.
+     * Landing it in the write bucket would make the hash obtainable only in a session that already
+     * holds the power to destroy, which defeats the point of reading before deciding to.
+     */
     @Test
-    void defaultSurfaceContainsExactlyTheTenReadToolsIncludingSourceDraft() {
+    void theReadThatSuppliesTheRemovalPreconditionIsAvailableWithoutWriteAccess() {
+        assertThat(McpToolCatalog.operations(false).stream().map(McpToolCatalog::toolName))
+                .contains("artifact_get");
+    }
+
+    @Test
+    void defaultSurfaceContainsExactlyTheElevenReadToolsIncludingSourceDraft() {
         assertThat(McpToolCatalog.operations(false).stream().map(McpToolCatalog::toolName))
                 .containsExactlyInAnyOrderElementsOf(READ_TOOLS);
     }
 
     @Test
-    void allowWriteAddsExactlyTheFiveWriteTools() {
+    void allowWriteAddsExactlyTheSixWriteTools() {
         assertThat(McpToolCatalog.operations(true).stream().map(McpToolCatalog::toolName))
                 .containsExactlyInAnyOrderElementsOf(concat(READ_TOOLS, WRITE_TOOLS));
+    }
+
+    /**
+     * The one tool on this surface that destroys a named resource must not be reachable from a session
+     * that was not started with write access. The exact-set assertions above would also catch it, but
+     * only as one name among seventeen; this says which property is load-bearing, so a future edit that
+     * re-scopes the operation fails against a test that explains why it may not.
+     */
+    @Test
+    void theDestructiveToolIsAbsentFromAReadOnlySession() {
+        assertThat(McpToolCatalog.operations(false).stream().map(McpToolCatalog::toolName))
+                .doesNotContain("artifact_delete");
+        assertThat(McpToolCatalog.operations(true).stream().map(McpToolCatalog::toolName))
+                .contains("artifact_delete");
+    }
+
+    /**
+     * The tool name is derived, and it is a published promise the moment the sidecar advertises it: a
+     * model calls {@code artifact_delete} by that literal name. Pinning it here means a change to the
+     * derivation, or to the operation id, breaks a test rather than a caller.
+     */
+    @Test
+    void theRemovalToolIsNamedArtifactDelete() {
+        assertThat(McpToolCatalog.toolName(ControlOperations.ARTIFACT_DELETE)).isEqualTo("artifact_delete");
     }
 
     @Test

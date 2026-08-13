@@ -53,6 +53,14 @@ public final class MongoObservationStore implements ObservationStore {
         return document == null ? Optional.empty() : Optional.of(toObservation(document));
     }
 
+    @Override
+    public void delete(String pipelineId) {
+        Objects.requireNonNull(pipelineId, "pipelineId");
+        // deleteOne on a missing _id removes nothing and reports so without failing, which is the no-op
+        // an unpublished observation is meant to be.
+        StoreIo.run(() -> collection.deleteOne(new Document("_id", pipelineId)));
+    }
+
     /**
      * Maps an observation to its stored document: pipeline id as {@code _id}, state / metrics / snapshot /
      * positions as fields.

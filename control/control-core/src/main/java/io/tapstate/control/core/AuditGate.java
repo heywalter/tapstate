@@ -60,7 +60,9 @@ public final class AuditGate {
         Objects.requireNonNull(action, "action");
         if (op.audited()) {
             for (AuditContext ctx : contexts) {
-                AuditRecord record = new AuditRecord(clock.instant(), ctx.principal(), op.id(), ctx.resourceId());
+                AuditRecord record = new AuditRecord(
+                        clock.instant(), ctx.principal(), op.id(), ctx.resourceId(),
+                        ctx.expectedContentHash());
                 try {
                     auditStore.record(record);
                 } catch (RuntimeException cause) {

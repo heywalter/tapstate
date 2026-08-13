@@ -1,5 +1,6 @@
 package io.tapstate.spi.store;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -78,4 +79,31 @@ public interface SrsMetaStore {
      * caller ordering error.
      */
     void appendSchemaVersion(String miningChainId, SchemaVersion version);
+
+    /**
+     * Lists the id of every mining chain that carries a cursor for {@code pipelineId} — exactly the
+     * chains a departing consumer still has to be detached from. It answers from the chains' own records
+     * rather than from the consumer's side, so a caller that cannot derive which chains a pipeline reads
+     * (chain identity is resolved where captures are built, not where artifacts are removed) can still
+     * detach from all of them, and a chain the pipeline never joined is never touched.
+     *
+     * <p>It returns ids only, never reconstructed records, so enumerating never fails on a single corrupt
+     * document.
+     */
+    List<String> miningChainIdsWithConsumer(String pipelineId);
+
+    /**
+     * Removes one consumer pipeline's cursor from a chain, leaving the chain itself and every other
+     * consumer untouched. A departing pipeline <em>must</em> be detached: its cursor is folded into two
+     * independent minimums — the durable frontier over every consumer's acked position, and the cdc
+     * write headroom over every consumer's read cursor — and a consumer that will never advance again
+     * pins both, permanently and silently, for every other pipeline on the shared chain.
+     *
+     * <p>Unlike the other mutators, this one is idempotent rather than an ordering error on an unseeded
+     * chain: a detach states the end condition "this consumer holds nothing here", which an absent chain
+     * and an absent cursor already satisfy. Refusing them would let one benign race abort a removal
+     * partway and leave the consumer attached to the chains not yet reached — the very residue this
+     * exists to prevent.
+     */
+    void detachConsumer(String miningChainId, String pipelineId);
 }

@@ -87,6 +87,20 @@ class ApiExceptionHandler {
             case "source.already-exists", "source.in-use" -> HttpStatus.CONFLICT;
             case "source.version-conflict" -> HttpStatus.PRECONDITION_FAILED;
             case "source.precondition-required" -> HttpStatus.PRECONDITION_REQUIRED;
+            // The artifact refusals, mirroring the source.* mapping above because they mean the same things
+            // one kind wider. This switch sees only the code, never the endpoint that raised it, so a code
+            // both delete and apply can raise answers the same status on both: version-conflict is a 412 on
+            // apply too, where the precondition travels in the request body rather than an If-Match header.
+            // Giving one of them an endpoint-dependent status means changing this method's shape, not this
+            // line — a delete path and an apply path that each map half of it would be worse than either.
+            case "artifact.not-found" -> HttpStatus.NOT_FOUND;
+            case "artifact.precondition-required" -> HttpStatus.PRECONDITION_REQUIRED;
+            case "artifact.version-conflict" -> HttpStatus.PRECONDITION_FAILED;
+            case "artifact.in-use", "artifact.pipeline-not-stopped" -> HttpStatus.CONFLICT;
+            // Not a 4xx: the request was valid and was carried out. What failed is the server's own
+            // follow-up work, and the body's code — not the status — is what tells the caller the
+            // removal stands and must not be retried.
+            case "artifact.reclaim-incomplete" -> HttpStatus.INTERNAL_SERVER_ERROR;
             case "connector.not-found" -> HttpStatus.NOT_FOUND;
             // A request refused at the HTTP boundary as structurally malformed is a client input error, like dsl.*.
             case "control.malformed-request" -> HttpStatus.BAD_REQUEST;

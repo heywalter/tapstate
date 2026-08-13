@@ -111,6 +111,7 @@ public final class Cli implements Runnable {
             Map.entry("artifact.validate", "validate"),
             Map.entry("artifact.get", "get"),
             Map.entry("artifact.list", "ls"),
+            Map.entry("artifact.delete", "delete"),
             Map.entry("connection.test", "test"),
             Map.entry("connection.test-result", "test-result"),
             Map.entry("connection.discover-schema", "discover-schema"),
@@ -175,10 +176,12 @@ public final class Cli implements Runnable {
      * that only some of these verbs accept.
      */
     static final Map<String, VerbHelp> VERB_HELP = Map.ofEntries(
-            Map.entry("apply", new VerbHelp("[<path>]",
+            Map.entry("apply", new VerbHelp("[<path>] [--if-match <hash>]",
                     "Upload the workspace, or one artifact, creating or updating each resource.")),
             Map.entry("get", new VerbHelp("<id>",
                     "Fetch one stored artifact back as canonical YAML.")),
+            Map.entry("delete", new VerbHelp("<id> [--if-match <hash>] [-o text|json|yaml]",
+                    "Remove one stored artifact for good; --if-match pins the version removed.")),
             Map.entry("connectors", new VerbHelp("[-o text|json|yaml]",
                     "List the connectors registered on the server.")),
             Map.entry("register", new VerbHelp("<path> [-o text|json|yaml]",

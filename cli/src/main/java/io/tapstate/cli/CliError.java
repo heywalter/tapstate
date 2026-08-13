@@ -47,7 +47,13 @@ enum CliError implements TapstateErrorCode {
     REPL_BUILTIN_ONLY("cli.repl-builtin-only", Set.of("verb")),
 
     /** The installed MCP sidecar or its required Java runtime cannot be launched. */
-    MCP_UNAVAILABLE("cli.mcp-unavailable", Set.of("reason"));
+    MCP_UNAVAILABLE("cli.mcp-unavailable", Set.of("reason")),
+
+    /**
+     * A version precondition was offered for a batch holding more than one resource; {@code count} is how
+     * many it holds. One hash names one version, so there is no resource it could be describing.
+     */
+    IF_MATCH_NEEDS_ONE_RESOURCE("cli.if-match-needs-one-resource", Set.of("count"));
 
     private final String code;
     private final Set<String> placeholders;

@@ -128,6 +128,31 @@ class MongoSrsMetaStoreTest {
     }
 
     @Test
+    void detachConsumerUpdateUnsetsOnlyThatConsumersEntryAndNothingElseOnTheChain() {
+        // A detach is a path-scoped $unset of consumerOffsets.<pipelineId>: it removes the departing
+        // consumer's whole entry -- not its positions -- so the consumer stops being folded into the two
+        // minimums taken over every consumer, while the chain's own offsets, schema history and every
+        // other consumer's cursor are outside the path and survive untouched.
+        Document update = MongoSrsMetaStore.detachConsumerUpdate("p1");
+
+        assertThat(update.get("$unset", Document.class))
+                .containsExactly(Map.entry("consumerOffsets.p1", ""));
+        assertThat(update.keySet()).containsExactly("$unset");
+    }
+
+    @Test
+    void consumerPresenceFilterMatchesOnThatConsumersOwnPathAndNotAPrefixOfIt() {
+        // Membership is asked of the chains, so the filter must address exactly one consumer's entry: a
+        // filter on the containing consumerOffsets document would match every chain that has any consumer
+        // at all, and detaching would then walk chains the pipeline never joined.
+        Document filter = MongoSrsMetaStore.consumerPresenceFilter("p1");
+
+        assertThat(filter.keySet()).containsExactly("consumerOffsets.p1");
+        assertThat(filter.get("consumerOffsets.p1", Document.class))
+                .containsExactly(Map.entry("$exists", true));
+    }
+
+    @Test
     void aConsumerWithOnlyASinkAckedPositionAndNoReadCursorReadsBackWithAnEmptyCursor() {
         // The sink and the reader are independent writers of one consumer; the sink may create the consumer
         // entry (a sink-ack-only $set) before the reader publishes any per-table cursor. Such a consumer

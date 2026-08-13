@@ -44,6 +44,11 @@ final class InMemoryStateStore implements StateStore {
     }
 
     @Override
+    public void delete(String pipelineId) {
+        docs.remove(pipelineId);
+    }
+
+    @Override
     public CasOutcome compareAndSwap(String pipelineId, long expectedEpoch, String nextStateJson, Instant touchTime) {
         CasOutcome outcome = EpochCas.swap(docs.get(pipelineId), expectedEpoch, nextStateJson, touchTime);
         if (outcome instanceof CasOutcome.Applied applied) {

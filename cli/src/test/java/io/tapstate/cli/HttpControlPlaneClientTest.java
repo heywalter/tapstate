@@ -248,6 +248,180 @@ class HttpControlPlaneClientTest {
         return server;
     }
 
+    // ---- the removal verb over the real transport ----
+
+    /**
+     * A server for the removal verb that also records {@code If-Match}, which {@link CapturedRequest}
+     * does not carry — and which is the whole of what distinguishes a conditional removal from an
+     * unconditional one.
+     */
+    private static HttpServer deleteServer(int status, String responseBody,
+            AtomicReference<String> method, AtomicReference<String> path,
+            AtomicReference<String> ifMatch, AtomicReference<Boolean> hadIfMatch) throws Exception {
+        return deleteServer(status, responseBody, method, path, ifMatch, hadIfMatch, new AtomicReference<>());
+    }
+
+    /** The same server, for the one test that also pins the credential the removal travelled under. */
+    private static HttpServer deleteServer(int status, String responseBody,
+            AtomicReference<String> method, AtomicReference<String> path,
+            AtomicReference<String> ifMatch, AtomicReference<Boolean> hadIfMatch,
+            AtomicReference<String> authorization) throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/api/artifacts", exchange -> {
+            method.set(exchange.getRequestMethod());
+            path.set(exchange.getRequestURI().getRawPath());
+            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            hadIfMatch.set(exchange.getRequestHeaders().containsKey("If-Match"));
+            ifMatch.set(exchange.getRequestHeaders().getFirst("If-Match"));
+            byte[] bytes = responseBody == null ? new byte[0] : responseBody.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);
+            if (bytes.length > 0) {
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(bytes);
+                }
+            }
+            exchange.close();
+        });
+        server.start();
+        return server;
+    }
+
+    @Test
+    void deleteSendsTheMethodTheBearerAndTheQuotedPreconditionAndReportsRemoval() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<Boolean> had = new AtomicReference<>();
+        AtomicReference<String> authorization = new AtomicReference<>();
+        HttpServer server = deleteServer(204, null, method, path, ifMatch, had, authorization);
+        try {
+            String hash = "a".repeat(64);
+            DeleteOutcome outcome = new HttpControlPlaneClient()
+                    .delete(baseOf(server), "tok-abc", "src_kfk", hash);
+
+            assertThat(outcome).isEqualTo(new DeleteOutcome.Removed("src_kfk"));
+            // A GET to this path would answer 200 with the artifact, which a status-only assertion would
+            // read as a successful removal — so the method itself is pinned.
+            assertThat(method.get()).isEqualTo("DELETE");
+            assertThat(path.get()).isEqualTo("/api/artifacts/src_kfk");
+            // A removal that dropped the credential would reach an unauthenticated server just as well,
+            // and every other assertion here would still hold.
+            assertThat(authorization.get()).isEqualTo("Bearer tok-abc");
+            assertThat(ifMatch.get()).isEqualTo("\"" + hash + "\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void deleteWithoutAPreconditionOmitsTheHeaderEntirely() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<Boolean> had = new AtomicReference<>();
+        HttpServer server = deleteServer(428, "{\"code\":\"artifact.precondition-required\","
+                + "\"message\":\"A precondition is required.\",\"params\":{\"id\":\"src_kfk\"}}",
+                method, path, ifMatch, had);
+        try {
+            DeleteOutcome outcome = new HttpControlPlaneClient()
+                    .delete(baseOf(server), "tok-abc", "src_kfk", null);
+
+            // Sending an empty If-Match would be a malformed precondition, which the server answers as a
+            // different refusal than none at all; the header must simply be absent.
+            assertThat(had.get()).isFalse();
+            assertThat(outcome).isInstanceOfSatisfying(DeleteOutcome.Rejected.class, rejected -> {
+                assertThat(rejected.code()).isEqualTo("artifact.precondition-required");
+                assertThat(rejected.params()).containsEntry("id", "src_kfk");
+            });
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void aRefusedRemovalKeepsTheNamedParametersTheCallerHasToActOn() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<Boolean> had = new AtomicReference<>();
+        HttpServer server = deleteServer(409, "{\"code\":\"artifact.in-use\","
+                + "\"message\":\"Still referenced.\",\"params\":{\"id\":\"src_kfk\","
+                + "\"referrers\":[\"kfk2my\",\"kfk2pg\"]}}", method, path, ifMatch, had);
+        try {
+            DeleteOutcome outcome = new HttpControlPlaneClient()
+                    .delete(baseOf(server), "tok-abc", "src_kfk", "b".repeat(64));
+
+            assertThat(outcome).isInstanceOfSatisfying(DeleteOutcome.Rejected.class, rejected -> {
+                assertThat(rejected.code()).isEqualTo("artifact.in-use");
+                // Dropping the parameters would leave the caller a sentence and no next step: which
+                // resources to deal with is only in here.
+                assertThat(rejected.params().get("referrers")).isEqualTo(List.of("kfk2my", "kfk2pg"));
+            });
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void anUnreachableServerMakesTheRemovalUnreachableRatherThanASuccess() {
+        DeleteOutcome outcome = new HttpControlPlaneClient()
+                .delete(URI.create("http://127.0.0.1:1"), "tok", "src_kfk", "c".repeat(64));
+
+        assertThat(outcome).isInstanceOf(DeleteOutcome.Unreachable.class);
+    }
+
+    @Test
+    void theReadAndTheRemovalOfOneIdTargetTheSameEncodedPath() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<Boolean> had = new AtomicReference<>();
+        // A space is the cheapest character that tells path encoding apart from form encoding: they
+        // agree on everything else an id is likely to hold and disagree on exactly this one.
+        String id = "src kfk";
+        HttpServer server = deleteServer(404, "{\"code\":\"artifact.not-found\","
+                + "\"message\":\"No such resource.\",\"params\":{\"id\":\"src kfk\"}}",
+                method, path, ifMatch, had);
+        try {
+            new HttpControlPlaneClient().get(baseOf(server), "tok", id);
+            String afterRead = path.get();
+            new HttpControlPlaneClient().delete(baseOf(server), "tok", id, null);
+            String afterRemoval = path.get();
+
+            // A removal reads the current version and then deletes the same id, so if these two
+            // disagree the halves of one removal address two different resources.
+            assertThat(afterRead).isEqualTo("/api/artifacts/src%20kfk");
+            assertThat(afterRemoval).isEqualTo(afterRead);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void aRefusedRemovalSurvivesAParameterTheServerSentAsNull() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<Boolean> had = new AtomicReference<>();
+        HttpServer server = deleteServer(409, "{\"code\":\"artifact.pipeline-not-stopped\","
+                + "\"message\":\"Stop it first.\",\"params\":{\"id\":\"kfk2my\","
+                + "\"actual\":\"RUNNING\",\"desired\":null}}", method, path, ifMatch, had);
+        try {
+            DeleteOutcome outcome = new HttpControlPlaneClient()
+                    .delete(baseOf(server), "tok", "kfk2my", "d".repeat(64));
+
+            // One null-valued parameter must not cost the caller the code and the message. Those name
+            // the refusal and its next step; the null is the least informative part of the body, and
+            // losing the whole refusal over it leaves a bare sentence and nothing to act on.
+            assertThat(outcome).isInstanceOfSatisfying(DeleteOutcome.Rejected.class, rejected -> {
+                assertThat(rejected.code()).isEqualTo("artifact.pipeline-not-stopped");
+                assertThat(rejected.params()).containsEntry("actual", "RUNNING");
+            });
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     void applyPostsTheDraftsWithABearerCredentialAndReturnsTheOutcomes() throws Exception {
         AtomicReference<CapturedRequest> seen = new AtomicReference<>();
@@ -269,6 +443,26 @@ class HttpControlPlaneClientTest {
             Map<?, ?> sent = (Map<?, ?>) JsonReader.parse(seen.get().body());
             assertThat(sent.get("drafts")).isInstanceOf(List.class);
             assertThat(seen.get().body()).contains("src_kfk.tap.yml").contains("kind: source");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void aDraftWithAPreconditionCarriesItInTheApplyBodyAndOneWithoutOmitsTheKey() throws Exception {
+        // Two halves of one contract. Present: the server has to receive it or the check never happens.
+        // Absent: the key must not appear at all rather than appear as null — an existing caller's request
+        // has to stay byte-identical, and a null would reach a schema that forbids what it does not declare.
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/artifacts:apply", 200, "{\"outcomes\":[]}", seen);
+        try {
+            new HttpControlPlaneClient().apply(baseOf(server), "tok-abc",
+                    List.of(new LocalDraft("a.tap.yml", "kind: source\nid: a\n", "f".repeat(64))));
+            assertThat(seen.get().body()).contains("\"expectedContentHash\": \"" + "f".repeat(64) + "\"");
+
+            new HttpControlPlaneClient().apply(baseOf(server), "tok-abc",
+                    List.of(new LocalDraft("a.tap.yml", "kind: source\nid: a\n")));
+            assertThat(seen.get().body()).doesNotContain("expectedContentHash");
         } finally {
             server.stop(0);
         }

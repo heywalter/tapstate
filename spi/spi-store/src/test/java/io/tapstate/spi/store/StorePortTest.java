@@ -1,6 +1,7 @@
 package io.tapstate.spi.store;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.tapstate.core.catalog.ConnectorCatalogEntry;
@@ -547,6 +548,108 @@ class StorePortTest {
         assertThat(history.get(1).ddlSeq()).isEqualTo(12L);
     }
 
+    // --- the removal side of the per-pipeline stores, and the detach that frees a shared chain ---
+
+    @Test
+    void stateDesiredAndObservationDeleteRemoveTheDocumentAndReadIsEmptyAfterwards() {
+        StorePort store = new InMemoryStore();
+        store.state().create("p1", "STOPPED", T0);
+        store.desired().save(new DesiredState("p1", PipelineState.STOPPED, "rev-1"));
+        store.observations().save(new Observation("p1", PipelineState.STOPPED, Map.of(), Map.of()));
+
+        store.state().delete("p1");
+        store.desired().delete("p1");
+        store.observations().delete("p1");
+
+        assertThat(store.state().read("p1")).isEmpty();
+        assertThat(store.desired().read("p1")).isEmpty();
+        assertThat(store.observations().read("p1")).isEmpty();
+    }
+
+    @Test
+    void deletingAPipelineThatWasNeverStoredIsANoOpRatherThanAnError() {
+        StorePort store = new InMemoryStore();
+        // The removal path deletes all three unconditionally after the artifact is gone, and a pipeline
+        // that never ran has no checkpoint and no observation. If absence threw, an ordinary removal
+        // would report residue it does not have — and the artifact would already be unrecoverable.
+        assertThatCode(() -> {
+            store.state().delete("never-ran");
+            store.desired().delete("never-ran");
+            store.observations().delete("never-ran");
+        }).doesNotThrowAnyException();
+    }
+
+    @Test
+    void deletingOnePipelineLeavesTheOthersAlone() {
+        StorePort store = new InMemoryStore();
+        store.desired().save(new DesiredState("p1", PipelineState.RUNNING, "rev-1"));
+        store.desired().save(new DesiredState("p2", PipelineState.RUNNING, "rev-1"));
+
+        store.desired().delete("p1");
+
+        // Without this, a delete implemented as "clear the map" passes every assertion above.
+        assertThat(store.desired().read("p1")).isEmpty();
+        assertThat(store.desired().read("p2")).isPresent();
+    }
+
+    @Test
+    void detachConsumerRemovesOnlyThatConsumerAndKeepsTheChainsOwnAccumulatedTruth() {
+        SrsMetaStore meta = new InMemoryStore().meta();
+        meta.create("chain", "7d");
+        meta.advanceSourceReadOffset("chain", "gtid:aaa-1:500");
+        meta.setCdcStartPosition("chain", "gtid:aaa-1:1");
+        meta.appendSchemaVersion("chain", new SchemaVersion(0, Map.of("id", "int"), 0));
+        meta.upsertConsumerOffset("chain", new ConsumerOffset("leaving", Map.of("orders", 10L), null));
+        meta.upsertConsumerOffset("chain", new ConsumerOffset("staying", Map.of("orders", 20L), null));
+
+        meta.detachConsumer("chain", "leaving");
+
+        SrsMeta after = meta.read("chain").orElseThrow();
+        assertThat(after.consumerOffsets()).extracting(ConsumerOffset::pipelineId).containsExactly("staying");
+        // The chain outlives its departing consumer. A detach that rebuilt the document from the kept
+        // consumers alone would drop these four, and the loss shows up only as a chain that re-reads
+        // from the beginning — no error, and nothing here would have said so.
+        assertThat(after.sourceReadOffset()).isEqualTo("gtid:aaa-1:500");
+        assertThat(after.cdcStartPosition()).isEqualTo("gtid:aaa-1:1");
+        assertThat(after.schemaHistory()).extracting(SchemaVersion::version).containsExactly(0L);
+        assertThat(after.retention()).isEqualTo("7d");
+    }
+
+    @Test
+    void detachConsumerIsIdempotentAndUnseededChainsAreNotAnOrderingError() {
+        SrsMetaStore meta = new InMemoryStore().meta();
+        meta.create("chain", "7d");
+        meta.upsertConsumerOffset("chain", new ConsumerOffset("leaving", Map.of(), null));
+        meta.detachConsumer("chain", "leaving");
+
+        // Deliberately the opposite rule from every other mutator (see the ordering-error test below),
+        // and the removal path depends on it: each chain is detached independently so one failure does
+        // not strand the rest, which means a chain already detached — or gone — must cost nothing.
+        assertThatCode(() -> {
+            meta.detachConsumer("chain", "leaving");
+            meta.detachConsumer("never-mined", "leaving");
+        }).doesNotThrowAnyException();
+        assertThat(meta.read("chain").orElseThrow().consumerOffsets()).isEmpty();
+    }
+
+    @Test
+    void miningChainIdsWithConsumerFindsEveryChainCarryingItAndNoneForAStranger() {
+        SrsMetaStore meta = new InMemoryStore().meta();
+        meta.create("chain-a", "7d");
+        meta.create("chain-b", "7d");
+        meta.create("chain-c", "7d");
+        meta.upsertConsumerOffset("chain-a", new ConsumerOffset("shared", Map.of(), null));
+        meta.upsertConsumerOffset("chain-b", new ConsumerOffset("other", Map.of(), null));
+        meta.upsertConsumerOffset("chain-c", new ConsumerOffset("shared", Map.of(), null));
+
+        // Membership, not order: the lookup walks a hash map, so the order is unspecified. Every chain
+        // must be named — one missed is a cursor nothing later enumerates, pinning that chain's durable
+        // frontier for every other pipeline on it, with no error anywhere.
+        assertThat(meta.miningChainIdsWithConsumer("shared"))
+                .containsExactlyInAnyOrder("chain-a", "chain-c");
+        assertThat(meta.miningChainIdsWithConsumer("never-a-consumer")).isEmpty();
+    }
+
     @Test
     void metaMutateOnAnUnseededChainIsAnOrderingError() {
         SrsMetaStore meta = new InMemoryStore().meta();
@@ -628,6 +731,11 @@ class StorePortTest {
                         checkpoints.put(pipelineId, applied.next());
                     }
                     return outcome;
+                }
+
+                @Override
+                public void delete(String pipelineId) {
+                    checkpoints.remove(pipelineId);
                 }
             };
         }
@@ -770,6 +878,11 @@ class StorePortTest {
                 public List<String> pipelineIds() {
                     return List.copyOf(desired.keySet());
                 }
+
+                @Override
+                public void delete(String pipelineId) {
+                    desired.remove(pipelineId);
+                }
             };
         }
 
@@ -784,6 +897,11 @@ class StorePortTest {
                 @Override
                 public Optional<Observation> read(String pipelineId) {
                     return Optional.ofNullable(observations.get(pipelineId));
+                }
+
+                @Override
+                public void delete(String pipelineId) {
+                    observations.remove(pipelineId);
                 }
             };
         }
@@ -893,6 +1011,33 @@ class StorePortTest {
                     history.add(version);
                     srsMeta.put(miningChainId, new SrsMeta(current.miningChainId(), current.sourceReadOffset(),
                             current.consumerOffsets(), current.cdcStartPosition(), history, current.retention()));
+                }
+
+                @Override
+                public List<String> miningChainIdsWithConsumer(String pipelineId) {
+                    List<String> chains = new ArrayList<>();
+                    srsMeta.forEach((chainId, meta) -> {
+                        if (meta.consumerOffsets().stream()
+                                .anyMatch(offset -> offset.pipelineId().equals(pipelineId))) {
+                            chains.add(chainId);
+                        }
+                    });
+                    return chains;
+                }
+
+                @Override
+                public void detachConsumer(String miningChainId, String pipelineId) {
+                    // Idempotent, unlike the advancing mutators: an absent chain already satisfies the
+                    // end condition a detach states.
+                    SrsMeta current = srsMeta.get(miningChainId);
+                    if (current == null) {
+                        return;
+                    }
+                    List<ConsumerOffset> kept = current.consumerOffsets().stream()
+                            .filter(offset -> !offset.pipelineId().equals(pipelineId))
+                            .toList();
+                    srsMeta.put(miningChainId, new SrsMeta(current.miningChainId(), current.sourceReadOffset(),
+                            kept, current.cdcStartPosition(), current.schemaHistory(), current.retention()));
                 }
 
                 private SrsMeta require(String miningChainId) {

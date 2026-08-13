@@ -47,13 +47,18 @@ class McpStdioProcessTest {
             Map<?, ?> listed = readResponse(output, Duration.ofSeconds(10));
             assertThat(listed.get("id")).isEqualTo(2L);
             List<?> tools = (List<?>) ((Map<?, ?>) listed.get("result")).get("tools");
-            assertThat(tools).hasSize(10);
+            assertThat(tools).hasSize(11);
             assertThat(tools.stream()
                     .map(tool -> String.valueOf(((Map<?, ?>) tool).get("name")))
                     .toList())
-                    .contains("connector_get", "source_draft", "artifact_validate", "pipeline_logs")
+                    // artifact_get is asserted here, in a session negotiated by a real subprocess with no
+                    // write access, because that is the session a caller is in when it decides whether to
+                    // remove something: the read that supplies the precondition must not itself require
+                    // the privilege the precondition guards.
+                    .contains("connector_get", "source_draft", "artifact_validate", "artifact_get",
+                            "pipeline_logs")
                     .doesNotContain("source_create", "source_list", "source_get", "source_update", "source_delete",
-                            "artifact_apply", "pipeline_start");
+                            "artifact_apply", "pipeline_start", "artifact_delete");
 
             send(input, """
                     {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{

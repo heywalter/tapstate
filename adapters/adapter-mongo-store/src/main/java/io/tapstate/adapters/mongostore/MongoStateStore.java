@@ -102,6 +102,16 @@ public final class MongoStateStore implements StateStore {
         return new CasOutcome.Fenced(toCheckpoint(current).epoch());
     }
 
+    @Override
+    public void delete(String pipelineId) {
+        Objects.requireNonNull(pipelineId, "pipelineId");
+        // Unconditional by design: the fencing epoch guards transitions of a live pipeline, and this is
+        // reached only once the pipeline no longer exists, so there is no epoch left to hold. deleteOne on
+        // a missing _id removes nothing and reports so without failing, which is the no-op an unseeded
+        // pipeline is meant to be.
+        StoreIo.run(() -> collection.deleteOne(new Document("_id", pipelineId)));
+    }
+
     /** Maps a checkpoint to its stored document: the pipeline id as {@code _id}, the rest as fields. */
     static Document toDocument(CheckpointDoc checkpoint) {
         return new Document("_id", checkpoint.pipelineId())

@@ -19,6 +19,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -174,6 +175,68 @@ class MongoArtifactStoreIT {
             assertThat(store.list())
                     .extracting(Resource::id)
                     .containsExactlyInAnyOrder("orders", "orders_sync");
+        });
+    }
+
+    @Test
+    void aConditionalBatchWritesOnlyWhileEveryDeclaredVersionStillHolds() {
+        withStore((store, collection) -> {
+            Resource orders = PARSER.parse(ORDERS);
+            store.save(orders);
+            String declared = collection.find(new Document("_id", "orders")).first().getString("contentHash");
+            Resource edited = PARSER.parse(ORDERS.replace("localhost", "replica"));
+
+            assertThat(store.saveAll(List.of(edited), Map.of("orders", declared))).isEmpty();
+            String afterEdit = collection.find(new Document("_id", "orders")).first().getString("canonical");
+
+            // The version the caller declared has moved on. The batch must write none of itself — the
+            // valid sibling included, since the comparison happens inside the same transaction as the
+            // writes rather than before it.
+            assertThat(store.saveAll(
+                    List.of(PARSER.parse(ORDERS.replace("localhost", "stale-writer")), PARSER.parse(ORDERS_SYNC)),
+                    Map.of("orders", declared)))
+                    .contains("orders");
+            assertThat(collection.find(new Document("_id", "orders")).first().getString("canonical"))
+                    .isEqualTo(afterEdit);
+            assertThat(collection.find(new Document("_id", "orders_sync")).first())
+                    .as("the refused batch opened a transaction and committed none of it")
+                    .isNull();
+        });
+    }
+
+    @Test
+    void aDeclaredVersionForAnIdThatIsGoneRefusesRatherThanRecreatingIt() {
+        withStore((store, collection) -> {
+            Resource orders = PARSER.parse(ORDERS);
+            store.save(orders);
+            String declared = collection.find(new Document("_id", "orders")).first().getString("contentHash");
+            store.delete("orders", declared);
+
+            // Nothing is stored, so nothing equals the declared version. Upserting here would silently
+            // resurrect a resource whose author believes they are amending it.
+            assertThat(store.saveAll(List.of(PARSER.parse(ORDERS)), Map.of("orders", declared)))
+                    .contains("orders");
+            assertThat(collection.find(new Document("_id", "orders")).first()).isNull();
+        });
+    }
+
+    @Test
+    void aConditionalBatchComparesOnlyTheHashAndNeverReconstructsTheBody() {
+        withStore((store, collection) -> {
+            store.save(PARSER.parse(ORDERS));
+            // A sibling this version cannot parse. The comparison reads the hash field only, so it must
+            // not be dragged into a batch that merely declares a version of something else — otherwise
+            // one unreadable document would veto every conditional write in the store.
+            collection.insertOne(new Document("_id", "corrupt").append("kind", "source")
+                    .append("canonical", "not: [valid").append("contentHash", "0".repeat(64)));
+            String declared = collection.find(new Document("_id", "orders")).first().getString("contentHash");
+
+            assertThat(store.saveAll(
+                    List.of(PARSER.parse(ORDERS.replace("localhost", "replica"))),
+                    Map.of("orders", declared)))
+                    .isEmpty();
+            assertThat(collection.find(new Document("_id", "orders")).first().getString("canonical"))
+                    .isEqualTo(WRITER.write(PARSER.parse(ORDERS.replace("localhost", "replica"))));
         });
     }
 

@@ -32,11 +32,19 @@ public final class MongoAuditStore implements AuditStore {
         StoreIo.run(() -> collection.insertOne(toDocument(record)));
     }
 
-    /** Maps an audit record to its append-only document; the timestamp as epoch millis, the rest as fields. */
+    /**
+     * Maps an audit record to its append-only document; the timestamp as epoch millis, the rest as
+     * fields. The declared version precondition is appended only when the operation had one, so a
+     * record without it produces the same document shape every already-written record has.
+     */
     static Document toDocument(AuditRecord record) {
-        return new Document("ts", record.timestamp().toEpochMilli())
+        Document document = new Document("ts", record.timestamp().toEpochMilli())
                 .append("principal", record.principal())
                 .append("operationId", record.operationId())
                 .append("resourceId", record.resourceId());
+        if (record.expectedContentHash() != null) {
+            document.append("expectedContentHash", record.expectedContentHash());
+        }
+        return document;
     }
 }

@@ -5,6 +5,7 @@ import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.dsl.Interpolator;
 import io.tapstate.core.model.Resource;
 import io.tapstate.core.model.SourceResource;
+import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.schema.SchemaNavigator;
 import io.tapstate.messages.MessageCatalog;
 import org.jline.reader.EndOfFileException;
@@ -74,8 +75,9 @@ final class Repl {
      * runs the full local stack in either state until a server validate endpoint exists.
      */
     private static final List<String> ONLINE_VERBS = List.of(
-            "apply", "get", "ls", "start", "stop", "pause", "resume", "status", "metrics", "snapshot",
-            "logs", "test", "test-result", "discover-schema", "schema", "register", "connectors", "token");
+            "apply", "get", "delete", "ls", "start", "stop", "pause", "resume", "status", "metrics",
+            "snapshot", "logs", "test", "test-result", "discover-schema", "schema", "register",
+            "connectors", "token");
 
     private final CommandLine commandLine;
 
@@ -349,6 +351,14 @@ final class Repl {
         if (words.get(0).equals("token")) {
             return tokenOnline(words);
         }
+        // `delete` and `apply` each carry a precondition of their own (`--if-match <hash>`), so they parse
+        // their own words rather than falling into the positional-only guard below, which would refuse it.
+        if (words.get(0).equals("delete")) {
+            return deleteOnline(words);
+        }
+        if (words.get(0).equals("apply")) {
+            return applyOnline(words);
+        }
         // The two streaming sugars ride the read verbs over the websocket channel: `status --watch` and
         // `logs --follow`. They are the only dash-options a connected verb accepts, and only on their verb.
         if (words.get(0).equals("status") && words.contains("--watch")) {
@@ -589,7 +599,24 @@ final class Repl {
      */
     private int applyOnline(List<String> words) {
         PrintWriter err = commandLine.getErr();
-        Path target = words.size() > 1 ? workdir.resolve(words.get(1)).normalize() : workdir;
+        String ifMatch = null;
+        String operand = null;
+        for (int i = 1; i < words.size(); i++) {
+            String word = words.get(i);
+            if (word.equals("--if-match")) {
+                if (i + 1 >= words.size()) {
+                    return applyUsage("--if-match needs a hash");
+                }
+                ifMatch = words.get(++i);
+            } else if (word.startsWith("-")) {
+                return applyUsage("unknown option '" + word + "'");
+            } else if (operand == null) {
+                operand = word;
+            } else {
+                return applyUsage("unexpected operand '" + word + "'");
+            }
+        }
+        Path target = operand != null ? workdir.resolve(operand).normalize() : workdir;
         List<LocalDraft> drafts;
         try {
             drafts = collectDrafts(target);
@@ -607,8 +634,28 @@ final class Repl {
             err.flush();
             return Cli.EXIT_USAGE;
         }
+        if (ifMatch != null) {
+            // One hash names one version. Over a batch there is no resource it could be describing, and
+            // attaching it to one of them would leave the rest applied with no check at all — an edit
+            // landing on resources the caller was not thinking about. Refused before anything is sent.
+            if (drafts.size() != 1) {
+                MessageCatalog.Rendered rendered = MessageCatalog.bundled().render(
+                        CliError.IF_MATCH_NEEDS_ONE_RESOURCE, Map.of("count", drafts.size()));
+                err.println(Ansi.AUTO.string("@|bold,red error:|@") + " "
+                        + CliError.IF_MATCH_NEEDS_ONE_RESOURCE.code());
+                err.println("  " + rendered.message());
+                if (rendered.solution() != null) {
+                    err.println("  " + rendered.solution());
+                }
+                err.flush();
+                return Cli.EXIT_DIAGNOSTIC;
+            }
+            LocalDraft only = drafts.get(0);
+            drafts = List.of(new LocalDraft(only.source(), only.content(), ifMatch));
+        }
+        List<LocalDraft> submitted = drafts;
         ApplyOutcome outcome = withFailover(() ->
-                controlPlane.apply(session.landingNode(), session.credential(), drafts),
+                controlPlane.apply(session.landingNode(), session.credential(), submitted),
                 o -> o instanceof ApplyOutcome.Unreachable);
         PrintWriter out = commandLine.getOut();
         return switch (outcome) {
@@ -657,6 +704,252 @@ final class Repl {
             case GetOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
             case GetOutcome.Unreachable ignored -> reportRequestFailed();
         };
+    }
+
+    /**
+     * {@code delete <id> [--if-match <hash>]} — removes one stored artifact of any kind, for good.
+     *
+     * <p>Without {@code --if-match} the verb reads the artifact first and removes the version it just
+     * read. That is not the same as removing unconditionally: if the resource changes in between, the
+     * server refuses rather than discarding an edit nobody here has seen. Supplying the flag pins a
+     * version the caller already holds and skips the read.
+     *
+     * <p>{@code -o json|yaml} reports the removal as a document rather than a sentence, including the
+     * precondition that was actually used — which the caller has no other way to learn when the verb
+     * chose it. A refusal on those surfaces keeps the refusal's parameters, so a script can act on the
+     * same facts the text surface turns into a next step. Every other way the verb can fail answers as
+     * a document too, the implicit read's failures included: a machine surface that covers only some of
+     * them is one nothing can parse against.
+     *
+     * <p>The removal itself is sent once, to the landing node, and is never re-sent elsewhere. Reads
+     * here may be retried; this one may not, because a replay cannot tell its own first attempt's
+     * success apart from the resource never having been there.
+     */
+    private int deleteOnline(List<String> words) {
+        PrintWriter err = commandLine.getErr();
+        String id = null;
+        String ifMatch = null;
+        OutputFormat format = OutputFormat.TEXT;
+        for (int i = 1; i < words.size(); i++) {
+            String word = words.get(i);
+            if (word.equals("--if-match")) {
+                if (i + 1 >= words.size()) {
+                    return deleteUsage("--if-match needs a hash");
+                }
+                ifMatch = words.get(++i);
+            } else if (word.equals("-o") || word.equals("--output")) {
+                if (i + 1 >= words.size()) {
+                    return deleteUsage("-o needs a format");
+                }
+                OutputFormat chosen = outputFormat(words.get(++i));
+                if (chosen == null) {
+                    return deleteUsage("unknown output format '" + words.get(i) + "'");
+                }
+                format = chosen;
+            } else if (word.startsWith("-")) {
+                return deleteUsage("unknown option '" + word + "'");
+            } else if (id == null) {
+                id = word;
+            } else {
+                return deleteUsage("unexpected operand '" + word + "'");
+            }
+        }
+        if (id == null || id.isBlank()) {
+            return deleteUsage("missing operand");
+        }
+        final String target = id;
+
+        String kind = null;
+        if (ifMatch == null) {
+            GetOutcome read = withFailover(() ->
+                    controlPlane.get(session.landingNode(), session.credential(), target),
+                    o -> o instanceof GetOutcome.Unreachable);
+            switch (read) {
+                case GetOutcome.Found found -> {
+                    ifMatch = CanonicalHash.of(found.artifact().canonicalForm());
+                    kind = found.artifact().kind();
+                }
+                case GetOutcome.Absent ignored -> {
+                    if (format != OutputFormat.TEXT) {
+                        return renderDeleteErrorDocument(format, "artifact.not-found",
+                                "no artifact with id '" + target + "' is stored");
+                    }
+                    err.println("not found: " + target);
+                    err.flush();
+                    return Cli.EXIT_DIAGNOSTIC;
+                }
+                case GetOutcome.Rejected rejected -> {
+                    if (format != OutputFormat.TEXT) {
+                        return renderDeleteErrorDocument(format, rejected.code(), rejected.message());
+                    }
+                    return renderRejection(rejected.code(), rejected.message());
+                }
+                case GetOutcome.Unreachable ignored -> {
+                    if (format != OutputFormat.TEXT) {
+                        return renderDeleteErrorDocument(format, null, "the server is unreachable");
+                    }
+                    return reportRequestFailed();
+                }
+            }
+        }
+
+        String hash = ifMatch;
+        String removedKind = kind;
+        OutputFormat chosenFormat = format;
+        // The removal is sent once and never re-sent. Failing over replays it on another member, and a
+        // replay that follows a first attempt which landed but whose answer was lost comes back
+        // `artifact.not-found` — reporting the removal as failed at the exact moment it succeeded, and
+        // taking a scripted teardown down with it on the non-zero exit. A read may be retried freely;
+        // this is not one.
+        DeleteOutcome outcome =
+                controlPlane.delete(session.landingNode(), session.credential(), target, hash);
+        PrintWriter out = commandLine.getOut();
+        return switch (outcome) {
+            case DeleteOutcome.Removed removed -> {
+                if (chosenFormat == OutputFormat.TEXT) {
+                    out.println("deleted " + (removedKind == null ? "" : removedKind + "  ") + removed.id());
+                } else {
+                    Map<String, Object> document = new LinkedHashMap<>();
+                    document.put("id", removed.id());
+                    putIfPresent(document, "kind", removedKind);
+                    document.put("removed", true);
+                    document.put("expectedContentHash", hash);
+                    out.println(chosenFormat == OutputFormat.JSON
+                            ? JsonOut.write(document) : YamlOut.write(document));
+                }
+                out.flush();
+                yield Cli.EXIT_OK;
+            }
+            case DeleteOutcome.Rejected rejected -> renderDeleteRefusal(rejected, chosenFormat, target);
+            case DeleteOutcome.Unreachable ignored -> reportUnresolvedRemoval(target, chosenFormat);
+        };
+    }
+
+    /**
+     * Reports a removal that got no answer. Nothing was retried, so whether it was applied is genuinely
+     * unknown, and the report says so rather than picking one of the two and sounding certain: a reply
+     * that never arrived is not evidence the request never landed. Reading the artifact settles it,
+     * which is why the next step is named here.
+     */
+    private int reportUnresolvedRemoval(String target, OutputFormat format) {
+        String message = "no answer from " + hostPort(session.landingNode())
+                + "; the removal of '" + target + "' may or may not have been applied";
+        if (format != OutputFormat.TEXT) {
+            return renderDeleteErrorDocument(format, null, message);
+        }
+        PrintWriter err = commandLine.getErr();
+        err.println("request failed: " + message);
+        err.println("  run `get " + target + "` to find out whether it is gone.");
+        err.flush();
+        return Cli.EXIT_DIAGNOSTIC;
+    }
+
+    /**
+     * Writes one delete failure as a machine document on the surface the caller asked for. Every way
+     * this verb can fail answers in the same shape — the implicit pre-read's failures included, since
+     * that read is an implementation detail of the verb rather than a separate command the caller
+     * chose. A {@code -o json} contract that holds for the refusals and not for the rest is one a
+     * script cannot rely on at all.
+     */
+    private int renderDeleteErrorDocument(OutputFormat format, String code, String message) {
+        PrintWriter out = commandLine.getOut();
+        Map<String, Object> document = errorDocument(code, message);
+        out.println(format == OutputFormat.JSON ? JsonOut.write(document) : YamlOut.write(document));
+        out.flush();
+        return Cli.EXIT_DIAGNOSTIC;
+    }
+
+    private int applyUsage(String reason) {
+        PrintWriter err = commandLine.getErr();
+        err.println("apply: " + reason + " (usage: apply [<path>] [--if-match <hash>])");
+        err.flush();
+        return Cli.EXIT_USAGE;
+    }
+
+    private int deleteUsage(String reason) {
+        PrintWriter err = commandLine.getErr();
+        err.println("delete: " + reason
+                + " (usage: delete <id> [--if-match <hash>] [-o text|json|yaml])");
+        err.flush();
+        return Cli.EXIT_USAGE;
+    }
+
+    /**
+     * Renders a refused removal, following the coded message with the next step the refusal's own
+     * parameters name. Both grounds are acted on, not merely reported: what is still referencing the
+     * resource, and what state the pipeline is really in — neither of which the caller can be expected
+     * to work out from the code alone, and neither of which this verb does anything about on its own.
+     */
+    private int renderDeleteRefusal(DeleteOutcome.Rejected rejected, OutputFormat format, String target) {
+        if (format != OutputFormat.TEXT) {
+            // The machine surfaces carry the parameters too, not just the code and message. They are what
+            // the text surface below turns into the next step, so dropping them would leave a script with
+            // strictly less to act on than a person reading the same refusal.
+            Map<String, Object> error = errorObject(rejected.code(), rejected.message());
+            if (!rejected.params().isEmpty()) {
+                error.put("params", new LinkedHashMap<>(rejected.params()));
+            }
+            Map<String, Object> document = new LinkedHashMap<>();
+            document.put("error", error);
+            PrintWriter out = commandLine.getOut();
+            out.println(format == OutputFormat.JSON ? JsonOut.write(document) : YamlOut.write(document));
+            out.flush();
+            return Cli.EXIT_DIAGNOSTIC;
+        }
+        int status = renderRejection(rejected.code(), rejected.message());
+        PrintWriter err = commandLine.getErr();
+        switch (rejected.code()) {
+            case "artifact.in-use" -> {
+                Object referrers = rejected.params().get("referrers");
+                if (referrers != null) {
+                    err.println("  still referenced by: " + renderReferrers(referrers));
+                    err.println("  remove those first, or keep this resource.");
+                }
+            }
+            case "artifact.pipeline-not-stopped" -> {
+                Object actual = rejected.params().get("actual");
+                Object desired = rejected.params().get("desired");
+                if (actual != null || desired != null) {
+                    err.println("  pipeline state: actual=" + actual + ", desired=" + desired);
+                    // The id comes from what was typed, not from the refusal: this line is a command
+                    // meant to be pasted, and a refusal that names no id would otherwise render one
+                    // that cannot run.
+                    err.println("  run `stop " + rejected.params().getOrDefault("id", target)
+                            + "` and wait for it to settle.");
+                }
+            }
+            case "artifact.version-conflict" ->
+                    err.println("  it changed since you read it; read it again and redo the removal.");
+            case "artifact.reclaim-incomplete" -> {
+                // Not a refusal: the resource is gone. Saying "retry" here — the next step every other
+                // branch implies — sends the operator at a removal that can now only answer not-found,
+                // and the residue that does need clearing goes unmentioned.
+                err.println("  the removal stands: '" + target + "' is gone. Do not retry it.");
+                Object residue = rejected.params().get("residue");
+                if (residue != null) {
+                    err.println("  left behind, clear by hand: " + renderReferrers(residue));
+                }
+                if ("pipeline-live".equals(String.valueOf(rejected.params().get("reason")))) {
+                    // Nothing was cleared here on purpose, and clearing it by hand while the job runs
+                    // would discard the fencing epoch that keeps it from colliding with a later
+                    // pipeline under the same id. Stopping comes first.
+                    err.println("  it was started again while the removal ran: `stop " + target
+                            + "` first, or its job keeps running with no artifact.");
+                }
+            }
+            default -> {
+                // Every other refusal is fully said by its own rendered message.
+            }
+        }
+        err.flush();
+        return status;
+    }
+
+    private static String renderReferrers(Object referrers) {
+        if (referrers instanceof List<?> rows) {
+            return rows.stream().map(String::valueOf).collect(Collectors.joining(", "));
+        }
+        return String.valueOf(referrers);
     }
 
     /**

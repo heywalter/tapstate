@@ -3,6 +3,7 @@ package io.tapstate.control.core;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ControlOperationsTest {
@@ -17,6 +18,7 @@ class ControlOperationsTest {
                         "artifact.validate",
                         "artifact.get",
                         "artifact.list",
+                        "artifact.delete",
                         "source.create",
                         "source.draft",
                         "source.list",
@@ -53,6 +55,9 @@ class ControlOperationsTest {
         assertThat(registry.resolve("artifact.validate").scope()).isEqualTo(Scope.READ);
         assertThat(registry.resolve("artifact.get").scope()).isEqualTo(Scope.READ);
         assertThat(registry.resolve("artifact.list").scope()).isEqualTo(Scope.READ);
+        // artifact.delete removes a stored resource for good, so it is the most consequential write in
+        // the domain rather than a lesser one; nothing about it is read-only.
+        assertThat(registry.resolve("artifact.delete").scope()).isEqualTo(Scope.WRITE);
         assertThat(registry.resolve("source.create").scope()).isEqualTo(Scope.WRITE);
         assertThat(registry.resolve("source.draft").scope()).isEqualTo(Scope.READ);
         assertThat(registry.resolve("source.list").scope()).isEqualTo(Scope.READ);
@@ -97,6 +102,7 @@ class ControlOperationsTest {
         for (String id :
                 List.of(
                         "artifact.apply",
+                        "artifact.delete",
                         "source.create",
                         "source.update",
                         "source.delete",
@@ -140,13 +146,13 @@ class ControlOperationsTest {
         // A scope statement about the registry alone: the CLI face opens every registered operation and
         // clips none of them below POC. Whether each one has a verb behind it is not knowable from here
         // — control-core cannot see the CLI — and is gated where both are visible, in arch-tests.
-        assertThat(registry.exposedOn(Frontend.CLI, Maturity.POC)).hasSize(32);
+        assertThat(registry.exposedOn(Frontend.CLI, Maturity.POC)).hasSize(33);
         assertThat(registry.all()).allSatisfy(op ->
                 assertThat(op.exposure()).as(op.id()).containsEntry(Frontend.CLI, Maturity.POC));
     }
 
     @Test
-    void betaMcpFaceIsTheOnlinePipelineClosureAndRestExposureRemainsEmpty() {
+    void betaMcpFaceIsTheOnlineAuthoringClosureAndRestExposureRemainsEmpty() {
         assertThat(registry.exposedOn(Frontend.MCP, Maturity.BETA))
                 .extracting(Operation::id)
                 .containsExactlyInAnyOrder(
@@ -154,9 +160,52 @@ class ControlOperationsTest {
                         "source.draft",
                         "connection.test", "connection.test-result",
                         "connection.discover-schema", "connection.schema",
-                        "artifact.validate", "artifact.apply",
+                        "artifact.validate", "artifact.apply", "artifact.delete", "artifact.get",
                         "pipeline.start", "pipeline.stop", "pipeline.status",
                         "pipeline.metrics", "pipeline.snapshot", "pipeline.logs");
         assertThat(registry.exposedOn(Frontend.REST, Maturity.GA)).isEmpty();
+    }
+
+    /**
+     * The precondition a removal demands has to be obtainable on the same face that offers the removal.
+     * artifact.delete requires a content hash, and a remote model cannot compute SHA-256 for itself, so
+     * its only route to one is reading the artifact here. Pinning the implication — "delete requires the
+     * hash" therefore "get is exposed on this face" — is what stops the two from drifting apart: the
+     * removal shipped on MCP while the read stayed CLI-only, which left the verb callable in principle
+     * and unusable in fact for every kind whose structured read does not carry a hash of its own.
+     */
+    @Test
+    void theMcpFaceCarriesAReadForThePreconditionItsRemovalDemands() {
+        Map<String, Object> deleteRequest =
+                ControlApiSchema.resolve(registry.resolve("artifact.delete").schema().params());
+        List<?> required = (List<?>) deleteRequest.get("required");
+        assertThat(required.stream().map(String::valueOf).toList()).contains("expectedContentHash");
+
+        Operation get = registry.resolve("artifact.get");
+        assertThat(get.exposure()).containsEntry(Frontend.MCP, Maturity.BETA);
+        assertThat(get.scope())
+                .as("the read that supplies a precondition must not itself need write access")
+                .isEqualTo(Scope.READ);
+        assertThat(get.audited())
+                .as("a read leaves no audit record")
+                .isFalse();
+    }
+
+    /**
+     * artifact.delete is the first operation on the MCP face that destroys a named resource, so its
+     * exposure is pinned on its own rather than left to the set assertion above: a remote model may reach
+     * it only in a session that was explicitly started with write access, which is what the WRITE scope
+     * buys — the sidecar filters by scope, so a delete silently re-scoped to READ would become callable
+     * in every read-only session.
+     */
+    @Test
+    void theDestructiveArtifactVerbIsWriteScopedOnTheMcpFace() {
+        Operation delete = registry.resolve("artifact.delete");
+        assertThat(delete.exposure()).containsEntry(Frontend.MCP, Maturity.BETA);
+        assertThat(delete.scope())
+                .as("a READ-scoped delete would be exposed in read-only MCP sessions")
+                .isEqualTo(Scope.WRITE);
+        assertThat(delete.schema()).as("an MCP operation must carry a schema ref").isNotNull();
+        assertThat(delete.description()).as("an MCP tool must carry a description").isNotBlank();
     }
 }
