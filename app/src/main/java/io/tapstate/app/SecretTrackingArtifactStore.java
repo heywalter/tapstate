@@ -71,6 +71,18 @@ final class SecretTrackingArtifactStore implements ArtifactStore {
     }
 
     @Override
+    public synchronized Optional<String> saveAll(
+            List<Resource> artifacts, Map<String, String> expectedContentHashes) {
+        Optional<String> conflicted = delegate.saveAll(artifacts, expectedContentHashes);
+        // A refused batch wrote nothing, so nothing it named is in the store to track — tracking it
+        // would teach the redactor secrets that were never stored.
+        if (conflicted.isEmpty()) {
+            artifacts.forEach(this::track);
+        }
+        return conflicted;
+    }
+
+    @Override
     public Optional<Resource> get(String id) {
         return delegate.get(id);
     }

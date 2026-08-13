@@ -5,6 +5,7 @@ import com.mongodb.MongoException;
 import com.mongodb.MongoWriteException;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.model.FindOneAndUpdateOptions;
+import com.mongodb.client.model.Projections;
 import com.mongodb.client.model.ReturnDocument;
 import com.mongodb.client.result.UpdateResult;
 import io.tapstate.core.common.TapstateException;
@@ -182,6 +183,49 @@ public final class MongoSrsMetaStore implements SrsMetaStore {
     static Document snapshotCompleteUpdate(String table) {
         Objects.requireNonNull(table, "table");
         return new Document("$addToSet", new Document("snapshotCompletedTables", table));
+    }
+
+    @Override
+    public List<String> miningChainIdsWithConsumer(String pipelineId) {
+        // Asked of the chains, not of the consumer: a chain carries its consumers, so the presence of the
+        // dot-free pipeline id under consumerOffsets is itself the membership test. Only the id is read,
+        // never the record, so enumerating never reconstructs — and so never fails — on a corrupt document.
+        Document filter = consumerPresenceFilter(pipelineId);
+        return StoreIo.call(() -> collection.find(filter)
+                .projection(Projections.include("_id"))
+                .map(document -> document.getString("_id"))
+                .into(new ArrayList<>()));
+    }
+
+    @Override
+    public void detachConsumer(String miningChainId, String pipelineId) {
+        Objects.requireNonNull(miningChainId, "miningChainId");
+        // Deliberately not routed through update(): a detach is idempotent, so an absent chain is the end
+        // condition already met rather than the ordering error the advancing mutators treat it as.
+        Document filter = new Document("_id", miningChainId);
+        StoreIo.run(() -> collection.updateOne(filter, detachConsumerUpdate(pipelineId)));
+    }
+
+    /**
+     * The membership test for one consumer: a chain matches when it carries a cursor at
+     * {@code consumerOffsets.<pipelineId>}. The pipeline id is a resource id the grammar forbids a dot in,
+     * so the dotted path addresses exactly one field and cannot reach into a neighbouring consumer's.
+     */
+    static Document consumerPresenceFilter(String pipelineId) {
+        Objects.requireNonNull(pipelineId, "pipelineId");
+        return new Document("consumerOffsets." + pipelineId, new Document("$exists", true));
+    }
+
+    /**
+     * The path-scoped update that removes one consumer from a chain: an {@code $unset} of
+     * {@code consumerOffsets.<pipelineId>} alone, so every other consumer's cursor and the chain's own
+     * offset, cdc start position and schema history survive it untouched. Removing the whole entry rather
+     * than blanking its positions is what takes the departing consumer out of the two minimums that would
+     * otherwise still fold it in.
+     */
+    static Document detachConsumerUpdate(String pipelineId) {
+        Objects.requireNonNull(pipelineId, "pipelineId");
+        return new Document("$unset", new Document("consumerOffsets." + pipelineId, ""));
     }
 
     /**

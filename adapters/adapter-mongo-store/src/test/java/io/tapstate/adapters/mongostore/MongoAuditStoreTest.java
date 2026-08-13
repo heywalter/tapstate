@@ -32,6 +32,26 @@ class MongoAuditStoreTest {
     }
 
     @Test
+    void documentCarriesTheDeclaredVersionPreconditionWhenTheOperationHasOne() {
+        AuditRecord record =
+                new AuditRecord(TS, "alice", "artifact.delete", "orders-source", "a".repeat(64));
+
+        assertThat(MongoAuditStore.toDocument(record).getString("expectedContentHash"))
+                .isEqualTo("a".repeat(64));
+    }
+
+    @Test
+    void aRecordWithNoPreconditionOmitsTheKeyRatherThanStoringNull() {
+        // Every already-written document lacks this key, so a record with nothing to declare has to
+        // produce the same shape as one of those. Writing an explicit null instead would split the log
+        // into two shapes that a reader has to tell apart for no gain.
+        Document document =
+                MongoAuditStore.toDocument(new AuditRecord(TS, "alice", "token.create", "tok-1"));
+
+        assertThat(document.containsKey("expectedContentHash")).isFalse();
+    }
+
+    @Test
     void documentCarriesNoIdSoEachRecordIsADistinctAppend() {
         Document document = MongoAuditStore.toDocument(new AuditRecord(TS, "alice", "artifact.apply", "orders-source"));
 

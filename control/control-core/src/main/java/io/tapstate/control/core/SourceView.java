@@ -24,11 +24,11 @@ public record SourceView(
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(connector, "connector");
         Objects.requireNonNull(contentHash, "contentHash");
-        config = SourceRepresentation.copyJsonMap(config, false);
+        config = SourceDraft.copyJsonMap(config, false);
         configuredSecrets = configuredSecrets == null ? List.of() : List.copyOf(configuredSecrets);
         tables = tables == null ? null : List.copyOf(tables);
-        options = SourceRepresentation.copyJsonMap(options, true);
-        experimental = SourceRepresentation.copyJsonMap(experimental, true);
+        options = SourceDraft.copyJsonMap(options, true);
+        experimental = SourceDraft.copyJsonMap(experimental, true);
     }
 
     @Override

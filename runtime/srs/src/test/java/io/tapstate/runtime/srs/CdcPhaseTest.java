@@ -324,6 +324,16 @@ class CdcPhaseTest {
 
     /** A meta store that records the sequence of source-read-offset advances; the other facets are unused here. */
     private static final class RecordingMeta implements SrsMetaStore {
+        @Override
+        public java.util.List<String> miningChainIdsWithConsumer(String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
+        @Override
+        public void detachConsumer(String miningChainId, String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
         final List<String> advances = new ArrayList<>();
 
         @Override

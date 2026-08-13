@@ -41,4 +41,16 @@ public interface StateStore {
      * {@link CasOutcome.Fenced} carrying the stored epoch that superseded the writer.
      */
     CasOutcome compareAndSwap(String pipelineId, long expectedEpoch, String nextStateJson, Instant touchTime);
+
+    /**
+     * Removes a pipeline's checkpoint, discarding its fencing epoch along with it. That discard is the
+     * point rather than a side effect: an id whose pipeline is gone must not hand a later pipeline of the
+     * same id an epoch — and a state — accumulated by something else entirely. It is legal only once the
+     * pipeline itself no longer exists, which is why no transition path offers it.
+     *
+     * <p>Removing a checkpoint that is not there is a no-op, not an error: a pipeline that never ran was
+     * never seeded, and the caller reclaiming after a removal should not have to ask first — nor should a
+     * second attempt behave differently from the first.
+     */
+    void delete(String pipelineId);
 }

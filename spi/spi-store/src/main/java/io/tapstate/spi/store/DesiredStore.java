@@ -31,4 +31,15 @@ public interface DesiredStore {
      * a single corrupt document; a corrupt intent surfaces per pipeline when its {@link #read} is taken.
      */
     List<String> pipelineIds();
+
+    /**
+     * Removes a pipeline's desired intent, so {@link #pipelineIds} no longer offers it to the converge
+     * side. This is what keeps a removed pipeline from being reconciled forever against an artifact that
+     * no longer exists.
+     *
+     * <p>Removing an intent that is not there is a no-op, not an error: a pipeline that was never given
+     * a target state has none to remove, and the caller reclaiming after a removal should not have to
+     * ask first — nor should a second attempt behave differently from the first.
+     */
+    void delete(String pipelineId);
 }

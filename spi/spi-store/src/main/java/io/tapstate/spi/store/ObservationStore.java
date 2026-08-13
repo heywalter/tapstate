@@ -21,4 +21,14 @@ public interface ObservationStore {
 
     /** Returns the current observation for a pipeline, or empty if none has been published. */
     Optional<Observation> read(String pipelineId);
+
+    /**
+     * Removes a pipeline's observation, so the read faces stop projecting a pipeline that no longer
+     * exists.
+     *
+     * <p>Removing an observation that is not there is a no-op, not an error: a pipeline that never
+     * converged published none, and the caller reclaiming after a removal should not have to ask first —
+     * nor should a second attempt behave differently from the first.
+     */
+    void delete(String pipelineId);
 }

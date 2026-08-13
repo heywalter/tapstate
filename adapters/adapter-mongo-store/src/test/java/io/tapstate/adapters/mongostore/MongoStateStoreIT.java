@@ -194,6 +194,37 @@ class MongoStateStoreIT {
         });
     }
 
+    @Test
+    void deletingACheckpointTakesTheFencingEpochWithItSoTheIdStartsCleanIfReused() {
+        withStore(store -> {
+            store.create(PIPELINE, "{\"state\":\"NEW\"}", T0);
+            store.compareAndSwap(PIPELINE, 0, "{\"state\":\"RUNNING\"}", T0.plusSeconds(1));
+            store.compareAndSwap(PIPELINE, 1, "{\"state\":\"STOPPED\"}", T0.plusSeconds(2));
+
+            store.delete(PIPELINE);
+
+            assertThat(store.read(PIPELINE)).isEmpty();
+            // A later pipeline applied under the same id must not inherit an epoch — or a state — that a
+            // different pipeline accumulated. Reseeding proves the history really left with the document.
+            store.create(PIPELINE, "{\"state\":\"NEW\"}", T0.plusSeconds(3));
+            CheckpointDoc reseeded = store.read(PIPELINE).orElseThrow();
+            assertThat(reseeded.epoch()).isZero();
+            assertThat(reseeded.stateJson()).isEqualTo("{\"state\":\"NEW\"}");
+        });
+    }
+
+    @Test
+    void deletingAnUnseededPipelineIsANoOp() {
+        withStore(store -> {
+            store.delete(PIPELINE);
+            store.create(PIPELINE, "{\"state\":\"NEW\"}", T0);
+            store.delete(PIPELINE);
+            store.delete(PIPELINE);
+
+            assertThat(store.read(PIPELINE)).isEmpty();
+        });
+    }
+
     private static Callable<CasOutcome> racingSwap(MongoStateStore store, CountDownLatch startLine, String next) {
         return () -> {
             startLine.await();

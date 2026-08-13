@@ -44,6 +44,11 @@ class PipelineObservationQueryServiceTest {
             public Optional<Observation> read(String pipelineId) {
                 return Optional.ofNullable(map.get(pipelineId));
             }
+
+            @Override
+            public void delete(String pipelineId) {
+                map.remove(pipelineId);
+            }
         };
     }
 

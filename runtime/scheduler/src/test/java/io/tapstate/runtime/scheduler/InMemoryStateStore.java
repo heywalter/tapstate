@@ -18,6 +18,11 @@ import java.util.Optional;
  * failover that a single node never produces on its own.
  */
 final class InMemoryStateStore implements StateStore {
+    @Override
+    public void delete(String pipelineId) {
+        throw new UnsupportedOperationException("removal is not exercised by this double");
+    }
+
 
     private final Map<String, CheckpointDoc> docs = new HashMap<>();
     private Runnable beforeSwap = () -> {};

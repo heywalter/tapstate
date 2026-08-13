@@ -234,6 +234,16 @@ class SrsCoordinatorTest {
      * the durable store. {@code create} is insert-only, matching the contract.
      */
     private static final class FakeMeta implements SrsMetaStore {
+        @Override
+        public java.util.List<String> miningChainIdsWithConsumer(String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
+        @Override
+        public void detachConsumer(String miningChainId, String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
         final Map<String, String> created = new LinkedHashMap<>();
         final Map<String, SrsMeta> records = new LinkedHashMap<>();
         final List<String> mutations = new ArrayList<>();

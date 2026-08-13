@@ -136,6 +136,31 @@ final class InMemorySrsMetaStore implements SrsMetaStore {
                 m.schemaHistory(), m.retention(), next, m.epoch(), m.snapshotEpoch()));
     }
 
+    @Override
+    public synchronized List<String> miningChainIdsWithConsumer(String pipelineId) {
+        List<String> chains = new ArrayList<>();
+        records.forEach((chainId, m) -> {
+            if (m.consumerOffsets().stream().anyMatch(c -> c.pipelineId().equals(pipelineId))) {
+                chains.add(chainId);
+            }
+        });
+        return chains;
+    }
+
+    @Override
+    public synchronized void detachConsumer(String miningChainId, String pipelineId) {
+        // Idempotent, unlike the advancing mutators: an absent chain already satisfies what a detach states.
+        SrsMeta m = records.get(miningChainId);
+        if (m == null) {
+            return;
+        }
+        List<ConsumerOffset> next = new ArrayList<>(m.consumerOffsets());
+        next.removeIf(c -> c.pipelineId().equals(pipelineId));
+        records.put(miningChainId, new SrsMeta(
+                m.miningChainId(), m.sourceReadOffset(), next, m.cdcStartPosition(),
+                m.schemaHistory(), m.retention()));
+    }
+
     private SrsMeta require(String miningChainId) {
         SrsMeta m = records.get(miningChainId);
         if (m == null) {

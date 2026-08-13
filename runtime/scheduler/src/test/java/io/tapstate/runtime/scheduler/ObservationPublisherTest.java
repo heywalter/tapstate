@@ -544,6 +544,11 @@ class ObservationPublisherTest {
 
     /** In-memory state store double: seedable checkpoints, read-only for what the publisher needs. */
     private static final class MutableStateStore implements StateStore {
+        @Override
+        public void delete(String pipelineId) {
+            throw new UnsupportedOperationException("removal is not exercised by this double");
+        }
+
 
         private final Map<String, CheckpointDoc> docs = new HashMap<>();
 
@@ -569,6 +574,11 @@ class ObservationPublisherTest {
 
     /** In-memory observation store double. */
     private static final class RecordingObservationStore implements ObservationStore {
+        @Override
+        public void delete(String pipelineId) {
+            throw new UnsupportedOperationException("removal is not exercised by this double");
+        }
+
 
         private final Map<String, Observation> docs = new HashMap<>();
 

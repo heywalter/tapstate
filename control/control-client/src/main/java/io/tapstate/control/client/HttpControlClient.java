@@ -49,7 +49,7 @@ public final class HttpControlClient implements AutoCloseable {
     }
 
     public ControlResponse get(URI baseUrl, String token, String path) {
-        return exchange(baseUrl, token, path, null, RequestBudget.LIGHT);
+        return exchange(baseUrl, token, path, "GET", null, null, RequestBudget.LIGHT);
     }
 
     public ControlResponse post(
@@ -57,14 +57,27 @@ public final class HttpControlClient implements AutoCloseable {
         HttpRequest.BodyPublisher publisher = body == null
                 ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofString(JsonWriter.write(body), StandardCharsets.UTF_8);
-        return exchange(baseUrl, token, path, publisher, budget);
+        return exchange(baseUrl, token, path, "POST", publisher, null, budget);
+    }
+
+    /**
+     * Removes the resource at {@code path}, carrying {@code expectedContentHash} as a quoted entity tag
+     * so the server can refuse a caller holding a stale version. A null hash sends no {@code If-Match} at
+     * all rather than an empty one: "I supplied no precondition" and "I supplied a malformed one" are
+     * different refusals, and the second would misreport the first.
+     */
+    public ControlResponse delete(URI baseUrl, String token, String path, String expectedContentHash) {
+        String ifMatch = expectedContentHash == null ? null : "\"" + expectedContentHash + "\"";
+        return exchange(baseUrl, token, path, "DELETE", null, ifMatch, RequestBudget.LIGHT);
     }
 
     private ControlResponse exchange(
             URI baseUrl,
             String token,
             String path,
+            String method,
             HttpRequest.BodyPublisher body,
+            String ifMatch,
             RequestBudget budget) {
         Objects.requireNonNull(baseUrl, "baseUrl");
         Objects.requireNonNull(token, "token");
@@ -79,10 +92,13 @@ public final class HttpControlClient implements AutoCloseable {
                     .timeout(requestTimeout)
                     .header("Authorization", "Bearer " + token)
                     .header("Accept", "application/json");
+            if (ifMatch != null) {
+                request.header("If-Match", ifMatch);
+            }
             if (body == null) {
-                request.GET();
+                request.method(method, HttpRequest.BodyPublishers.noBody());
             } else {
-                request.header("Content-Type", "application/json").POST(body);
+                request.header("Content-Type", "application/json").method(method, body);
             }
             CompletableFuture<HttpResponse<String>> future = client.sendAsync(
                     request.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));

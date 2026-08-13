@@ -7,6 +7,7 @@ import io.tapstate.control.core.ControlOperations;
 import io.tapstate.control.core.Operation;
 import io.tapstate.control.core.Scope;
 import io.tapstate.core.common.JsonReader;
+import io.tapstate.core.common.JsonWriter;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -36,6 +37,7 @@ class McpOperationExecutorTest {
                     && exchange.getRequestURI().getPath().equals("/api/connectors/mysql")) {
                 answer(exchange, 200, """
                         {"id":"mysql","origin":"registered","runtimeAvailable":true,
+                         "config":[],
                          "spec":{"contentHash":"abc123","text":"{}","unavailable":null}}
                         """);
             } else {
@@ -45,8 +47,6 @@ class McpOperationExecutorTest {
         try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
             McpOperationExecutor executor = new McpOperationExecutor(
                     baseOf(server), "token", Map.of(), client);
-            Map<String, Object> source = Map.of(
-                    "id", "orders", "connector", "mysql", "config", Map.of());
             Map<String, Object> connection = Map.of(
                     "id", "orders", "connectorId", "mysql", "settings", Map.of());
             Map<String, Object> pipeline = Map.of("id", "orders");
@@ -56,15 +56,16 @@ class McpOperationExecutorTest {
             List<Map.Entry<io.tapstate.control.core.Operation, Map<String, Object>>> calls = List.of(
                     Map.entry(ControlOperations.CONNECTOR_LIST, Map.of()),
                     Map.entry(ControlOperations.CONNECTOR_GET, Map.of("id", "mysql")),
-                    Map.entry(ControlOperations.SOURCE_LIST, Map.of()),
-                    Map.entry(ControlOperations.SOURCE_GET, Map.of("id", "orders")),
-                    Map.entry(ControlOperations.SOURCE_DRAFT, source),
+                    Map.entry(ControlOperations.SOURCE_DRAFT, Map.of(
+                            "id", "orders", "connector", "mysql", "config", Map.of("host", "db"))),
                     Map.entry(ControlOperations.CONNECTION_TEST, connection),
                     Map.entry(ControlOperations.CONNECTION_TEST_RESULT, Map.of("id", "orders")),
                     Map.entry(ControlOperations.CONNECTION_DISCOVER_SCHEMA, connection),
                     Map.entry(ControlOperations.CONNECTION_SCHEMA, Map.of("id", "orders")),
                     Map.entry(ControlOperations.ARTIFACT_VALIDATE, Map.of("drafts", List.of())),
                     Map.entry(ControlOperations.ARTIFACT_APPLY, Map.of("drafts", List.of())),
+                    Map.entry(ControlOperations.ARTIFACT_DELETE,
+                            Map.of("id", "orders", "expectedContentHash", "a".repeat(64))),
                     Map.entry(ControlOperations.PIPELINE_START, pipeline),
                     Map.entry(ControlOperations.PIPELINE_STOP, pipeline),
                     Map.entry(ControlOperations.PIPELINE_STATUS, pipeline),
@@ -79,46 +80,14 @@ class McpOperationExecutorTest {
             }
 
             assertThat(paths).contains(
-                    "/api/connectors", "/api/connectors/mysql", "/api/sources:draft", "/api/sources",
-                    "/api/sources/orders", "/api/connections:test",
+                    "/api/connectors", "/api/connectors/mysql", "/api/connections:test",
+                    "/api/sources:draft",
                     "/api/connections/orders/test-result", "/api/connections:discover-schema",
                     "/api/connections/orders/schema", "/api/artifacts:validate", "/api/artifacts:apply",
+                    "/api/artifacts/orders",
                     "/api/pipelines/orders:start", "/api/pipelines/orders:stop",
                     "/api/pipelines/orders/status", "/api/pipelines/orders/metrics",
                     "/api/pipelines/orders/snapshot", "/api/pipelines/orders/logs?limit=200");
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    void sourceDraftRoutesOnePostWithoutAConnectorLookup() throws Exception {
-        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
-        AtomicReference<String> path = new AtomicReference<>();
-        AtomicInteger requests = new AtomicInteger();
-        HttpServer server = server(exchange -> {
-            requests.incrementAndGet();
-            path.set(exchange.getRequestURI().toString());
-            posted.set((Map<?, ?>) JsonReader.parse(new String(
-                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-            answer(exchange, 200, "{\"yaml\":\"version: tapstate/v1\\nkind: source\\n\"}");
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of(), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
-                    Map.of("id", "orders", "connector", "mysql",
-                            "config", Map.of("password", "draft-secret")));
-
-            assertThat(result.error()).isFalse();
-            assertThat(result.body()).containsEntry("yaml", "version: tapstate/v1\nkind: source\n");
-            assertThat(requests.get()).isEqualTo(1);
-            assertThat(path.get()).isEqualTo("/api/sources:draft");
-            assertThat(posted.get().get("id")).isEqualTo("orders");
-            assertThat(posted.get().get("connector")).isEqualTo("mysql");
-            assertThat(((Map<?, ?>) posted.get().get("config")).get("password"))
-                    .isEqualTo("draft-secret");
         } finally {
             server.stop(0);
         }
@@ -135,6 +104,63 @@ class McpOperationExecutorTest {
             assertThat(result.error()).isTrue();
             assertThat(result.body()).containsEntry("code", "control.unreachable");
         }
+    }
+
+    @Test
+    void sourceDraftExpandsOnlyConfigBeforeSendingItToTheServer() throws Exception {
+        SourceDraftExchange exchange = executeSourceDraft(
+                Map.of("MYSQL_PASSWORD", "expanded-secret"),
+                Map.of("id", "${MYSQL_PASSWORD}", "connector", "mysql", "mode", "snapshot",
+                        "config", Map.of("password", "${MYSQL_PASSWORD}")),
+                "{\"id\":\"mysql\",\"config\":[{\"name\":\"password\",\"secret\":true}]}",
+                "{\"yaml\":\"version: tapstate/v1\\nkind: source\\nid: orders\\nconnector: mysql\\n"
+                        + "config:\\n  password: expanded-secret\\n\"}");
+
+        assertThat(exchange.result().error()).isFalse();
+        assertThat(exchange.posted().get("mode")).isEqualTo("snapshot");
+        assertThat(exchange.posted().get("id")).isEqualTo("${MYSQL_PASSWORD}");
+        assertThat(((Map<?, ?>) exchange.posted().get("config")).get("password"))
+                .isEqualTo("expanded-secret");
+        assertThat(exchange.result().body().get("yaml")).isEqualTo("version: tapstate/v1\n"
+                + "kind: source\n"
+                + "id: orders\n"
+                + "connector: mysql\n");
+    }
+
+    @Test
+    void sourceDraftRestoresPlaceholdersForNonSecretConfigFields() throws Exception {
+        SourceDraftExchange exchange = executeSourceDraft(
+                Map.of("MYSQL_HOST", "expanded-host"),
+                Map.of("id", "orders", "connector", "mysql", "mode", "snapshot",
+                        "config", Map.of("host", "${MYSQL_HOST}")),
+                "{\"id\":\"mysql\",\"config\":[{\"name\":\"host\",\"secret\":false}]}",
+                "{\"yaml\":\"version: tapstate/v1\\nkind: source\\nid: orders\\n"
+                        + "connector: mysql\\nconfig:\\n  host: expanded-host\\n\"}");
+
+        assertThat(exchange.result().error()).isFalse();
+        assertThat(((Map<?, ?>) exchange.posted().get("config")).get("host"))
+                .isEqualTo("expanded-host");
+        assertThat(exchange.result().body().get("yaml")).asString()
+                .contains("host: ${MYSQL_HOST}")
+                .doesNotContain("host: expanded-host");
+    }
+
+    @Test
+    void sourceDraftFailsClosedForUnavailableConnectorMetadata() throws Exception {
+        assertSourceDraftUnavailable(500, "{}", "{}");
+        assertSourceDraftUnavailable(200, "{\"config\":{}}", "{}");
+        assertSourceDraftUnavailable(200, "{\"config\":[{\"name\":\"password\"}]}", "{}");
+    }
+
+    @Test
+    void sourceDraftFailsClosedForMalformedDraftResponses() throws Exception {
+        String connector = "{\"config\":[{\"name\":\"password\",\"secret\":true}]}";
+        assertSourceDraftUnavailable(200, connector, "{}");
+        assertSourceDraftUnavailable(200, connector, "{\"yaml\":\"version: tapstate/v1\\n"
+                + "kind: pipeline\\nid: not_source\\nsource: src_file\\n"
+                + "settings: { read_mode: snapshot_and_cdc }\\n"
+                + "transforms: []\\nserve: { from: src_file, sync: [] }\\n\"}");
+        assertSourceDraftUnavailable(200, connector, "{\"yaml\":\"not valid yaml\"}");
     }
 
     @Test
@@ -168,6 +194,173 @@ class McpOperationExecutorTest {
         }
     }
 
+    /**
+     * Every operation the registry opens on the MCP face must have a route here. Without this, adding a
+     * tool to the registry publishes it to the model — the sidecar advertises it, the schema resolves,
+     * the description reads fine — and only a call at runtime discovers there is no path behind it. The
+     * enumerated routing test above cannot catch that: a route nobody remembered to add is also a row
+     * nobody remembered to list.
+     */
+    @Test
+    void everyOperationTheMcpFaceExposesHasARouteBehindIt() throws Exception {
+        HttpServer server = server(exchange -> answer(exchange, 200, "{}"));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            for (io.tapstate.control.core.Operation operation : McpToolCatalog.operations(true)) {
+                // Arguments are deliberately absent: a missing required argument is refused with its own
+                // code, which is a route doing its job. What must not appear is the unsupported-operation
+                // code, which means execute() fell through to its default.
+                McpResult result = executor.execute(operation, Map.of());
+                assertThat(String.valueOf(JsonWriter.write(result.body())))
+                        .as(operation.id())
+                        .doesNotContain("unsupported MCP operation");
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void artifactDeleteSendsADeleteCarryingThePreconditionAsAnEntityTag() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> ifMatch = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            method.set(exchange.getRequestMethod());
+            ifMatch.set(exchange.getRequestHeaders().getFirst("If-Match"));
+            path.set(exchange.getRequestURI().toString());
+            answer(exchange, 204, "");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+            String hash = "b".repeat(64);
+
+            McpResult result = executor.execute(
+                    ControlOperations.ARTIFACT_DELETE, Map.of("id", "orders", "expectedContentHash", hash));
+
+            assertThat(result.error()).isFalse();
+            // Routed as a real DELETE with the precondition attached. A GET to the same path would read
+            // the artifact and answer 200, which this test would otherwise accept as a removal.
+            assertThat(method.get()).isEqualTo("DELETE");
+            assertThat(path.get()).isEqualTo("/api/artifacts/orders");
+            assertThat(ifMatch.get()).isEqualTo("\"" + hash + "\"");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void artifactGetReadsOneArtifactByIdAndReturnsWhatTheServerHolds() throws Exception {
+        AtomicReference<String> method = new AtomicReference<>();
+        AtomicReference<String> path = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            method.set(exchange.getRequestMethod());
+            path.set(exchange.getRequestURI().toString());
+            answer(exchange, 200,
+                    "{\"id\":\"orders\",\"kind\":\"pipeline\",\"canonicalForm\":\"x\",\"contentHash\":\""
+                            + "c".repeat(64) + "\"}");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_GET, Map.of("id", "orders"));
+
+            assertThat(result.error()).isFalse();
+            assertThat(method.get()).isEqualTo("GET");
+            assertThat(path.get()).isEqualTo("/api/artifacts/orders");
+            // The hash is the whole reason this read is on the MCP face: a model that cannot see it here
+            // has no route to the precondition artifact.delete demands.
+            assertThat(String.valueOf(JsonWriter.write(result.body()))).contains("contentHash");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void artifactGetEncodesAnIdThatWouldOtherwiseChangeThePath() throws Exception {
+        // An id is user-chosen text on the way into a URL path. Without encoding, one containing a slash
+        // reads as a different endpoint entirely and the read silently targets something else.
+        AtomicReference<String> path = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            path.set(exchange.getRequestURI().getRawPath());
+            answer(exchange, 200, "{}");
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            executor.execute(ControlOperations.ARTIFACT_GET, Map.of("id", "a/b"));
+
+            assertThat(path.get()).isEqualTo("/api/artifacts/a%2Fb");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void artifactDeleteRefusesBeforeAnyRequestWhenThePreconditionIsMissing() {
+        // The precondition is required, so a model that omits it must be refused here rather than have a
+        // hash-less delete reach the server, where the refusal would be indistinguishable from a bug.
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    URI.create("http://127.0.0.1:1"), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_DELETE, Map.of("id", "orders"));
+
+            assertThat(result.error()).isTrue();
+            assertThat(JsonWriter.write(result.body())).contains("expectedContentHash");
+        }
+    }
+
+    @Test
+    void artifactDeleteAnswersWithWhatItRemovedRatherThanTheServersEmptyBody() throws Exception {
+        // The server answers 204, which carries no body, and this is the one operation on the surface
+        // that cannot be undone and leaves nothing behind to read afterwards. An empty result gives a
+        // model no content-level evidence the removal happened, and nothing to tell it apart from an
+        // ambiguous one — which is exactly the state that invites a retry of an irreversible call.
+        HttpServer server = server(exchange -> answer(exchange, 204, ""));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_DELETE,
+                    Map.of("id", "orders", "expectedContentHash", "a".repeat(64)));
+
+            assertThat(result.error()).isFalse();
+            assertThat(result.body()).containsEntry("id", "orders").containsEntry("removed", true);
+            assertThat(result.body()).containsEntry("expectedContentHash", "a".repeat(64));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void aRefusedArtifactDeleteIsStillReportedAsTheServerStatedIt() throws Exception {
+        // The body added above must not swallow a refusal into a success: a delete the server rejected
+        // reported as {"removed": true} is worse than the empty body it replaced.
+        HttpServer server = server(exchange -> answer(exchange, 409,
+                "{\"code\":\"artifact.version-conflict\",\"message\":\"it changed\"}"));
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", Map.of(), client);
+
+            McpResult result = executor.execute(ControlOperations.ARTIFACT_DELETE,
+                    Map.of("id", "orders", "expectedContentHash", "a".repeat(64)));
+
+            assertThat(result.error()).isTrue();
+            assertThat(JsonWriter.write(result.body())).contains("artifact.version-conflict");
+            // Asserted non-empty first: "does not contain" is satisfied by a body that carries nothing
+            // at all, which is the outcome this whole test exists to rule out.
+            assertThat(result.body()).isNotEmpty().doesNotContainKey("removed");
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     void unsupportedOperationsAreReturnedAsStructuredFailures() {
         try (HttpControlClient client = new HttpControlClient()) {
@@ -179,28 +372,6 @@ class McpOperationExecutorTest {
 
             assertThat(result.error()).isTrue();
             assertThat(result.body()).containsEntry("code", "control.malformed-request");
-        }
-    }
-
-    @Test
-    void sourceDraftPropagatesServerRejection() throws Exception {
-        AtomicInteger requests = new AtomicInteger();
-        HttpServer server = server(exchange -> {
-            requests.incrementAndGet();
-            answer(exchange, 503, "{\"message\":\"temporarily unavailable\"}");
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of(), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
-                    Map.of("id", "orders", "connector", "mysql", "config", Map.of()));
-
-            assertThat(result.error()).isTrue();
-            assertThat(result.body()).containsEntry("code", "mcp.server-rejected");
-            assertThat(requests).hasValue(1);
-        } finally {
-            server.stop(0);
         }
     }
 
@@ -234,6 +405,54 @@ class McpOperationExecutorTest {
 
     private static URI baseOf(HttpServer server) {
         return URI.create("http://127.0.0.1:" + server.getAddress().getPort());
+    }
+
+    private static McpResult sourceDraftResult(
+            int connectorStatus, String connectorBody, String draftBody) throws Exception {
+        return executeSourceDraft(Map.of(),
+                Map.of("id", "orders", "connector", "mysql", "config", Map.of()),
+                connectorStatus, connectorBody, draftBody).result();
+    }
+
+    private static SourceDraftExchange executeSourceDraft(
+            Map<String, String> environment,
+            Map<String, Object> arguments,
+            String connectorBody,
+            String draftBody) throws Exception {
+        return executeSourceDraft(environment, arguments, 200, connectorBody, draftBody);
+    }
+
+    private static SourceDraftExchange executeSourceDraft(
+            Map<String, String> environment,
+            Map<String, Object> arguments,
+            int connectorStatus,
+            String connectorBody,
+            String draftBody) throws Exception {
+        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                answer(exchange, connectorStatus, connectorBody);
+            } else {
+                posted.set((Map<?, ?>) JsonReader.parse(new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+                answer(exchange, 200, draftBody);
+            }
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", environment, client);
+            return new SourceDraftExchange(executor.execute(ControlOperations.SOURCE_DRAFT, arguments), posted.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private record SourceDraftExchange(McpResult result, Map<?, ?> posted) { }
+
+    private static void assertSourceDraftUnavailable(
+            int connectorStatus, String connectorBody, String draftBody) throws Exception {
+        assertThat(sourceDraftResult(connectorStatus, connectorBody, draftBody).body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
     }
 
     private static void answer(HttpExchange exchange, int status, String body) throws IOException {

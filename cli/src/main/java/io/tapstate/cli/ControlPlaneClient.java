@@ -40,6 +40,15 @@ interface ControlPlaneClient extends AutoCloseable {
     GetOutcome get(URI baseUrl, String credential, String id);
 
     /**
+     * Removes one artifact by id via {@code DELETE {baseUrl}/api/artifacts/{id}}, authenticated by the
+     * bearer {@code credential} and conditioned on {@code expectedContentHash} travelling as a quoted
+     * {@code If-Match}: removed on success, a coded rejection carrying the server's named parameters when
+     * it refuses (still referenced, a pipeline that is not stopped, a stale or missing precondition), or
+     * unreachable on any I/O failure. Never throws.
+     */
+    DeleteOutcome delete(URI baseUrl, String credential, String id, String expectedContentHash);
+
+    /**
      * Lists stored artifacts via {@code GET {baseUrl}/api/artifacts}, optionally filtered by {@code kind}
      * ({@code null} = all), authenticated by the bearer {@code credential}: the artifacts on success, a
      * coded rejection, or unreachable on any I/O failure. Never throws.

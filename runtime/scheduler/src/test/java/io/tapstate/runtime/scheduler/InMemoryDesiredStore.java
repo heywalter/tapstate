@@ -10,6 +10,11 @@ import java.util.Optional;
 
 /** A trivial in-memory {@link DesiredStore} double: a last-write-wins map keyed by pipeline id. */
 final class InMemoryDesiredStore implements DesiredStore {
+    @Override
+    public void delete(String pipelineId) {
+        throw new UnsupportedOperationException("removal is not exercised by this double");
+    }
+
 
     private final Map<String, DesiredState> docs = new HashMap<>();
 

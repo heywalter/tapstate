@@ -3,22 +3,30 @@ package io.tapstate.control.restapi;
 import io.tapstate.control.core.ApplyResult;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactDraft;
+import io.tapstate.control.core.ArtifactError;
+import io.tapstate.control.core.ArtifactMutationService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.ArtifactValidationResult;
 import io.tapstate.control.core.StoredArtifact;
+import io.tapstate.core.common.TapstateException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
- * The artifact verbs projected onto HTTP: apply (write), get and list (read). Each handler is a thin
+ * The artifact verbs projected onto HTTP: apply and delete (write), get and list (read). Each handler is a thin
  * pass-through to a control-core service — it decodes the request, calls the verb, and encodes the
  * result — and carries no business logic of its own. Every handler is annotated with the operation id
  * it projects ({@link Verb}); mounted under the {@code /api} prefix by the path configuration.
@@ -26,12 +34,18 @@ import java.util.List;
 @RestController
 class ArtifactController {
 
+    /** An {@code If-Match} carrying exactly one canonical content hash, quoted as an entity tag. */
+    private static final String QUOTED_HASH = "\"[0-9a-f]{64}\"";
+
     private final ApplyService applyService;
     private final ArtifactQueryService queryService;
+    private final ArtifactMutationService mutationService;
 
-    ArtifactController(ApplyService applyService, ArtifactQueryService queryService) {
+    ArtifactController(ApplyService applyService, ArtifactQueryService queryService,
+                       ArtifactMutationService mutationService) {
         this.applyService = applyService;
         this.queryService = queryService;
+        this.mutationService = mutationService;
     }
 
     @Verb("artifact.apply")
@@ -73,5 +87,28 @@ class ArtifactController {
     @GetMapping("/artifacts")
     ArtifactList list(@RequestParam(name = "kind", required = false) String kind) {
         return new ArtifactList(queryService.list(kind));
+    }
+
+    @Verb("artifact.delete")
+    @DeleteMapping("/artifacts/{id}")
+    ResponseEntity<Void> delete(
+            @PathVariable("id") String id,
+            @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+            @RequestAttribute(AuthInterceptor.PRINCIPAL_ATTRIBUTE) String principal) {
+        mutationService.delete(principal, id, expectedHash(id, ifMatch));
+        return ResponseEntity.status(HttpStatus.NO_CONTENT).build();
+    }
+
+    /**
+     * The precondition an unconditional delete is missing. A header that is absent and one that is present
+     * but not a quoted hash are the same refusal: passing a malformed value through would reach the store
+     * as a hash that simply does not match, answering "someone else changed it" (412) for a request that
+     * never carried a version at all (428).
+     */
+    private static String expectedHash(String id, String ifMatch) {
+        if (ifMatch == null || !ifMatch.matches(QUOTED_HASH)) {
+            throw new TapstateException(ArtifactError.PRECONDITION_REQUIRED, Map.of("id", id), null);
+        }
+        return ifMatch.substring(1, ifMatch.length() - 1);
     }
 }

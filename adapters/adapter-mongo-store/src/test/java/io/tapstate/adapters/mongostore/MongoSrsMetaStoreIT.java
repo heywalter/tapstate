@@ -1,10 +1,10 @@
 package io.tapstate.adapters.mongostore;
 
-import io.tapstate.core.event.ChainPosition;
-import io.tapstate.core.event.SourceOrder;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
+import io.tapstate.core.event.ChainPosition;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.SchemaVersion;
 import io.tapstate.spi.store.SrsMeta;
@@ -273,6 +273,86 @@ class MongoSrsMetaStoreIT {
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.openEpoch("nope"))
                     .isInstanceOf(IllegalStateException.class);
+        });
+    }
+
+    @Test
+    void detachConsumerRemovesOneCursorAndLeavesTheChainAndItsOtherConsumersByteForByte() {
+        withStore(store -> {
+            store.create(CHAIN, "7d");
+            store.advanceSourceReadOffset(CHAIN, "gtid:aaa-1:500");
+            store.setCdcStart(CHAIN, "gtid:aaa-1:1", 1L);
+            store.appendSchemaVersion(CHAIN, new SchemaVersion(0, Map.of("id", "int"), 0));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L),
+                    new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100")));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("staying", Map.of("orders", 900L),
+                    new ChainPosition(new SourceOrder(1, 900), "gtid:aaa-1:900")));
+
+            store.detachConsumer(CHAIN, "departing");
+
+            SrsMeta after = store.read(CHAIN).orElseThrow();
+            // The chain record outlives its consumers: it is keyed by the chain, so removing it would be
+            // cross-pipeline data loss, and everything on it that is not the departing cursor is untouched.
+            assertThat(after.consumerOffsets())
+                    .containsExactly(new ConsumerOffset("staying", Map.of("orders", 900L),
+                            new ChainPosition(new SourceOrder(1, 900), "gtid:aaa-1:900")));
+            assertThat(after.sourceReadOffset()).isEqualTo("gtid:aaa-1:500");
+            assertThat(after.cdcStartPosition()).isEqualTo("gtid:aaa-1:1");
+            assertThat(after.schemaHistory()).hasSize(1);
+            assertThat(after.retention()).isEqualTo("7d");
+        });
+    }
+
+    @Test
+    void detachConsumerRemovesTheEntryOutrightRatherThanBlankingIt() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L),
+                    new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100")));
+
+            store.detachConsumer(CHAIN, "departing");
+
+            // A cursor left present-but-empty would still be folded into the two minimums taken over every
+            // consumer, which is exactly the permanent stall a detach exists to prevent.
+            assertThat(store.read(CHAIN).orElseThrow().consumerOffsets()).isEmpty();
+            assertThat(store.miningChainIdsWithConsumer("departing")).isEmpty();
+        });
+    }
+
+    @Test
+    void miningChainIdsWithConsumerNamesEveryChainThatCarriesThatConsumerAndNoOther() {
+        withStore(store -> {
+            store.create("chain-a", null);
+            store.create("chain-b", null);
+            store.create("chain-c", null);
+            store.upsertConsumerOffset("chain-a", new ConsumerOffset("departing", Map.of(), null));
+            store.upsertConsumerOffset("chain-b", new ConsumerOffset("departing", Map.of(), null));
+            store.upsertConsumerOffset("chain-b", new ConsumerOffset("staying", Map.of(), null));
+            store.upsertConsumerOffset("chain-c", new ConsumerOffset("staying", Map.of(), null));
+
+            // Every chain it reads, not just the first: a departing consumer left on any one of them pins
+            // that chain for everyone else on it.
+            assertThat(store.miningChainIdsWithConsumer("departing"))
+                    .containsExactlyInAnyOrder("chain-a", "chain-b");
+            assertThat(store.miningChainIdsWithConsumer("never_joined")).isEmpty();
+        });
+    }
+
+    @Test
+    void detachConsumerIsIdempotentAndSilentOnAnUnseededChain() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of(), null));
+
+            // A detach states an end condition, so an absent cursor and an absent chain already satisfy it.
+            // The advancing mutators refuse an unseeded chain; refusing here would abort a removal partway
+            // and leave the consumer attached to the chains not yet reached.
+            store.detachConsumer(CHAIN, "departing");
+            store.detachConsumer(CHAIN, "departing");
+            store.detachConsumer("never_seeded", "departing");
+
+            assertThat(store.read(CHAIN).orElseThrow().consumerOffsets()).isEmpty();
+            assertThat(store.read("never_seeded")).isEmpty();
         });
     }
 

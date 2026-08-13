@@ -274,6 +274,11 @@ class PipelineStreamApiTest {
     // ---- fakes ----
 
     static final class FakeObservationStore implements ObservationStore {
+        @Override
+        public void delete(String pipelineId) {
+            throw new UnsupportedOperationException("removal is not exercised by this double");
+        }
+
         private final Map<String, Observation> byId = new LinkedHashMap<>();
 
         void clear() {

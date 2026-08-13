@@ -29,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.tuple;
 
 /**
  * The resource-type-agnostic apply pipeline. {@code plan} validates a batch (structural, reference
@@ -77,6 +78,21 @@ class ApplyServiceTest {
 
     private static ArtifactDraft draft(String content) {
         return new ArtifactDraft(null, content);
+    }
+
+    /** A draft carrying the version of the stored artifact the author based this edit on. */
+    private static ArtifactDraft draft(String content, String expectedContentHash) {
+        return new ArtifactDraft(null, content, expectedContentHash);
+    }
+
+    /** The canonical text a stored artifact currently holds. */
+    private String stored(String id) {
+        return new CanonicalWriter().write(store.get(id).orElseThrow());
+    }
+
+    /** The canonical text the given authored YAML would be stored as. */
+    private static String canonicalOf(String yaml) {
+        return new CanonicalWriter().write(new DslParser().parse(yaml));
     }
 
     // ---- the store-free front half: validate -> canonical -> hash ----
@@ -473,6 +489,51 @@ class ApplyServiceTest {
     }
 
     @Test
+    void aVersionCheckedApplyRecordsTheVersionItDeclaredItWasEditing() {
+        // Without this the record is byte-identical to a blind overwrite of the same id, so the log
+        // cannot answer whether the writer had read what it replaced — which is the question a
+        // precondition exists to make answerable in the first place.
+        String current = service.apply("alice", List.of(draft(TGT_MY)))
+                .outcomes().get(0).contentHash();
+        auditStore.records.clear();
+
+        service.apply("alice", List.of(draft(TGT_MY_EDITED, current)));
+
+        assertThat(auditStore.records).singleElement().satisfies(record -> {
+            assertThat(record.resourceId()).isEqualTo("tgt_my");
+            assertThat(record.expectedContentHash()).isEqualTo(current);
+        });
+    }
+
+    @Test
+    void anApplyThatDeclaredNoVersionRecordsNone() {
+        // The absence has to mean something: a record with no declared version is the unconditional
+        // overwrite, and filling in the stored hash here would make every apply look version-checked.
+        service.apply("alice", List.of(draft(TGT_MY)));
+
+        assertThat(auditStore.records).singleElement()
+                .satisfies(record -> assertThat(record.expectedContentHash()).isNull());
+    }
+
+    @Test
+    void aBatchRecordsEachArtifactsOwnDeclaredVersionAndNotAnothers() {
+        // The drafts are matched to ids by what each one parsed to, not by position in the plan: the
+        // plan is built from the validated workspace, whose order is its own. Getting this wrong files
+        // one artifact's declared version under a different artifact's record.
+        String current = service.apply("alice", List.of(draft(TGT_MY)))
+                .outcomes().get(0).contentHash();
+        auditStore.records.clear();
+
+        service.apply("alice", List.of(draft(SRC_ORA_STANDALONE), draft(TGT_MY_EDITED, current)));
+
+        assertThat(auditStore.records)
+                .extracting(AuditRecord::resourceId, AuditRecord::expectedContentHash)
+                .containsExactlyInAnyOrder(
+                        tuple("src_ora", null),
+                        tuple("tgt_my", current));
+    }
+
+    @Test
     void applyRecordsNoAuditEntryForAnUnchangedArtifact() {
         // The no-op changes nothing, so it is not an auditable effect: re-applying identical content
         // leaves no second record, exactly as it performs no second write.
@@ -644,6 +705,126 @@ class ApplyServiceTest {
                 advisories);
     }
 
+    // ---- optimistic concurrency: an optional per-draft precondition on apply ----
+
+    @Test
+    void applyWithoutAPreconditionBehavesExactlyAsItDidBefore() {
+        // The compatibility case: an existing caller passes no hash and keeps overwriting whatever is
+        // stored. Without this, adding the precondition could silently start refusing today's callers.
+        service.apply("alice", List.of(draft(TGT_MY)));
+
+        ApplyResult result = service.apply("alice", List.of(draft(TGT_MY_EDITED)));
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.UPDATED);
+        assertThat(stored("tgt_my")).isEqualTo(canonicalOf(TGT_MY_EDITED));
+    }
+
+    @Test
+    void applyWithTheCurrentPreconditionUpdatesTheArtifact() {
+        String current = service.apply("alice", List.of(draft(TGT_MY)))
+                .outcomes().get(0).contentHash();
+
+        ApplyResult result = service.apply("alice", List.of(draft(TGT_MY_EDITED, current)));
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.UPDATED);
+        assertThat(stored("tgt_my")).isEqualTo(canonicalOf(TGT_MY_EDITED));
+    }
+
+    @Test
+    void applyWithAStalePreconditionIsRefusedWithTheStoredBytesUnchanged() {
+        service.apply("alice", List.of(draft(TGT_MY)));
+        String before = stored("tgt_my");
+        int writesBefore = store.saveCount;
+
+        assertThatThrownBy(() -> service.apply("alice", List.of(draft(TGT_MY_EDITED, "0".repeat(64)))))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.VERSION_CONFLICT);
+                    assertThat(error.args()).containsExactlyInAnyOrderEntriesOf(Map.of("id", "tgt_my"));
+                });
+        assertThat(stored("tgt_my"))
+                .as("a refused apply leaves the stored canonical bytes exactly as they were")
+                .isEqualTo(before);
+        assertThat(store.saveCount).isEqualTo(writesBefore);
+    }
+
+    @Test
+    void oneStaleDraftRefusesTheWholeBatchIncludingItsValidSiblings() {
+        service.apply("alice", List.of(draft(TGT_MY)));
+        int writesBefore = store.saveCount;
+
+        assertThatThrownBy(() -> service.apply("alice", List.of(
+                draft(SRC_ORA_STANDALONE), draft(TGT_MY_EDITED, "0".repeat(64)))))
+                .isInstanceOfSatisfying(TapstateException.class,
+                        error -> assertThat(error.code()).isEqualTo(ArtifactError.VERSION_CONFLICT));
+        assertThat(store.get("src_ora"))
+                .as("the batch is one closure, so a sibling of a stale draft is not written either")
+                .isEmpty();
+        assertThat(store.saveCount).isEqualTo(writesBefore);
+    }
+
+    @Test
+    void aPreconditionOnAnArtifactThatIsNotStoredIsRefusedAsNotFound() {
+        assertThatThrownBy(() -> service.apply("alice", List.of(draft(TGT_MY, "0".repeat(64)))))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.NOT_FOUND);
+                    assertThat(error.args()).containsExactlyInAnyOrderEntriesOf(Map.of("id", "tgt_my"));
+                });
+        assertThat(store.saveCount).isZero();
+    }
+
+    @Test
+    void aWriterThatLandsAfterThePreconditionWasComparedStillRefusesTheApply() {
+        // The lost update the precondition exists to prevent, in the shape it actually happens in: not
+        // "the version was already stale when the author submitted" — plan() catches that — but "it went
+        // stale while this apply was validating". plan() runs a whole workspace validation and a schema
+        // read between its comparison and the write, so the window is wide enough to lose a real edit.
+        //
+        // This is what discriminates a precondition that is only checked from one that is enforced: an
+        // unconditional batch write passes every other test in this class and fails only this one.
+        String readByBoth = service.apply("alice", List.of(draft(TGT_MY))).outcomes().get(0).contentHash();
+        Resource alicesEdit = new DslParser().parse(TGT_MY_EDITED);
+        store.concurrentWriter = () -> store.landDirectly(alicesEdit);
+
+        assertThatThrownBy(() -> service.apply("bob", List.of(draft(TGT_MY_EDITED_AGAIN, readByBoth))))
+                .isInstanceOfSatisfying(TapstateException.class, error -> {
+                    assertThat(error.code()).isEqualTo(ArtifactError.VERSION_CONFLICT);
+                    assertThat(error.args()).containsExactlyInAnyOrderEntriesOf(Map.of("id", "tgt_my"));
+                });
+        assertThat(stored("tgt_my"))
+                .as("the edit that landed first survives; the loser is refused rather than silently dropped")
+                .isEqualTo(canonicalOf(TGT_MY_EDITED));
+    }
+
+    @Test
+    void anApplyWithNoDeclaredVersionIsStillWrittenWhenAnotherWriterLandsFirst() {
+        // The other half of the same window: a caller that declared nothing asked for no check, and
+        // must keep overwriting exactly as it always did. Guarding an unasked-for precondition would
+        // turn every concurrent apply into a refusal.
+        service.apply("alice", List.of(draft(TGT_MY)));
+        Resource alicesEdit = new DslParser().parse(TGT_MY_EDITED);
+        store.concurrentWriter = () -> store.landDirectly(alicesEdit);
+
+        ApplyResult result = service.apply("bob", List.of(draft(TGT_MY_EDITED_AGAIN)));
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.UPDATED);
+        assertThat(stored("tgt_my")).isEqualTo(canonicalOf(TGT_MY_EDITED_AGAIN));
+    }
+
+    @Test
+    void validateReportsAStalePreconditionAsADiagnosticRatherThanThrowing() {
+        service.apply("alice", List.of(draft(TGT_MY)));
+
+        ArtifactValidationResult result = service.validate(
+                List.of(draft(TGT_MY_EDITED, "0".repeat(64))));
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.diagnostics()).singleElement().satisfies(diagnostic ->
+                assertThat(diagnostic.code()).isEqualTo("artifact.version-conflict"));
+    }
+
     // ---- fixtures ----
 
     /** A stand-in finding, shaped like the capacity precheck's: a code plus the named subject it is about. */
@@ -664,6 +845,24 @@ class ApplyServiceTest {
 
     // The same oracle source with no pipeline referencing it — a standalone resource for batch tests.
     private static final String SRC_ORA_STANDALONE = SRC_ORA;
+
+    // TGT_MY after an edit: same id, one changed connection field, so it is an update rather than a no-op.
+    private static final String TGT_MY_EDITED = """
+            version: tapstate/v1
+            kind: source
+            id: tgt_my
+            connector: mysql
+            config: { host: 10.30.0.9, username: writer, password: My_2026 }
+            """;
+
+    // A third version of the same id, so two authors' edits can be told apart in the store.
+    private static final String TGT_MY_EDITED_AGAIN = """
+            version: tapstate/v1
+            kind: source
+            id: tgt_my
+            connector: mysql
+            config: { host: 10.30.0.11, username: writer, password: My_2026 }
+            """;
 
     private static final String PIPELINE = """
             version: tapstate/v1
@@ -696,9 +895,32 @@ class ApplyServiceTest {
         private final List<List<String>> saveAllBatches = new ArrayList<>();
         private int saveCount = 0;
         private String failOnId = null;
+        /** A writer that commits between the plan's comparison and this store's write. */
+        private Runnable concurrentWriter = null;
 
         @Override
         public void saveAll(List<Resource> artifacts) {
+            saveAll(artifacts, Map.of());
+        }
+
+        @Override
+        public Optional<String> saveAll(List<Resource> artifacts, Map<String, String> expectedContentHashes) {
+            // The other writer lands here: after the caller planned against what it read, before this
+            // write compares. Modelling it inside the store is the only place it can go — that is
+            // precisely the window an outside-the-write comparison leaves open.
+            if (concurrentWriter != null) {
+                Runnable other = concurrentWriter;
+                concurrentWriter = null;
+                other.run();
+            }
+            // The comparison is part of the write, not a step before it: a declared version that no
+            // longer names the stored bytes refuses the whole batch and stages nothing.
+            for (Map.Entry<String, String> expected : expectedContentHashes.entrySet()) {
+                String canonical = byId.get(expected.getKey());
+                if (canonical == null || !CanonicalHash.of(canonical).equals(expected.getValue())) {
+                    return Optional.of(expected.getKey());
+                }
+            }
             // Atomic: stage the whole batch, then commit it in one step — but if any member is the
             // injected poison, fail before committing anything, so no partial batch survives.
             Map<String, String> staged = new LinkedHashMap<>();
@@ -711,6 +933,12 @@ class ApplyServiceTest {
             byId.putAll(staged);
             saveCount += artifacts.size();
             saveAllBatches.add(artifacts.stream().map(Resource::id).toList());
+            return Optional.empty();
+        }
+
+        /** Commits {@code canonical} for {@code id} directly, as another author's apply would. */
+        void landDirectly(Resource artifact) {
+            byId.put(artifact.id(), writer.write(artifact));
         }
 
         @Override

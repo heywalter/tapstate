@@ -1,10 +1,10 @@
 package io.tapstate.control.restapi;
 
 import io.tapstate.control.core.ApplyService;
+import io.tapstate.control.core.ArtifactMutationService;
 import io.tapstate.control.core.PlanAdvisories;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
-import io.tapstate.control.core.AuditedSourceService;
 import io.tapstate.control.core.BootstrapService;
 import io.tapstate.control.core.ConnectionTestResultQueryService;
 import io.tapstate.control.core.ConnectionTestService;
@@ -27,7 +27,6 @@ import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
 import io.tapstate.control.core.Scope;
-import io.tapstate.control.core.SourceRepresentation;
 import io.tapstate.control.core.SourceService;
 import io.tapstate.control.core.TokenSecrets;
 import io.tapstate.control.core.TokenService;
@@ -357,7 +356,8 @@ class PipelineApiTest {
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import(ControlHttpFace.class)
+    @Import({ControlHttpFace.class, SourceDraftTestConfiguration.class, SourceServiceTestConfiguration.class,
+            AuditedSourceServiceTestConfiguration.class})
     static class TestApp {
 
         @Bean
@@ -444,6 +444,16 @@ class PipelineApiTest {
         @Bean
         ArtifactQueryService artifactQueryService(ArtifactStore store) {
             return new ArtifactQueryService(store);
+        }
+
+        // The removal controller comes in with the whole ControlHttpFace bundle, so its service must be
+        // present for the context to stand up. This suite exercises the lifecycle verbs, not the removal,
+        // so the dependent stores refuse rather than pretend: a reclaim reached from here is a defect.
+        @Bean
+        ArtifactMutationService artifactMutationService(ArtifactStore store, AuditGate auditGate) {
+            return new ArtifactMutationService(
+                    store, NoReclaimStores.desired(), NoReclaimStores.state(),
+                    NoReclaimStores.observations(), NoReclaimStores.srsMeta(), auditGate);
         }
 
         // The connection / connector controllers come in with the whole ControlHttpFace bundle, so their
@@ -553,6 +563,11 @@ class PipelineApiTest {
             // controller up so the full-face bundle boots. The read faces are proven in PipelineObservationApiTest.
             return new ObservationStore() {
                 @Override
+                public void delete(String pipelineId) {
+                    throw new UnsupportedOperationException("removal is not exercised by this double");
+                }
+
+                @Override
                 public void save(Observation observation) {
                 }
 
@@ -580,16 +595,6 @@ class PipelineApiTest {
             return new PipelineLogQueryService(sink);
         }
 
-        @Bean
-        SourceService sourceService(ArtifactStore store) {
-            TapstateCatalog catalog = TapstateCatalog.load();
-            return new SourceService(catalog, store, new SourceRepresentation(catalog));
-        }
-
-        @Bean
-        AuditedSourceService auditedSourceService(SourceService sourceService, AuditGate auditGate) {
-            return new AuditedSourceService(sourceService, auditGate);
-        }
     }
 
     // ---- fakes ----
@@ -625,6 +630,11 @@ class PipelineApiTest {
 
     /** An in-memory desired store, last write wins per pipeline id. */
     static final class FakeDesiredStore implements DesiredStore {
+        @Override
+        public void delete(String pipelineId) {
+            throw new UnsupportedOperationException("removal is not exercised by this double");
+        }
+
         private final Map<String, DesiredState> byId = new LinkedHashMap<>();
 
         void clear() {

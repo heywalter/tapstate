@@ -60,6 +60,8 @@ public final class ControlApiSchema {
         bind(refs, "connection.schema", "ConnectionSchema");
         bind(refs, "artifact.validate", "ArtifactValidate");
         bind(refs, "artifact.apply", "ArtifactApply");
+        bind(refs, "artifact.delete", "ArtifactDelete");
+        bind(refs, "artifact.get", "ArtifactGet");
         bind(refs, "pipeline.start", "PipelineStart");
         bind(refs, "pipeline.stop", "PipelineStop");
         bind(refs, "pipeline.status", "PipelineStatus");
@@ -128,14 +130,48 @@ public final class ControlApiSchema {
         pair(defs, "ConnectionTestResult", object(List.of("id"), Map.of("id", id), false), opaque);
         pair(defs, "ConnectionSchema", object(List.of("id"), Map.of("id", id), false), opaque);
 
+        // The precondition is declared here, not merely tolerated by the server: this object refuses
+        // undeclared properties, so a field the schema omits is one a schema-checking caller is told never
+        // to send. It stays out of the required list — a draft without one applies the way it always did.
         Map<String, Object> draft = object(
                 List.of("content"),
-                Map.of("source", string("Origin label for diagnostics"), "content", string("tapstate/v1 YAML")),
+                Map.of(
+                        "source", string("Origin label for diagnostics"),
+                        "content", string("tapstate/v1 YAML"),
+                        "expectedContentHash",
+                        string("Content hash of the stored version this draft edits, as returned by a read "
+                                + "of it; omit to apply unconditionally")),
                 false);
         Map<String, Object> artifactRequest = object(
                 List.of("drafts"), Map.of("drafts", array(draft)), false);
         pair(defs, "ArtifactValidate", artifactRequest, opaque);
         pair(defs, "ArtifactApply", artifactRequest, opaque);
+
+        // Both arguments are required. A delete carries an id and nothing else, so without the hash the
+        // caller would be discarding a version it never read; making it optional is the same thing for any
+        // caller that omits what it may omit.
+        Map<String, Object> deleteRequest = object(
+                List.of("id", "expectedContentHash"),
+                Map.of(
+                        "id", id,
+                        "expectedContentHash",
+                        string("Content hash of the version being removed, as returned by a read of it")),
+                false);
+        pair(defs, "ArtifactDelete", deleteRequest, opaque);
+
+        // The read's result is spelled out rather than left opaque: a caller reads this schema to learn
+        // that a hash comes back at all, and that hash is the only route to the precondition the removal
+        // above demands. An opaque result would leave the two halves connected only by prose.
+        Map<String, Object> artifactResult = object(
+                List.of("id", "kind", "canonicalForm", "contentHash"),
+                Map.of(
+                        "id", id,
+                        "kind", string("Resource kind: source, pipeline, transform, view or serve"),
+                        "canonicalForm", string("Canonical tapstate/v1 YAML as held by the store"),
+                        "contentHash",
+                        string("Content hash of those canonical bytes; pass back as a precondition")),
+                false);
+        pair(defs, "ArtifactGet", object(List.of("id"), Map.of("id", id), false), artifactResult);
 
         Map<String, Object> pipelineId = object(List.of("id"), Map.of("id", id), false);
         pair(defs, "PipelineStart", pipelineId, opaque);

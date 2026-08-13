@@ -315,6 +315,16 @@ class HazelcastMemberTest {
 
     /** A sentinel meta store: an identity to assert the user-context binding; its facets are never invoked here. */
     private static final class SentinelMetaStore implements SrsMetaStore {
+        @Override
+        public java.util.List<String> miningChainIdsWithConsumer(String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
+        @Override
+        public void detachConsumer(String miningChainId, String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
         @Override public Optional<SrsMeta> read(String miningChainId) {
             throw new UnsupportedOperationException();
         }

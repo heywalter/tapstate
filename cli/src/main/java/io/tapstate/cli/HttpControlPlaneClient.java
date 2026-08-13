@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -211,7 +212,7 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
     @Override
     public GetOutcome get(URI baseUrl, String credential, String id) {
         try {
-            HttpRequest request = authed(baseUrl, "/api/artifacts/" + id, credential).GET().build();
+            HttpRequest request = authed(baseUrl, "/api/artifacts/" + urlSegment(id), credential).GET().build();
             HttpResponse<String> response =
                     send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             int status = response.statusCode();
@@ -231,6 +232,55 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         } catch (IOException | RuntimeException e) {
             return new GetOutcome.Unreachable();
         }
+    }
+
+    @Override
+    public DeleteOutcome delete(URI baseUrl, String credential, String id, String expectedContentHash) {
+        try {
+            HttpRequest.Builder builder = authed(
+                    baseUrl, "/api/artifacts/" + urlSegment(id), credential);
+            // Send no If-Match at all rather than an empty one when the caller supplied no precondition:
+            // the server tells "you sent none" (428) apart from "yours is stale" (412), and an empty
+            // header would turn the first into the second.
+            if (expectedContentHash != null) {
+                builder.header("If-Match", "\"" + expectedContentHash + "\"");
+            }
+            HttpResponse<String> response = send(
+                    builder.DELETE().build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() / 100 == 2) {
+                return new DeleteOutcome.Removed(id);
+            }
+            return rejectedDelete(response.body());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new DeleteOutcome.Unreachable();
+        } catch (IOException | RuntimeException e) {
+            return new DeleteOutcome.Unreachable();
+        }
+    }
+
+    /**
+     * Decodes a refused removal, keeping the named parameters as well as the message. The two refusal
+     * grounds each carry what the caller has to act on — who still references the resource, and what state
+     * the pipeline is really in — so dropping the parameters would leave a sentence and no next step.
+     */
+    private static DeleteOutcome rejectedDelete(String body) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        try {
+            if (JsonReader.parse(body) instanceof Map<?, ?> map && map.get("code") instanceof String code) {
+                String message = map.get("message") instanceof String m ? m : code;
+                if (map.get("params") instanceof Map<?, ?> raw) {
+                    raw.forEach((key, value) -> params.put(String.valueOf(key), value));
+                }
+                // An unmodifiable view rather than Map.copyOf: copyOf rejects a null value, and the
+                // throw would be caught below and cost the caller the code and the message over the
+                // least informative part of the body. A null-valued parameter is kept as sent.
+                return new DeleteOutcome.Rejected(code, message, Collections.unmodifiableMap(params));
+            }
+        } catch (RuntimeException malformed) {
+            // fall through: a non-coded / unparseable error body is still a refusal, not a crash
+        }
+        return new DeleteOutcome.Rejected("", "The server refused the removal.", Map.of());
     }
 
     @Override
@@ -984,13 +1034,22 @@ final class HttpControlPlaneClient implements ControlPlaneClient {
         return URI.create(base + path);
     }
 
-    /** The apply request body: {@code {"drafts":[{"source":..,"content":..}]}} in submission order. */
+    /**
+     * The apply request body: {@code {"drafts":[{"source":..,"content":..}]}} in submission order, each
+     * draft carrying {@code expectedContentHash} only when one was given. A draft with no precondition
+     * omits the key rather than sending null, so a request that asked for no check stays exactly the shape
+     * it has always been — and the published schema refuses properties it does not declare, which a null
+     * would still be one of.
+     */
     private static String applyBody(List<LocalDraft> drafts) {
         List<Object> array = new ArrayList<>();
         for (LocalDraft draft : drafts) {
             Map<String, Object> d = new LinkedHashMap<>();
             d.put("source", draft.source());
             d.put("content", draft.content());
+            if (draft.expectedContentHash() != null) {
+                d.put("expectedContentHash", draft.expectedContentHash());
+            }
             array.add(d);
         }
         Map<String, Object> body = new LinkedHashMap<>();

@@ -1,6 +1,7 @@
 package io.tapstate.control.core;
 
 import io.tapstate.core.model.Resource;
+import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.spi.store.ArtifactStore;
 
@@ -52,6 +53,10 @@ public final class ArtifactQueryService {
     }
 
     private StoredArtifact view(Resource resource) {
-        return new StoredArtifact(resource.id(), resource.kind(), writer.write(resource));
+        // The hash is taken over the very bytes this view returns, not over the resource or its id, so a
+        // caller can hand it straight back as a precondition without re-deriving anything.
+        String canonicalForm = writer.write(resource);
+        return new StoredArtifact(
+                resource.id(), resource.kind(), canonicalForm, CanonicalHash.of(canonicalForm));
     }
 }

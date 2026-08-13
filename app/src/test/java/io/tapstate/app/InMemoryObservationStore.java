@@ -31,4 +31,9 @@ final class InMemoryObservationStore implements ObservationStore {
     public Optional<Observation> read(String pipelineId) {
         return Optional.ofNullable(docs.get(pipelineId));
     }
+
+    @Override
+    public void delete(String pipelineId) {
+        docs.remove(pipelineId);
+    }
 }

@@ -13,6 +13,7 @@ import io.tapstate.adapters.pdk.SeedConnectorSweep;
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.NestSizingAdvisories;
 import io.tapstate.control.core.ConnectorCatalogView;
+import io.tapstate.control.core.ArtifactMutationService;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
 import io.tapstate.control.core.AuditedSourceService;
@@ -31,6 +32,7 @@ import io.tapstate.control.core.PipelineLogQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
+import io.tapstate.control.core.SourceDraftService;
 import io.tapstate.control.core.SourceRepresentation;
 import io.tapstate.control.core.SourceService;
 import io.tapstate.control.core.TokenSecrets;
@@ -200,6 +202,22 @@ class ControlPlaneConfiguration {
     @Bean
     ArtifactQueryService artifactQueryService(ArtifactStore artifactStore) {
         return new ArtifactQueryService(artifactStore);
+    }
+
+    @Bean
+    ArtifactMutationService artifactMutationService(
+            ArtifactStore artifactStore, StorePort storePort, AuditGate auditGate) {
+        // The removal takes the same artifact store bean apply writes through, so both paths see one
+        // view of a resource. The dependent bookkeeping a removed pipeline owns is reclaimed straight
+        // off the store port: those facets have no service in front of them.
+        return new ArtifactMutationService(
+                artifactStore, storePort.desired(), storePort.state(), storePort.observations(),
+                storePort.meta(), auditGate);
+    }
+
+    @Bean
+    SourceDraftService sourceDraftService(ConnectorCatalogView connectorCatalogView) {
+        return new SourceDraftService(connectorCatalogView::merged);
     }
 
     // ---- the connector plane: the R5 synchronous connection-test verb, wired end to end ----

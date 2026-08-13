@@ -2,6 +2,7 @@ package io.tapstate.control.restapi;
 
 import io.tapstate.control.core.ApplyResult;
 import io.tapstate.control.core.ApplyService;
+import io.tapstate.control.core.ArtifactMutationService;
 import io.tapstate.control.core.ArtifactOutcome;
 import io.tapstate.control.core.ArtifactValidationResult;
 import io.tapstate.control.core.ArtifactQueryService;
@@ -22,9 +23,11 @@ import io.tapstate.core.catalog.TapstateCatalog;
 import io.tapstate.core.dsl.DiscoveredTable;
 import io.tapstate.core.dsl.DslParser;
 import io.tapstate.core.model.Resource;
+import io.tapstate.core.model.canonical.CanonicalHash;
 import io.tapstate.core.model.canonical.CanonicalWriter;
 import io.tapstate.runtime.probe.ConnectionProbe;
 import io.tapstate.runtime.probe.SchemaDiscoveryProbe;
+import io.tapstate.spi.store.ArtifactMutation;
 import io.tapstate.spi.store.ArtifactStore;
 import io.tapstate.spi.store.AuditRecord;
 import io.tapstate.spi.store.AuditStore;
@@ -44,6 +47,8 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -239,6 +244,143 @@ class ControlApiTest {
     }
 
     @Test
+    void anApplyCarryingTheCurrentPreconditionIsAcceptedAndReplacesTheVersion() {
+        applyDrafts(TGT_MY);
+        String current = client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().contentHash();
+
+        ApplyResult result = applyDraftsWithPrecondition(TGT_MY_CHANGED, current);
+
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::id).containsExactly("tgt_my");
+        assertThat(client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm())
+                .isEqualTo(offlineCanonical(TGT_MY_CHANGED));
+    }
+
+    @Test
+    void anApplyCarryingAStalePreconditionIsRefusedAndLeavesTheStoredBytesUnchanged() {
+        applyDrafts(TGT_MY);
+        String before = client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm();
+
+        ApiError body = client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", TGT_MY_CHANGED, "expectedContentHash", "0".repeat(64)))))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("artifact.version-conflict");
+        // Not merely "an error came back": the refusal has to precede the write, so the stored bytes are
+        // the ones from before the call. An implementation that upserts then checks would pass a test
+        // that only looked at the status.
+        assertThat(client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm())
+                .isEqualTo(before);
+    }
+
+    @Test
+    void anApplyCarryingAPreconditionForAnIdThatIsNotStoredIsNotFound() {
+        // A precondition says "I am editing a version I read". If the id is not there at all, the author's
+        // target was removed, and saying "version conflict" would send them to re-read something that no
+        // longer exists.
+        ApiError body = client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", TGT_MY, "expectedContentHash", "0".repeat(64)))))
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("artifact.not-found");
+    }
+
+    @Test
+    void oneStaleDraftRefusesTheWholeBatchSoNoOtherDraftInItIsWritten() {
+        // The batch guarantee, on the face where a partial write would be visible as a partial response.
+        // The first draft is new and perfectly valid; if the refusal were per-draft rather than per-batch
+        // it would land, and the caller would be left with half an edit it never asked to be split.
+        //
+        // The stale draft is deliberately second. That also discriminates an implementation that judges
+        // preconditions for only the first draft it is handed — which passes a batch whose stale draft is
+        // anywhere else, and would look correct in any test that put the bad one in front.
+        applyDrafts(TGT_MY);
+
+        HttpStatusCode refusal = client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", SRC_ORA),
+                        Map.of("content", TGT_MY_CHANGED, "expectedContentHash", "0".repeat(64)))))
+                .exchange((request, response) -> response.getStatusCode());
+
+        // The refusal's own status is pinned, not merely the absence of a write: any other refusal —
+        // a parse error, an unrelated validation failure — would also leave src_ora unwritten, and
+        // would pass an assertion that only looked at the store.
+        assertThat(refusal).isEqualTo(HttpStatus.PRECONDITION_FAILED);
+        HttpStatusCode secondDraft = client().get().uri("/api/artifacts/src_ora")
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(secondDraft).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void anApplyWithNoPreconditionKeepsOverwritingAsItAlwaysHas() {
+        // The backward-compatibility half: the field is optional, and a caller that never sends it is
+        // never refused by a check it did not ask for.
+        applyDrafts(TGT_MY);
+
+        applyDrafts(TGT_MY_CHANGED);
+
+        assertThat(client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm())
+                .isEqualTo(offlineCanonical(TGT_MY_CHANGED));
+    }
+
+    private ApplyResult applyDraftsWithPrecondition(String draft, String expectedContentHash) {
+        return client().post().uri("/api/artifacts:apply")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(Map.of("drafts", List.of(
+                        Map.of("content", draft, "expectedContentHash", expectedContentHash))))
+                .retrieve().toEntity(ApplyResult.class).getBody();
+    }
+
+    @Test
+    void whatAReadReturnsAsItsHashIsAcceptedVerbatimAsTheRemovalPrecondition() {
+        // The round-trip that makes the removal usable by a caller that cannot hash for itself: read the
+        // artifact, hand the hash straight back as If-Match, and the removal is accepted. Asserting only
+        // that the field is present and 64 characters long would pass for a hash over the id, the raw
+        // draft, or a constant — every one of which answers 412 here.
+        applyDrafts(TGT_MY);
+
+        StoredArtifact got = client().get().uri("/api/artifacts/tgt_my")
+                .retrieve().toEntity(StoredArtifact.class).getBody();
+
+        HttpStatusCode status = client().method(HttpMethod.DELETE).uri("/api/artifacts/tgt_my")
+                .header(HttpHeaders.IF_MATCH, "\"" + got.contentHash() + "\"")
+                .exchange((request, response) -> response.getStatusCode());
+
+        assertThat(status).isEqualTo(HttpStatus.NO_CONTENT);
+    }
+
+    @Test
+    void aListedArtifactCarriesTheSameHashItsOwnReadReturns() {
+        // A caller that lists and then removes must not need a second round trip to re-read each one.
+        applyDrafts(SRC_ORA, TGT_MY, PIPELINE);
+
+        ArtifactList listed = client().get().uri("/api/artifacts")
+                .retrieve().toEntity(ArtifactList.class).getBody();
+
+        // The size is asserted first because the per-element check below passes on an empty list: a
+        // regression that listed nothing at all would otherwise read as every element agreeing.
+        assertThat(listed.artifacts()).hasSize(3);
+        assertThat(listed.artifacts()).allSatisfy(a -> assertThat(a.contentHash())
+                .isEqualTo(client().get().uri("/api/artifacts/" + a.id())
+                        .retrieve().toEntity(StoredArtifact.class).getBody().contentHash()));
+    }
+
+    @Test
     void getAnUnknownIdIsNotFound() {
         HttpStatusCode status = client().get().uri("/api/artifacts/no_such_id")
                 .exchange((request, response) -> response.getStatusCode());
@@ -266,6 +408,110 @@ class ControlApiTest {
 
         assertThat(sources.artifacts()).extracting(StoredArtifact::id)
                 .containsExactlyInAnyOrder("src_ora", "tgt_my");
+    }
+
+    // ---- the removal verb ----
+
+    @Test
+    void deleteRemovesTheArtifactAndAnswersNoContent() {
+        String hash = applyDrafts(TGT_MY).outcomes().get(0).contentHash();
+
+        HttpStatusCode status = client().method(HttpMethod.DELETE).uri("/api/artifacts/tgt_my")
+                .header(HttpHeaders.IF_MATCH, "\"" + hash + "\"")
+                .exchange((request, response) -> response.getStatusCode());
+
+        assertThat(status).isEqualTo(HttpStatus.NO_CONTENT);
+        // The removal is real: the read path answers 404 without having learned to filter anything, and
+        // the listing is short by exactly that row. A tombstone would keep both of these green.
+        HttpStatusCode afterwards = client().get().uri("/api/artifacts/tgt_my")
+                .exchange((request, response) -> response.getStatusCode());
+        assertThat(afterwards).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(context.getBean(ArtifactStore.class).list()).isEmpty();
+        assertThat(context.getBean(RecordingAuditStore.class).records)
+                .extracting(AuditRecord::operationId, AuditRecord::resourceId)
+                .contains(tuple("artifact.delete", "tgt_my"));
+    }
+
+    @Test
+    void deleteWithNoIfMatchIsPreconditionRequiredAndKeepsTheArtifact() {
+        applyDrafts(TGT_MY);
+
+        ApiError body = client().method(HttpMethod.DELETE).uri("/api/artifacts/tgt_my")
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_REQUIRED);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("artifact.precondition-required");
+        assertThat(body.params()).containsEntry("id", "tgt_my");
+        assertThat(context.getBean(ArtifactStore.class).get("tgt_my")).isPresent();
+    }
+
+    /**
+     * A malformed precondition is the same refusal as a missing one, not a mismatched one. Letting the raw
+     * header value through would reach the store as a hash that happens not to match, answering "someone
+     * else changed it" for a request that never carried a version at all.
+     */
+    @Test
+    void deleteWithAnIfMatchThatIsNotAQuotedHashIsPreconditionRequired() {
+        applyDrafts(TGT_MY);
+
+        for (String malformed : List.of("*", "not-a-hash", "\"deadbeef\"")) {
+            ApiError body = client().method(HttpMethod.DELETE).uri("/api/artifacts/tgt_my")
+                    .header(HttpHeaders.IF_MATCH, malformed)
+                    .exchange((request, response) -> {
+                        assertThat(response.getStatusCode()).as(malformed)
+                                .isEqualTo(HttpStatus.PRECONDITION_REQUIRED);
+                        return response.bodyTo(ApiError.class);
+                    });
+            assertThat(body.code()).as(malformed).isEqualTo("artifact.precondition-required");
+        }
+        assertThat(context.getBean(ArtifactStore.class).get("tgt_my")).isPresent();
+    }
+
+    @Test
+    void deleteWithAStaleIfMatchIsPreconditionFailedAndLeavesTheStoredBytesUntouched() {
+        applyDrafts(TGT_MY);
+        String stale = "0".repeat(64);
+        String before = canonicalOf("tgt_my");
+
+        ApiError body = client().method(HttpMethod.DELETE).uri("/api/artifacts/tgt_my")
+                .header(HttpHeaders.IF_MATCH, "\"" + stale + "\"")
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.PRECONDITION_FAILED);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("artifact.version-conflict");
+        assertThat(canonicalOf("tgt_my")).isEqualTo(before);
+    }
+
+    @Test
+    void deleteOfAReferencedArtifactIsAConflictNamingTheReferrersWithNothingRemoved() {
+        applyDrafts(SRC_ORA, TGT_MY, PIPELINE);
+        // The precondition is derived from the canonical form the read face returns: the stored content
+        // hash is the hash of exactly those bytes, so a reader never has to be told it separately.
+        String hash = CanonicalHash.of(client().get().uri("/api/artifacts/src_ora")
+                .retrieve().toEntity(StoredArtifact.class).getBody().canonicalForm());
+
+        ApiError body = client().method(HttpMethod.DELETE).uri("/api/artifacts/src_ora")
+                .header(HttpHeaders.IF_MATCH, "\"" + hash + "\"")
+                .exchange((request, response) -> {
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+                    return response.bodyTo(ApiError.class);
+                });
+
+        assertThat(body.code()).isEqualTo("artifact.in-use");
+        // The caller is told who to deal with, so it needs no second query to act on the refusal.
+        assertThat(body.params().get("referrers").toString()).contains("ora2my_ods");
+        // Nothing cascaded and nothing was removed first: all three are still stored.
+        assertThat(context.getBean(ArtifactStore.class).list()).extracting(Resource::id)
+                .containsExactlyInAnyOrder("src_ora", "tgt_my", "ora2my_ods");
+    }
+
+    /** The stored canonical form of an artifact, for asserting the bytes did not move. */
+    private static String canonicalOf(String id) {
+        return new CanonicalWriter().write(context.getBean(ArtifactStore.class).get(id).orElseThrow());
     }
 
     // ---- coded errors project onto structured HTTP responses ----
@@ -426,6 +672,7 @@ class ControlApiTest {
                         + "topology verb are projected onto HTTP")
                 .contains("artifact.apply", "artifact.get", "artifact.list", "connection.test",
                         "connection.test-result", "connection.discover-schema", "connection.schema",
+                        "source.draft",
                         "cluster.members");
     }
 
@@ -445,7 +692,8 @@ class ControlApiTest {
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import({RestApiConfiguration.class, ArtifactController.class, ConnectionController.class,
+    @Import({RestApiConfiguration.class, SourceDraftTestConfiguration.class, ArtifactController.class,
+            SourceDraftController.class, ConnectionController.class,
             ClusterController.class, HealthController.class, ApiExceptionHandler.class, FaultController.class})
     static class TestApp {
 
@@ -497,6 +745,19 @@ class ControlApiTest {
         @Bean
         ArtifactQueryService artifactQueryService(ArtifactStore store) {
             return new ArtifactQueryService(store);
+        }
+
+        /**
+         * The removal service over the same store the apply verb writes through. The four dependent
+         * stores a removed pipeline's reclaim would touch are refusing stubs rather than silent no-ops:
+         * this test deletes sources only, so reaching any of them means the reclaim ran for something
+         * that owns no bookkeeping — a no-op stub would let that pass as green.
+         */
+        @Bean
+        ArtifactMutationService artifactMutationService(ArtifactStore store, AuditGate auditGate) {
+            return new ArtifactMutationService(
+                    store, NoReclaimStores.desired(), NoReclaimStores.state(),
+                    NoReclaimStores.observations(), NoReclaimStores.srsMeta(), auditGate);
         }
 
         // The connection-test controller is imported, so its service must be present for the context to
@@ -632,6 +893,15 @@ class ControlApiTest {
         return findings;
     }
 
+    /** The same id with different content, so an edit of TGT_MY changes the stored bytes and its hash. */
+    private static final String TGT_MY_CHANGED = """
+            version: tapstate/v1
+            kind: source
+            id: tgt_my
+            connector: mysql
+            config: { host: 10.30.0.5, username: writer, password: Changed_2026 }
+            """;
+
     private static final String SRC_ORA = """
             version: tapstate/v1
             kind: source
@@ -676,11 +946,25 @@ class ControlApiTest {
 
         @Override
         public void saveAll(List<Resource> artifacts) {
+            saveAll(artifacts, Map.of());
+        }
+
+        @Override
+        public Optional<String> saveAll(List<Resource> artifacts, Map<String, String> expectedContentHashes) {
+            // The declared versions are compared as part of the write, the way the real store compares
+            // them inside its transaction, so the boundary tests see the same refusal a real one gives.
+            for (Map.Entry<String, String> expected : expectedContentHashes.entrySet()) {
+                String canonical = byId.get(expected.getKey());
+                if (canonical == null || !CanonicalHash.of(canonical).equals(expected.getValue())) {
+                    return Optional.of(expected.getKey());
+                }
+            }
             Map<String, String> staged = new LinkedHashMap<>();
             for (Resource artifact : artifacts) {
                 staged.put(artifact.id(), writer.write(artifact));
             }
             byId.putAll(staged);
+            return Optional.empty();
         }
 
         @Override
@@ -696,6 +980,19 @@ class ControlApiTest {
                 resources.add(parser.parse(canonical));
             }
             return resources;
+        }
+
+        @Override
+        public ArtifactMutation delete(String id, String expectedContentHash) {
+            String canonical = byId.get(id);
+            if (canonical == null) {
+                return ArtifactMutation.NOT_FOUND;
+            }
+            if (!CanonicalHash.of(canonical).equals(expectedContentHash)) {
+                return ArtifactMutation.VERSION_CONFLICT;
+            }
+            byId.remove(id);
+            return ArtifactMutation.DELETED;
         }
     }
 }

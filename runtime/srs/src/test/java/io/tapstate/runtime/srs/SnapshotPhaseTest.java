@@ -361,6 +361,16 @@ class SnapshotPhaseTest {
      * per-table completion -- in call order; the other facets are unused in the snapshot phase.
      */
     private static final class RecordingMeta implements SrsMetaStore {
+        @Override
+        public java.util.List<String> miningChainIdsWithConsumer(String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
+        @Override
+        public void detachConsumer(String miningChainId, String pipelineId) {
+            throw new UnsupportedOperationException("consumer detachment is not exercised by this double");
+        }
+
         private final List<String> trace;
         private final SrsMeta stored;
         final List<String> completed = new ArrayList<>();
