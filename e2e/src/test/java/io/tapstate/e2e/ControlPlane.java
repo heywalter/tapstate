@@ -69,6 +69,16 @@ final class ControlPlane {
     void bootstrapAndLogin(String username, String password) {
         String body = JsonWriter.write(Map.of("username", username, "password", password));
         expect(send(post("/auth/bootstrap", body)), 204, "bootstrap the first admin");
+        login(username, password);
+    }
+
+    /**
+     * Logs an existing admin in and holds its token for every later call. Separate from the bootstrap
+     * above because an admin outlives the server that created it: a witness that restarts the server
+     * against the same store meets an account that already exists, and bootstrapping again is refused.
+     */
+    void login(String username, String password) {
+        String body = JsonWriter.write(Map.of("username", username, "password", password));
         HttpResponse<String> login = send(post("/auth/login", body));
         expect(login, 200, "log in");
         if (!(JsonReader.parse(login.body()) instanceof Map<?, ?> map)
@@ -392,6 +402,40 @@ final class ControlPlane {
             }
         }
         return Optional.of(total);
+    }
+
+    /**
+     * The durable source position this pipeline has acked for one table, or empty when it has acked none
+     * there yet. This is the frontier as a reader sees it: below it, every change is either at a sink or
+     * held somewhere it survives a restart from.
+     *
+     * <p>Returned as the opaque string the product publishes, never parsed. A position's shape belongs to
+     * the connector that issued it, so a witness may ask whether this reading differs from an earlier one -
+     * that is what "the frontier moved" means here - but never whether one is greater than another.
+     */
+    Optional<String> durablePosition(String pipelineId, String table) {
+        HttpResponse<String> response = send(authedGet("/api/pipelines/" + pipelineId + "/metrics"));
+        return interpretDurablePosition(response.statusCode(), response.body(), pipelineId, table);
+    }
+
+    static Optional<String> interpretDurablePosition(
+            int status, String body, String pipelineId, String table) {
+        if (status == 404 && MonitorError.NO_OBSERVATION.code().equals(codeOf(body))) {
+            return Optional.empty();
+        }
+        if (status != 200) {
+            throw new AssertionError(
+                    "could not read the metrics of " + pipelineId + ": expected HTTP 200, got " + status
+                            + " - " + body);
+        }
+        if (!(JsonReader.parse(body) instanceof Map<?, ?> map)) {
+            throw new AssertionError("metrics answer did not parse: " + body);
+        }
+        // Absent until a position is acked, and absent is a real reading here rather than a broken face.
+        if (!(map.get("perTableOffset") instanceof Map<?, ?> offsets)) {
+            return Optional.empty();
+        }
+        return offsets.get(table) instanceof String position ? Optional.of(position) : Optional.empty();
     }
 
     /**

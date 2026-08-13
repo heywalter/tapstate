@@ -185,6 +185,55 @@ class ControlPlaneTest {
         assertThat(ControlPlane.interpretDeadLettered(200, body, PIPELINE)).contains(3L);
     }
 
+    // The durable position rides beside the metrics rather than inside them, because a position is a
+    // string and every metric is a number. It is the one reading a witness may compare only for
+    // difference: its shape belongs to the connector that issued it.
+
+    /** The position for one table, taken from the map that carries them all. */
+    @Test
+    void readsTheDurablePositionOfOneTable() {
+        String body = JsonWriter.write(Map.of("pipelineId", PIPELINE,
+                "metrics", Map.of("errorCount", 0),
+                "perTableOffset", Map.of("orders", "bin.000003:1544", "order_items", "bin.000003:2210")));
+
+        assertThat(ControlPlane.interpretDurablePosition(200, body, PIPELINE, "order_items"))
+                .contains("bin.000003:2210");
+    }
+
+    /**
+     * A table with nothing acked yet reads as absent rather than as a crash, and so does a whole answer
+     * carrying no positions at all. Both are real readings: positions appear only once something is acked,
+     * so a witness watching for one has to be able to sit through the window where there is none.
+     */
+    @Test
+    void readsATableWithNothingAckedYetAsAbsent() {
+        String body = JsonWriter.write(Map.of("pipelineId", PIPELINE,
+                "metrics", Map.of("errorCount", 0),
+                "perTableOffset", Map.of("orders", "bin.000003:1544")));
+
+        assertThat(ControlPlane.interpretDurablePosition(200, body, PIPELINE, "order_items")).isEmpty();
+    }
+
+    @Test
+    void readsAnAnswerWithNoPositionsAtAllAsAbsent() {
+        assertThat(ControlPlane.interpretDurablePosition(200, metrics(0L), PIPELINE, "orders")).isEmpty();
+    }
+
+    /** And an unpublished observation stays "not yet", the same window every other reading sits through. */
+    @Test
+    void readsAnUnpublishedObservationAsNothingYetForTheDurablePosition() {
+        assertThat(ControlPlane.interpretDurablePosition(
+                404, coded(MonitorError.NO_OBSERVATION.code()), PIPELINE, "orders")).isEmpty();
+    }
+
+    /** A server failure stays loud here too - it says nothing about where the frontier is. */
+    @Test
+    void keepsAServerFailureLoudForTheDurablePosition() {
+        assertThatThrownBy(() -> ControlPlane.interpretDurablePosition(500, "boom", PIPELINE, "orders"))
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("500");
+    }
+
     // A verb the harness expects to be refused reads its answer the same way: the product declining a
     // request is the outcome under test, and everything else - it succeeding, or the server failing - is
     // the specification's own failure and has to stay loud. Only the client-error range is a refusal; a
