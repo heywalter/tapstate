@@ -355,6 +355,24 @@ final class ControlPlane {
 
     /** What a metrics answer says about discarded changes, read exactly the way the error count is. */
     static Optional<Long> interpretDeadLettered(int status, String body, String pipelineId) {
+        return interpretMetricTotal(status, body, pipelineId, DEAD_LETTERED_PREFIX);
+    }
+
+    /**
+     * Every metric this pipeline publishes under {@code prefix}, added up, on the same terms as the reading
+     * above: summed rather than keyed by namespace, because a namespace name is derived from the pipeline
+     * and the embed path inside it and no specification should be copying one by hand.
+     *
+     * <p>Absent names read as zero rather than as unmeasured, which is right for a metric published only
+     * where there is something to say. It leaves the caller with the discriminating half to do: a witness
+     * resting on "zero" alone would pass on a pipeline that published nothing at all.
+     */
+    Optional<Long> metricTotal(String pipelineId, String prefix) {
+        HttpResponse<String> response = send(authedGet("/api/pipelines/" + pipelineId + "/metrics"));
+        return interpretMetricTotal(response.statusCode(), response.body(), pipelineId, prefix);
+    }
+
+    static Optional<Long> interpretMetricTotal(int status, String body, String pipelineId, String prefix) {
         if (status == 404 && MonitorError.NO_OBSERVATION.code().equals(codeOf(body))) {
             return Optional.empty();
         }
@@ -366,14 +384,14 @@ final class ControlPlane {
         if (!(JsonReader.parse(body) instanceof Map<?, ?> map) || !(map.get("metrics") instanceof Map<?, ?> metrics)) {
             throw new AssertionError("metrics answer carried no metrics: " + body);
         }
-        long discarded = 0L;
+        long total = 0L;
         for (Map.Entry<?, ?> entry : metrics.entrySet()) {
-            if (entry.getKey() instanceof String name && name.startsWith(DEAD_LETTERED_PREFIX)
+            if (entry.getKey() instanceof String name && name.startsWith(prefix)
                     && entry.getValue() instanceof Number count) {
-                discarded += count.longValue();
+                total += count.longValue();
             }
         }
-        return Optional.of(discarded);
+        return Optional.of(total);
     }
 
     /**
