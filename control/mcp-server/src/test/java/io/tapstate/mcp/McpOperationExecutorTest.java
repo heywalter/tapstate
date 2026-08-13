@@ -36,6 +36,7 @@ class McpOperationExecutorTest {
                     && exchange.getRequestURI().getPath().equals("/api/connectors/mysql")) {
                 answer(exchange, 200, """
                         {"id":"mysql","origin":"registered","runtimeAvailable":true,
+                         "config":[],
                          "spec":{"contentHash":"abc123","text":"{}","unavailable":null}}
                         """);
             } else {
@@ -45,8 +46,6 @@ class McpOperationExecutorTest {
         try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
             McpOperationExecutor executor = new McpOperationExecutor(
                     baseOf(server), "token", Map.of(), client);
-            Map<String, Object> source = Map.of(
-                    "id", "orders", "connector", "mysql", "config", Map.of());
             Map<String, Object> connection = Map.of(
                     "id", "orders", "connectorId", "mysql", "settings", Map.of());
             Map<String, Object> pipeline = Map.of("id", "orders");
@@ -56,9 +55,8 @@ class McpOperationExecutorTest {
             List<Map.Entry<io.tapstate.control.core.Operation, Map<String, Object>>> calls = List.of(
                     Map.entry(ControlOperations.CONNECTOR_LIST, Map.of()),
                     Map.entry(ControlOperations.CONNECTOR_GET, Map.of("id", "mysql")),
-                    Map.entry(ControlOperations.SOURCE_LIST, Map.of()),
-                    Map.entry(ControlOperations.SOURCE_GET, Map.of("id", "orders")),
-                    Map.entry(ControlOperations.SOURCE_DRAFT, source),
+                    Map.entry(ControlOperations.SOURCE_DRAFT, Map.of(
+                            "id", "orders", "connector", "mysql", "config", Map.of("host", "db"))),
                     Map.entry(ControlOperations.CONNECTION_TEST, connection),
                     Map.entry(ControlOperations.CONNECTION_TEST_RESULT, Map.of("id", "orders")),
                     Map.entry(ControlOperations.CONNECTION_DISCOVER_SCHEMA, connection),
@@ -79,46 +77,13 @@ class McpOperationExecutorTest {
             }
 
             assertThat(paths).contains(
-                    "/api/connectors", "/api/connectors/mysql", "/api/sources:draft", "/api/sources",
-                    "/api/sources/orders", "/api/connections:test",
+                    "/api/connectors", "/api/connectors/mysql", "/api/connections:test",
+                    "/api/sources:draft",
                     "/api/connections/orders/test-result", "/api/connections:discover-schema",
                     "/api/connections/orders/schema", "/api/artifacts:validate", "/api/artifacts:apply",
                     "/api/pipelines/orders:start", "/api/pipelines/orders:stop",
                     "/api/pipelines/orders/status", "/api/pipelines/orders/metrics",
                     "/api/pipelines/orders/snapshot", "/api/pipelines/orders/logs?limit=200");
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
-    void sourceDraftRoutesOnePostWithoutAConnectorLookup() throws Exception {
-        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
-        AtomicReference<String> path = new AtomicReference<>();
-        AtomicInteger requests = new AtomicInteger();
-        HttpServer server = server(exchange -> {
-            requests.incrementAndGet();
-            path.set(exchange.getRequestURI().toString());
-            posted.set((Map<?, ?>) JsonReader.parse(new String(
-                    exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
-            answer(exchange, 200, "{\"yaml\":\"version: tapstate/v1\\nkind: source\\n\"}");
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of(), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
-                    Map.of("id", "orders", "connector", "mysql",
-                            "config", Map.of("password", "draft-secret")));
-
-            assertThat(result.error()).isFalse();
-            assertThat(result.body()).containsEntry("yaml", "version: tapstate/v1\nkind: source\n");
-            assertThat(requests.get()).isEqualTo(1);
-            assertThat(path.get()).isEqualTo("/api/sources:draft");
-            assertThat(posted.get().get("id")).isEqualTo("orders");
-            assertThat(posted.get().get("connector")).isEqualTo("mysql");
-            assertThat(((Map<?, ?>) posted.get().get("config")).get("password"))
-                    .isEqualTo("draft-secret");
         } finally {
             server.stop(0);
         }
@@ -135,6 +100,63 @@ class McpOperationExecutorTest {
             assertThat(result.error()).isTrue();
             assertThat(result.body()).containsEntry("code", "control.unreachable");
         }
+    }
+
+    @Test
+    void sourceDraftExpandsOnlyConfigBeforeSendingItToTheServer() throws Exception {
+        SourceDraftExchange exchange = executeSourceDraft(
+                Map.of("MYSQL_PASSWORD", "expanded-secret"),
+                Map.of("id", "${MYSQL_PASSWORD}", "connector", "mysql", "mode", "snapshot",
+                        "config", Map.of("password", "${MYSQL_PASSWORD}")),
+                "{\"id\":\"mysql\",\"config\":[{\"name\":\"password\",\"secret\":true}]}",
+                "{\"yaml\":\"version: tapstate/v1\\nkind: source\\nid: orders\\nconnector: mysql\\n"
+                        + "config:\\n  password: expanded-secret\\n\"}");
+
+        assertThat(exchange.result().error()).isFalse();
+        assertThat(exchange.posted().get("mode")).isEqualTo("snapshot");
+        assertThat(exchange.posted().get("id")).isEqualTo("${MYSQL_PASSWORD}");
+        assertThat(((Map<?, ?>) exchange.posted().get("config")).get("password"))
+                .isEqualTo("expanded-secret");
+        assertThat(exchange.result().body().get("yaml")).isEqualTo("version: tapstate/v1\n"
+                + "kind: source\n"
+                + "id: orders\n"
+                + "connector: mysql\n");
+    }
+
+    @Test
+    void sourceDraftRestoresPlaceholdersForNonSecretConfigFields() throws Exception {
+        SourceDraftExchange exchange = executeSourceDraft(
+                Map.of("MYSQL_HOST", "expanded-host"),
+                Map.of("id", "orders", "connector", "mysql", "mode", "snapshot",
+                        "config", Map.of("host", "${MYSQL_HOST}")),
+                "{\"id\":\"mysql\",\"config\":[{\"name\":\"host\",\"secret\":false}]}",
+                "{\"yaml\":\"version: tapstate/v1\\nkind: source\\nid: orders\\n"
+                        + "connector: mysql\\nconfig:\\n  host: expanded-host\\n\"}");
+
+        assertThat(exchange.result().error()).isFalse();
+        assertThat(((Map<?, ?>) exchange.posted().get("config")).get("host"))
+                .isEqualTo("expanded-host");
+        assertThat(exchange.result().body().get("yaml")).asString()
+                .contains("host: ${MYSQL_HOST}")
+                .doesNotContain("host: expanded-host");
+    }
+
+    @Test
+    void sourceDraftFailsClosedForUnavailableConnectorMetadata() throws Exception {
+        assertSourceDraftUnavailable(500, "{}", "{}");
+        assertSourceDraftUnavailable(200, "{\"config\":{}}", "{}");
+        assertSourceDraftUnavailable(200, "{\"config\":[{\"name\":\"password\"}]}", "{}");
+    }
+
+    @Test
+    void sourceDraftFailsClosedForMalformedDraftResponses() throws Exception {
+        String connector = "{\"config\":[{\"name\":\"password\",\"secret\":true}]}";
+        assertSourceDraftUnavailable(200, connector, "{}");
+        assertSourceDraftUnavailable(200, connector, "{\"yaml\":\"version: tapstate/v1\\n"
+                + "kind: pipeline\\nid: not_source\\nsource: src_file\\n"
+                + "settings: { read_mode: snapshot_and_cdc }\\n"
+                + "transforms: []\\nserve: { from: src_file, sync: [] }\\n\"}");
+        assertSourceDraftUnavailable(200, connector, "{\"yaml\":\"not valid yaml\"}");
     }
 
     @Test
@@ -183,28 +205,6 @@ class McpOperationExecutorTest {
     }
 
     @Test
-    void sourceDraftPropagatesServerRejection() throws Exception {
-        AtomicInteger requests = new AtomicInteger();
-        HttpServer server = server(exchange -> {
-            requests.incrementAndGet();
-            answer(exchange, 503, "{\"message\":\"temporarily unavailable\"}");
-        });
-        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
-            McpOperationExecutor executor = new McpOperationExecutor(
-                    baseOf(server), "token", Map.of(), client);
-
-            McpResult result = executor.execute(ControlOperations.SOURCE_DRAFT,
-                    Map.of("id", "orders", "connector", "mysql", "config", Map.of()));
-
-            assertThat(result.error()).isTrue();
-            assertThat(result.body()).containsEntry("code", "mcp.server-rejected");
-            assertThat(requests).hasValue(1);
-        } finally {
-            server.stop(0);
-        }
-    }
-
-    @Test
     void requiredPipelineIdIsValidatedBeforeAnyHttpRequest() {
         try (HttpControlClient client = new HttpControlClient()) {
             McpOperationExecutor executor = new McpOperationExecutor(
@@ -234,6 +234,54 @@ class McpOperationExecutorTest {
 
     private static URI baseOf(HttpServer server) {
         return URI.create("http://127.0.0.1:" + server.getAddress().getPort());
+    }
+
+    private static McpResult sourceDraftResult(
+            int connectorStatus, String connectorBody, String draftBody) throws Exception {
+        return executeSourceDraft(Map.of(),
+                Map.of("id", "orders", "connector", "mysql", "config", Map.of()),
+                connectorStatus, connectorBody, draftBody).result();
+    }
+
+    private static SourceDraftExchange executeSourceDraft(
+            Map<String, String> environment,
+            Map<String, Object> arguments,
+            String connectorBody,
+            String draftBody) throws Exception {
+        return executeSourceDraft(environment, arguments, 200, connectorBody, draftBody);
+    }
+
+    private static SourceDraftExchange executeSourceDraft(
+            Map<String, String> environment,
+            Map<String, Object> arguments,
+            int connectorStatus,
+            String connectorBody,
+            String draftBody) throws Exception {
+        AtomicReference<Map<?, ?>> posted = new AtomicReference<>();
+        HttpServer server = server(exchange -> {
+            if (exchange.getRequestMethod().equals("GET")) {
+                answer(exchange, connectorStatus, connectorBody);
+            } else {
+                posted.set((Map<?, ?>) JsonReader.parse(new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+                answer(exchange, 200, draftBody);
+            }
+        });
+        try (HttpControlClient client = new HttpControlClient(Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            McpOperationExecutor executor = new McpOperationExecutor(
+                    baseOf(server), "token", environment, client);
+            return new SourceDraftExchange(executor.execute(ControlOperations.SOURCE_DRAFT, arguments), posted.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private record SourceDraftExchange(McpResult result, Map<?, ?> posted) { }
+
+    private static void assertSourceDraftUnavailable(
+            int connectorStatus, String connectorBody, String draftBody) throws Exception {
+        assertThat(sourceDraftResult(connectorStatus, connectorBody, draftBody).body())
+                .containsEntry("code", "mcp.connector-spec-unavailable");
     }
 
     private static void answer(HttpExchange exchange, int status, String body) throws IOException {

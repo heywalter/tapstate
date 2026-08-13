@@ -12,7 +12,7 @@ class ControlApiSchemaTest {
 
     private static final Set<String> MCP_OPERATIONS = Set.of(
             "connector.list", "connector.get",
-            "source.list", "source.get", "source.draft",
+            "source.draft",
             "connection.test", "connection.test-result", "connection.discover-schema", "connection.schema",
             "artifact.validate", "artifact.apply",
             "pipeline.start", "pipeline.stop", "pipeline.status", "pipeline.metrics",
@@ -73,5 +73,29 @@ class ControlApiSchemaTest {
                         "description", "Canonical tapstate/v1 Source YAML")),
                 "additionalProperties", false,
                 "required", java.util.List.of("yaml")));
+    }
+
+    @Test
+    void sourceDraftSchemaConstrainsNestedFieldsButKeepsExtensionMapsOpen() {
+        Map<?, ?> definitions = (Map<?, ?>) ControlApiSchema.document().get("$defs");
+        Map<?, ?> request = (Map<?, ?>) definitions.get("SourceDraftRequest");
+        Map<?, ?> properties = (Map<?, ?>) request.get("properties");
+
+        Map<?, ?> metadata = (Map<?, ?>) properties.get("metadata");
+        assertThat(metadata.get("additionalProperties")).isEqualTo(false);
+        assertThat(((Map<?, ?>) metadata.get("properties")).keySet().stream().map(String::valueOf).toList())
+                .containsExactlyInAnyOrder("labels", "description");
+
+        Map<?, ?> table = (Map<?, ?>) ((Map<?, ?>) properties.get("tables")).get("items");
+        assertThat(((Map<?, ?>) ((Map<?, ?>) table.get("properties")).get("type")).get("enum"))
+                .isEqualTo(java.util.List.of("literal", "regex", "spec"));
+
+        Map<?, ?> srs = (Map<?, ?>) properties.get("srs");
+        assertThat(((Map<?, ?>) ((Map<?, ?>) srs.get("properties")).get("schemaEvolution")).get("enum"))
+                .isEqualTo(java.util.List.of("track", "ignore"));
+        assertThat(((Map<?, ?>) ((Map<?, ?>) srs.get("properties")).get("queryable")).get("type"))
+                .isEqualTo("boolean");
+        assertThat(((Map<?, ?>) properties.get("options")).get("additionalProperties"))
+                .isEqualTo(true);
     }
 }

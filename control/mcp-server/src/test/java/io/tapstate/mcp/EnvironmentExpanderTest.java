@@ -23,6 +23,21 @@ class EnvironmentExpanderTest {
     }
 
     @Test
+    void restoresReferencesAcrossNestedValuesWithoutChangingLiteralOutput() {
+        Map<String, Object> original = Map.of(
+                "nested", List.of(Map.of("host", "${MYSQL_HOST}"), "literal"),
+                "port", 3306);
+        Object expanded = EnvironmentExpander.expand(original, Map.of("MYSQL_HOST", "expanded-host"));
+
+        assertThat(EnvironmentExpander.containsReference(original)).isTrue();
+        assertThat(EnvironmentExpander.containsReference(List.of("literal", 42))).isFalse();
+        assertThat(EnvironmentExpander.restoreReferences(expanded, original)).isEqualTo(original);
+        assertThat(EnvironmentExpander.restoreReferences("expanded", "literal"))
+                .isEqualTo("expanded");
+        assertThat(EnvironmentExpander.restoreReferences(42, null)).isEqualTo(42);
+    }
+
+    @Test
     void missingEnvironmentReferenceIsAStableCodedFailure() {
         assertThatThrownBy(() -> EnvironmentExpander.expand("${MISSING}", Map.of()))
                 .isInstanceOf(TapstateException.class)

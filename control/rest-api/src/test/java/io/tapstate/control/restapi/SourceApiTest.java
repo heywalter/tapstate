@@ -9,7 +9,6 @@ import io.tapstate.control.core.CredentialAuthenticator;
 import io.tapstate.control.core.GeneratedSecret;
 import io.tapstate.control.core.OperationRegistry;
 import io.tapstate.control.core.Scope;
-import io.tapstate.control.core.SourceRepresentation;
 import io.tapstate.control.core.SourceService;
 import io.tapstate.control.core.TokenSecrets;
 import io.tapstate.control.core.TokenService;
@@ -375,15 +374,14 @@ class SourceApiTest {
 
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import({RestApiConfiguration.class, SourceController.class, ApiExceptionHandler.class})
+    @Import({RestApiConfiguration.class, SourceDraftTestConfiguration.class, SourceServiceTestConfiguration.class,
+            SourceController.class,
+            SourceDraftController.class,
+            ApiExceptionHandler.class})
     static class TestApp {
         @Bean InMemoryArtifactStore artifactStore() { return new InMemoryArtifactStore(); }
         @Bean RecordingAuditStore auditStore() { return new RecordingAuditStore(); }
         @Bean Clock clock() { return Clock.fixed(Instant.parse("2026-07-13T00:00:00Z"), ZoneOffset.UTC); }
-        @Bean SourceService sourceService(InMemoryArtifactStore store) {
-            TapstateCatalog catalog = TapstateCatalog.load();
-            return new SourceService(catalog, store, new SourceRepresentation(catalog));
-        }
         @Bean AuditedSourceService auditedSourceService(SourceService source, AuditStore audits, Clock clock) {
             return new AuditedSourceService(source, new AuditGate(audits, clock));
         }
