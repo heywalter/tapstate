@@ -3,6 +3,7 @@ package io.tapstate.e2e;
 import io.tapstate.core.lifecycle.LifecycleVerb;
 import io.tapstate.testsupport.DockerGate;
 
+import org.bson.Document;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -13,7 +14,10 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -59,6 +63,8 @@ class RealMysqlToMongoSnapshotIT {
     private static final String TABLE = "orders";
     private static final String TARGET_COLLECTION = "player_address";
     private static final String PIPELINE_ID = "mysql2mongo";
+    private static final String TIMESTAMP_COLUMN = "created_at";
+    private static final Instant CREATED_AT = Instant.parse("2026-08-12T13:08:43.123Z");
 
     @BeforeAll
     static void requireDockerAndRealConnectors() {
@@ -101,6 +107,11 @@ class RealMysqlToMongoSnapshotIT {
                 control.lifecycle(PIPELINE_ID, LifecycleVerb.START);
 
                 awaitCount(mongo, targetUri, TARGET_COLLECTION, SEEDED_ROWS);
+                assertThat(mongo.documents(targetUri, TARGET_COLLECTION))
+                        .as("the MySQL TIMESTAMP values read back from Mongo")
+                        .allSatisfy(document -> assertThat(document.get(TIMESTAMP_COLUMN))
+                                .isInstanceOf(Date.class)
+                                .isEqualTo(Date.from(CREATED_AT)));
             }
         }
     }
@@ -125,13 +136,17 @@ class RealMysqlToMongoSnapshotIT {
         try (Connection connection =
                 DriverManager.getConnection(mysql.getJdbcUrl(), mysql.getUsername(), mysql.getPassword())) {
             try (Statement statement = connection.createStatement()) {
-                statement.execute("CREATE TABLE " + TABLE + " (id INT PRIMARY KEY, name VARCHAR(64))");
+                statement.execute("SET time_zone = '+00:00'");
+                statement.execute("CREATE TABLE " + TABLE + " (id INT PRIMARY KEY, name VARCHAR(64), "
+                        + TIMESTAMP_COLUMN + " TIMESTAMP(3) NOT NULL)");
             }
             try (PreparedStatement insert =
-                    connection.prepareStatement("INSERT INTO " + TABLE + " (id, name) VALUES (?, ?)")) {
+                    connection.prepareStatement("INSERT INTO " + TABLE + " (id, name, " + TIMESTAMP_COLUMN
+                            + ") VALUES (?, ?, ?)")) {
                 for (long id = 1; id <= rows; id++) {
                     insert.setLong(1, id);
                     insert.setString(2, "order-" + id);
+                    insert.setTimestamp(3, Timestamp.from(CREATED_AT));
                     insert.addBatch();
                 }
                 insert.executeBatch();
