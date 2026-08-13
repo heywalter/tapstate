@@ -66,6 +66,22 @@ class NestIsolatesSameLevelEmbedKeyspacesIT {
     private static final String ITEM_TABLE = "items";
     private static final String PIPELINE_ID = "customer_two_branches";
 
+    /**
+     * This invocation's pipeline id, which carries the tier so the two tiers do not share a nest's state.
+     *
+     * <p>A nest keeps its state in a database of a fixed name, addressed by a namespace built from the
+     * pipeline and step ids - so two installs on one Mongo running a pipeline of the same id share one
+     * state, knowingly and by design. The tiers are two such installs, and giving each its own store and
+     * its own target leaves that third thing shared: the second tier starts on the state the first one
+     * finished with. A witness that ends where its own snapshot would have put it cannot see this; one
+     * that changes something can.
+     *
+     * <p>The base has to be its own too, for the same reason one level up: three witnesses here shared
+     * one id, and the tier suffix left them sharing it still. Nothing collides while only one of them
+     * is ever run.
+     */
+    private String pipelineId;
+
     private static final List<Row> CUSTOMERS = List.of(new Row(1, 0, "first"), new Row(2, 0, "second"));
 
     /** The collision, and it is crossed: 77 is a policy of customer 1 and an order of customer 2. */
@@ -92,6 +108,7 @@ class NestIsolatesSameLevelEmbedKeyspacesIT {
             // One store and one target per tier: sharing them would let a later tier read the documents
             // an earlier one already landed and pass without the nest assembling a thing.
             String suffix = tier.name().toLowerCase(Locale.ROOT);
+            pipelineId = PIPELINE_ID + "_" + suffix;
             String storeUri = SharedMongo.replicaSetUrl("branches_store_" + suffix);
             String targetUri = SharedMongo.replicaSetUrl("branches_target_" + suffix);
 
@@ -111,7 +128,7 @@ class NestIsolatesSameLevelEmbedKeyspacesIT {
                 resources.put("src_orders.tap.yml", sourceYaml("src_orders", ORDER_TABLE, mysqlConfig));
                 resources.put("src_items.tap.yml", sourceYaml("src_items", ITEM_TABLE, mysqlConfig));
                 resources.put("tgt_mongo.tap.yml", targetYaml(targetUri));
-                resources.put("pipeline.tap.yml", pipelineYaml());
+                resources.put("pipeline.tap.yml", pipelineYaml(pipelineId));
                 control.apply(resources);
 
                 // Every source is discovered: the root's model resolves the target the sink writes, and
@@ -122,7 +139,7 @@ class NestIsolatesSameLevelEmbedKeyspacesIT {
                 control.discoverSchema("src_orders", "mysql", mysqlConfig);
                 control.discoverSchema("src_items", "mysql", mysqlConfig);
 
-                control.lifecycle(PIPELINE_ID, LifecycleVerb.START);
+                control.lifecycle(pipelineId, LifecycleVerb.START);
 
                 List<Document> documents = awaitDocuments(mongo, targetUri);
                 if (!settled(documents)) {
@@ -158,14 +175,14 @@ class NestIsolatesSameLevelEmbedKeyspacesIT {
      * collection nobody looked in - so the reading that separates them is taken here rather than left for
      * a rerun with more logging.
      */
-    private static String diagnose(
+    private String diagnose(
             ControlPlane control, MongoEndpoints mongo, String targetUri, List<Document> documents) {
         return "the nest never filled both branches of both roots: '" + ROOT_TABLE + "' holds " + documents
-                + System.lineSeparator() + "  pipeline state: " + control.state(PIPELINE_ID)
-                + ", error count: " + control.errorCount(PIPELINE_ID)
+                + System.lineSeparator() + "  pipeline state: " + control.state(pipelineId)
+                + ", error count: " + control.errorCount(pipelineId)
                 + System.lineSeparator() + "  collections in the target: " + mongo.collections(targetUri)
-                + System.lineSeparator() + "  metrics: " + control.metrics(PIPELINE_ID)
-                + System.lineSeparator() + "  logs: " + control.logs(PIPELINE_ID);
+                + System.lineSeparator() + "  metrics: " + control.metrics(pipelineId)
+                + System.lineSeparator() + "  logs: " + control.logs(pipelineId);
     }
 
     /** Whether both branches of both roots have landed everything, so waiting can stop. */
@@ -421,11 +438,11 @@ class NestIsolatesSameLevelEmbedKeyspacesIT {
      * whose schema is discovered, and the document being assembled is the root's. Two embeds sit at the
      * same level under it, each with a child of its own, so each compiles to a resolver of its own.
      */
-    private static String pipelineYaml() {
+    private static String pipelineYaml(String pipelineId) {
         return """
                 version: tapstate/v1
                 kind: pipeline
-                id: customer_two_branches
+                id: %s
                 source: [ src_customers, src_policies, src_claims, src_orders, src_items ]
                 settings: { read_mode: snapshot_and_cdc }
                 transforms:
@@ -454,7 +471,8 @@ class NestIsolatesSameLevelEmbedKeyspacesIT {
                   from: customer_doc
                   sync:
                     - source: tgt_mongo
-                """;
+                """
+                .formatted(pipelineId);
     }
 
     private static void sleep() {

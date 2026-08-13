@@ -71,6 +71,22 @@ class NestResolvesFourLevelDeepIT {
     private static final String DOCUMENT_TABLE = "documents";
     private static final String PIPELINE_ID = "customer_dossier";
 
+    /**
+     * This invocation's pipeline id, which carries the tier so the two tiers do not share a nest's state.
+     *
+     * <p>A nest keeps its state in a database of a fixed name, addressed by a namespace built from the
+     * pipeline and step ids - so two installs on one Mongo running a pipeline of the same id share one
+     * state, knowingly and by design. The tiers are two such installs, and giving each its own store and
+     * its own target leaves that third thing shared: the second tier starts on the state the first one
+     * finished with. A witness that ends where its own snapshot would have put it cannot see this; one
+     * that changes something can.
+     *
+     * <p>The base has to be its own too, for the same reason one level up: three witnesses here shared
+     * one id, and the tier suffix left them sharing it still. Nothing collides while only one of them
+     * is ever run.
+     */
+    private String pipelineId;
+
     /** Two roots: one root is satisfied by an implementation that piles everything onto whoever came first. */
     private static final List<Row> CUSTOMERS = List.of(new Row(1, 0, "first"), new Row(2, 0, "second"));
 
@@ -102,6 +118,7 @@ class NestResolvesFourLevelDeepIT {
             // One store and one target per tier: sharing them would let a later tier read the documents
             // an earlier one already landed and pass without the nest assembling a thing.
             String suffix = tier.name().toLowerCase(Locale.ROOT);
+            pipelineId = PIPELINE_ID + "_" + suffix;
             String storeUri = SharedMongo.replicaSetUrl("deep_store_" + suffix);
             String targetUri = SharedMongo.replicaSetUrl("deep_target_" + suffix);
 
@@ -120,7 +137,7 @@ class NestResolvesFourLevelDeepIT {
                 resources.put("src_claims.tap.yml", sourceYaml("src_claims", CLAIM_TABLE, mysqlConfig));
                 resources.put("src_documents.tap.yml", sourceYaml("src_documents", DOCUMENT_TABLE, mysqlConfig));
                 resources.put("tgt_mongo.tap.yml", targetYaml(targetUri));
-                resources.put("pipeline.tap.yml", pipelineYaml());
+                resources.put("pipeline.tap.yml", pipelineYaml(pipelineId));
                 control.apply(resources);
 
                 // Every source is discovered: the root's model resolves the target the sink writes, and
@@ -130,7 +147,7 @@ class NestResolvesFourLevelDeepIT {
                 control.discoverSchema("src_claims", "mysql", mysqlConfig);
                 control.discoverSchema("src_documents", "mysql", mysqlConfig);
 
-                control.lifecycle(PIPELINE_ID, LifecycleVerb.START);
+                control.lifecycle(pipelineId, LifecycleVerb.START);
 
                 List<Document> documents = awaitDocuments(mongo, targetUri);
                 if (!settled(documents)) {
@@ -167,16 +184,16 @@ class NestResolvesFourLevelDeepIT {
      * collection nobody looked in - so the reading that separates them is taken here rather than left for
      * a rerun with more logging.
      */
-    private static String diagnose(
+    private String diagnose(
             ControlPlane control, MongoEndpoints mongo, String targetUri, List<Document> documents) {
         return "the nest never assembled the tree that was seeded: expected " + CUSTOMERS.size()
                 + " documents holding " + POLICIES.size() + " policies, " + CLAIMS.size() + " claims and "
                 + DOCUMENTS.size() + " documents between them, and '" + ROOT_TABLE + "' holds " + documents
-                + System.lineSeparator() + "  pipeline state: " + control.state(PIPELINE_ID)
-                + ", error count: " + control.errorCount(PIPELINE_ID)
+                + System.lineSeparator() + "  pipeline state: " + control.state(pipelineId)
+                + ", error count: " + control.errorCount(pipelineId)
                 + System.lineSeparator() + "  collections in the target: " + mongo.collections(targetUri)
-                + System.lineSeparator() + "  metrics: " + control.metrics(PIPELINE_ID)
-                + System.lineSeparator() + "  logs: " + control.logs(PIPELINE_ID);
+                + System.lineSeparator() + "  metrics: " + control.metrics(pipelineId)
+                + System.lineSeparator() + "  logs: " + control.logs(pipelineId);
     }
 
     /**
@@ -442,11 +459,11 @@ class NestResolvesFourLevelDeepIT {
      * whose schema is discovered, and the document being assembled is the root's. Each embed joins on the
      * key of the level directly above it and on nothing else.
      */
-    private static String pipelineYaml() {
+    private static String pipelineYaml(String pipelineId) {
         return """
                 version: tapstate/v1
                 kind: pipeline
-                id: customer_dossier
+                id: %s
                 source: [ src_customers, src_policies, src_claims, src_documents ]
                 settings: { read_mode: snapshot_and_cdc }
                 transforms:
@@ -478,7 +495,8 @@ class NestResolvesFourLevelDeepIT {
                   from: customer_doc
                   sync:
                     - source: tgt_mongo
-                """;
+                """
+                .formatted(pipelineId);
     }
 
     private static void sleep() {

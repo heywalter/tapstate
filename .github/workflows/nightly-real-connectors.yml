@@ -1,10 +1,15 @@
 # Real-connector witness lane.
 #
-# Runs the real-connector end-to-end witnesses - RealMysqlToMongoSnapshotIT and RealMysqlToMongoCdcIT -
-# across both fidelity tiers: the product embedded in the test JVM, and the shipped boot jar in its own
-# process. They drive two real Tapdata connectors (MySQL, MongoDB), so they need a Docker daemon for
-# the databases and the connectors' runtime jars. The default CI build skips them (no jars); this lane
-# is where they are meant to run.
+# Runs the real-connector end-to-end witnesses across both fidelity tiers: the product embedded in the
+# test JVM, and the shipped boot jar in its own process. They drive two real Tapdata connectors (MySQL,
+# MongoDB), so they need a Docker daemon for the databases and the connectors' runtime jars. The default
+# CI build skips them (no jars); this lane is where they are meant to run.
+#
+# The selector is a pattern rather than a list of names. It used to name two witnesses, which is how five
+# nest witnesses came to be written, committed, documented with their own run instructions - and never run
+# by anything. A list has to be edited by whoever adds a witness, and nothing fails when they do not: the
+# new witness simply never runs, and its absence looks exactly like a lane that had nothing to do. Three
+# product faults sat behind those five, each one enough on its own to stop a nest reaching a real sink.
 #
 # The jars are built here from the connectors' own source. They used to be named as a directory somebody
 # had staged on the runner by hand, which is what kept this lane unscheduled: a nightly cannot depend on
@@ -46,11 +51,27 @@ jobs:
         run: e2e/build-real-connectors.sh "${{ runner.temp }}/connectors"
       - name: Real-connector witnesses on both tiers
         # Docker 29 rejects the API version testcontainers negotiates by default, so pin it. The surefire
-        # selector matches nothing, so only the two failsafe witnesses run.
+        # selector matches nothing, so only the failsafe witnesses run.
         run: >
           mvn -B -pl e2e -am verify
           -Dapi.version=1.44
           -Dtapstate.e2e.connectors-dir="${{ runner.temp }}/connectors"
           -Dtest=ZzzNoSuchSurefireSelector -Dsurefire.failIfNoSpecifiedTests=false
-          -Dit.test=RealMysqlToMongoSnapshotIT,RealMysqlToMongoCdcIT
+          -Dit.test=RealMysqlToMongo*IT,Nest*IT
           -Dfailsafe.failIfNoSpecifiedTests=false
+      - name: Every witness the pattern names actually ran
+        # The run above tolerates a selector matching nothing, because the reactor builds modules holding
+        # no integration tests at all. That tolerance is also the one way this lane can report green having
+        # run nothing, which is the outcome it exists to prevent - so the count is checked rather than
+        # trusted. The expectation is derived from the same pattern the selector uses, so adding a witness
+        # needs no edit here, while narrowing the selector past a witness that still exists fails.
+        if: always()
+        run: |
+          expected=$(ls e2e/src/test/java/io/tapstate/e2e/RealMysqlToMongo*IT.java \
+                        e2e/src/test/java/io/tapstate/e2e/Nest*IT.java 2>/dev/null | wc -l | tr -d ' ')
+          ran=$(ls e2e/target/failsafe-reports/*.txt 2>/dev/null | wc -l | tr -d ' ')
+          echo "witness classes present: $expected, ran: $ran"
+          if [ "$ran" -lt "$expected" ]; then
+            echo "$expected witness classes are checked in and $ran ran: the selector no longer reaches them all" >&2
+            exit 1
+          fi

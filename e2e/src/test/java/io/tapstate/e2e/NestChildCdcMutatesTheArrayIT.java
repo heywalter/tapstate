@@ -70,7 +70,25 @@ class NestChildCdcMutatesTheArrayIT {
     private static final Duration POLL = Duration.ofMillis(250);
     private static final String PARENT_TABLE = "orders";
     private static final String CHILD_TABLE = "order_items";
-    private static final String PIPELINE_ID = "nested_orders";
+    private static final String PIPELINE_ID = "mutated_orders";
+
+    /**
+     * This invocation's pipeline id, which carries the tier so the two tiers do not share a nest's state.
+     *
+     * <p>A nest keeps its state in a database of a fixed name, addressed by a namespace built from the
+     * pipeline and step ids - so two installs on one Mongo running a pipeline of the same id share one
+     * state, knowingly and by design. The tiers are two such installs. Giving each its own store and its
+     * own target, as this witness already did, leaves that third thing shared: the second tier starts on
+     * the state the first one finished with, and its snapshot is merged into an array that already holds
+     * the first tier's changes. Idempotent witnesses cannot see this; this one ends somewhere its own
+     * snapshot never reaches, so it can.
+     *
+     * <p>The base has to be its own too, for the same reason one level up: three witnesses here shared
+     * one id, and the tier suffix left them sharing it still. Nothing collides while only one of them
+     * is ever run.
+     */
+    private String pipelineId;
+
     private static final String EMBED_PATH = "items";
     private static final long ROOT_ID = 1;
 
@@ -100,6 +118,7 @@ class NestChildCdcMutatesTheArrayIT {
             // One store and one target per tier: sharing them would let a later tier read the documents
             // an earlier one already landed and pass without the nest assembling a thing.
             String suffix = tier.name().toLowerCase(Locale.ROOT);
+            pipelineId = PIPELINE_ID + "_" + suffix;
             String storeUri = SharedMongo.replicaSetUrl("cdc_store_" + suffix);
             String targetUri = SharedMongo.replicaSetUrl("cdc_target_" + suffix);
 
@@ -116,13 +135,13 @@ class NestChildCdcMutatesTheArrayIT {
                 resources.put("src_orders.tap.yml", sourceYaml("src_orders", PARENT_TABLE, mysqlConfig));
                 resources.put("src_items.tap.yml", sourceYaml("src_items", CHILD_TABLE, mysqlConfig));
                 resources.put("tgt_mongo.tap.yml", targetYaml(targetUri));
-                resources.put("pipeline.tap.yml", pipelineYaml());
+                resources.put("pipeline.tap.yml", pipelineYaml(pipelineId));
                 control.apply(resources);
 
                 control.discoverSchema("src_orders", "mysql", mysqlConfig);
                 control.discoverSchema("src_items", "mysql", mysqlConfig);
 
-                control.lifecycle(PIPELINE_ID, LifecycleVerb.START);
+                control.lifecycle(pipelineId, LifecycleVerb.START);
 
                 // 1. The snapshot assembles what was seeded.
                 Document assembled = await(control, mongo, targetUri,
@@ -192,7 +211,7 @@ class NestChildCdcMutatesTheArrayIT {
      * is a sleep long enough to hide a rewrite that happened twice. On timeout the pipeline is read so
      * the failure says what it was doing rather than only that it took too long.
      */
-    private static Document await(ControlPlane control, MongoEndpoints mongo, String targetUri,
+    private Document await(ControlPlane control, MongoEndpoints mongo, String targetUri,
             Predicate<Document> reached, String what) {
         long deadline = System.nanoTime() + TIMEOUT.toNanos();
         Document last = null;
@@ -209,11 +228,11 @@ class NestChildCdcMutatesTheArrayIT {
             sleep();
         }
         throw new AssertionError(what + ": the document for root " + ROOT_ID + " is " + last
-                + System.lineSeparator() + "  pipeline state: " + control.state(PIPELINE_ID)
-                + ", error count: " + control.errorCount(PIPELINE_ID)
+                + System.lineSeparator() + "  pipeline state: " + control.state(pipelineId)
+                + ", error count: " + control.errorCount(pipelineId)
                 + System.lineSeparator() + "  collections in the target: " + mongo.collections(targetUri)
-                + System.lineSeparator() + "  metrics: " + control.metrics(PIPELINE_ID)
-                + System.lineSeparator() + "  logs: " + control.logs(PIPELINE_ID));
+                + System.lineSeparator() + "  metrics: " + control.metrics(pipelineId)
+                + System.lineSeparator() + "  logs: " + control.logs(pipelineId));
     }
 
     /**
@@ -390,11 +409,11 @@ class NestChildCdcMutatesTheArrayIT {
      * The parent source leads the list: the target model a sink writes is resolved from the first source
      * whose schema is discovered, and the document being assembled is the parent's.
      */
-    private static String pipelineYaml() {
+    private static String pipelineYaml(String pipelineId) {
         return """
                 version: tapstate/v1
                 kind: pipeline
-                id: nested_orders
+                id: %s
                 source: [ src_orders, src_items ]
                 settings: { read_mode: snapshot_and_cdc }
                 transforms:
@@ -410,7 +429,8 @@ class NestChildCdcMutatesTheArrayIT {
                   from: order_doc
                   sync:
                     - source: tgt_mongo
-                """;
+                """
+                .formatted(pipelineId);
     }
 
     private static void sleep() {
