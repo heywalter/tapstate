@@ -22,6 +22,22 @@ public interface NestStore<S> extends Serializable {
     void remove(Object key);
 
     /**
+     * Reports that one key of this vertex is holding {@code pending} changes for something that has not
+     * arrived, so that how deep a wait has ever got can be read from outside the run.
+     *
+     * <p>Told rather than worked out here, and told by whoever already has the number: what waits lives
+     * inside one entry, so arriving at it independently would mean reading the entry and counting its queue
+     * again. The one place that already has it is the limit on how much a key may hold, which is why the
+     * report is made there and cannot disagree with what the limit sees.
+     *
+     * <p>Nothing follows from a deep queue on its own - it is neither an error nor an approaching one, since
+     * whether a parent is coming is not knowable from how much arrived before it. So this is published and
+     * not judged. Doing nothing with it is the ordinary case, which is why it does nothing by default.
+     */
+    default void holding(long pending) {
+    }
+
+    /**
      * How many keys this vertex holds. It is asked of the state itself every time rather than counted up as
      * entries are written, because state outlives the run that wrote it: a tally started with the process
      * would report an almost empty vertex on the way back from a restart, and report it least accurately in

@@ -274,6 +274,9 @@ public final class ResolverProcessor extends AbstractProcessor {
      * the whole reason a wait is ended by evidence about the parent's own stream instead.
      */
     private void refuseToLetOneKeyHoldMoreThanItMay(Object key, long pending) {
+        // Reported before it is weighed, so that the count that stopped the run is the one on record rather
+        // than the last one that was allowed.
+        store.holding(pending);
         NestLimits.refuse(vertex, key, pending, pendingLimit);
     }
 

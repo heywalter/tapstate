@@ -1,5 +1,9 @@
 package io.tapstate.runtime.engine.nest;
 
+import io.tapstate.core.lifecycle.NestStateReading;
+import java.util.Map;
+import java.util.OptionalLong;
+
 /**
  * What a nest state reading is called among a run's statistics, and how to read one back. Naming and
  * parsing sit together because they are one contract with two ends: a run leaves readings under these
@@ -23,7 +27,29 @@ public final class NestStateMetricNames {
     /** How long those took in total. */
     public static final String BACKFILL_MILLIS = "backfillMillis";
 
+    /** The deepest one key has been seen holding for something that has not arrived. */
+    public static final String PENDING_HIGH_WATER = "pendingHighWater";
+
     private NestStateMetricNames() {
+    }
+
+    /**
+     * The reading {@code kinds} describes, with {@code stored} answering what the layer behind the memory
+     * holds. A kind the statistics do not carry reads as zero: a run publishes every kind on every reading,
+     * so a missing one is a run that has not been collected from yet rather than a namespace at zero.
+     *
+     * <p>Assembling it here rather than where the statistics are read keeps the two ends of the contract in
+     * one file. A kind published under a name nobody reads back is invisible in the way that costs most: the
+     * metric is present and at zero, exactly as it would be for a namespace where nothing ever happened.
+     */
+    public static NestStateReading readingFrom(Map<String, Long> kinds, OptionalLong stored) {
+        return new NestStateReading(
+                kinds.getOrDefault(ENTRIES, 0L),
+                kinds.getOrDefault(ACCESSES, 0L),
+                kinds.getOrDefault(BACKFILLS, 0L),
+                kinds.getOrDefault(BACKFILL_MILLIS, 0L),
+                kinds.getOrDefault(PENDING_HIGH_WATER, 0L),
+                stored);
     }
 
     /** The name a reading of {@code kind} about {@code namespace} is left under. */

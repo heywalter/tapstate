@@ -3,6 +3,7 @@ package io.tapstate.runtime.engine.nest;
 import com.hazelcast.core.HazelcastInstance;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.LongAccumulator;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -49,12 +50,26 @@ public final class NestStateStats {
         counters.backfillNanos.add(nanos);
     }
 
+    /**
+     * Marks that one key of {@code namespace} was holding {@code pending} changes for something that has not
+     * arrived. What is kept is the deepest ever reported rather than the last, because the last is whichever
+     * key happened to be touched most recently and says nothing about the one that is stuck.
+     *
+     * <p>Reported by whoever already worked the number out for the limit, so that the two cannot disagree
+     * about what one key holds. A mark taken anywhere else would have to count the queue a second time, and
+     * a queue is inside an entry - counting it again is the one cost this layer is built to avoid.
+     */
+    public void holding(String namespace, long pending) {
+        counters(namespace).pendingHighWater.accumulate(pending);
+    }
+
     /** How often {@code namespace} was reached for, how much of that went behind the map, at what cost. */
     public Counted counted(String namespace) {
         Counters counters = byNamespace.get(namespace);
         return counters == null
-                ? new Counted(0, 0, 0)
-                : new Counted(counters.accesses.sum(), counters.backfills.sum(), counters.backfillNanos.sum());
+                ? new Counted(0, 0, 0, 0)
+                : new Counted(counters.accesses.sum(), counters.backfills.sum(), counters.backfillNanos.sum(),
+                        counters.pendingHighWater.get());
     }
 
     /** Whether anything has been counted for {@code namespace} at all - absence being distinct from zero. */
@@ -76,14 +91,19 @@ public final class NestStateStats {
     }
 
     /** One namespace's counts, as read together. Nanoseconds, because the trips being timed are short. */
-    public record Counted(long accesses, long backfills, long backfillNanos) {
+    public record Counted(long accesses, long backfills, long backfillNanos, long pendingHighWater) {
     }
 
-    /** One namespace's counters. Adders rather than atomics: these are written far more often than read. */
+    /**
+     * One namespace's counters. Adders rather than atomics for the three that are summed: these are written
+     * far more often than read. The mark is not summed and so cannot be one - what is wanted is the largest
+     * anything reported, which an accumulator keeps for the same price.
+     */
     private static final class Counters {
 
         private final LongAdder accesses = new LongAdder();
         private final LongAdder backfills = new LongAdder();
         private final LongAdder backfillNanos = new LongAdder();
+        private final LongAccumulator pendingHighWater = new LongAccumulator(Math::max, 0L);
     }
 }

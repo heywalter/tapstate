@@ -343,12 +343,8 @@ public final class Engine {
             }
         }
         Map<String, NestStateReading> readings = new HashMap<>();
-        byNamespace.forEach((namespace, kinds) -> readings.put(namespace, new NestStateReading(
-                kinds.getOrDefault(NestStateMetricNames.ENTRIES, 0L),
-                kinds.getOrDefault(NestStateMetricNames.ACCESSES, 0L),
-                kinds.getOrDefault(NestStateMetricNames.BACKFILLS, 0L),
-                kinds.getOrDefault(NestStateMetricNames.BACKFILL_MILLIS, 0L),
-                stored(namespace))));
+        byNamespace.forEach((namespace, kinds) -> readings.put(namespace,
+                NestStateMetricNames.readingFrom(kinds, stored(namespace))));
         return readings;
     }
 

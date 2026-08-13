@@ -77,8 +77,20 @@ final class MapNestStore<S> implements NestStore<S> {
         }
         String namespace = map.getName();
         NestStateStats.Counted counted = stats.counted(namespace);
-        gauge.reading(namespace, count(),
-                counted.accesses(), counted.backfills(), counted.backfillNanos() / 1_000_000L);
+        gauge.reading(namespace, count(), counted.accesses(), counted.backfills(),
+                counted.backfillNanos() / 1_000_000L, counted.pendingHighWater());
+    }
+
+    /**
+     * Keeps the deepest a key of this namespace has been reported holding, for the next reading to carry
+     * out. Counted per namespace rather than per store: a vertex runs as several instances over one name,
+     * and a mark held by whichever instance saw it would report the queue of one of them as the level's.
+     */
+    @Override
+    public void holding(long pending) {
+        if (stats != null) {
+            stats.holding(map.getName(), pending);
+        }
     }
 
     @Override

@@ -9,12 +9,17 @@ package io.tapstate.runtime.engine.nest;
 interface NestStateGauge {
 
     /** A gauge for a store driven outside a running job, where there are no job statistics to leave any in. */
-    NestStateGauge NONE = (namespace, entries, accesses, backfills, backfillMillis) -> {
+    NestStateGauge NONE = (namespace, entries, accesses, backfills, backfillMillis, pendingHighWater) -> {
     };
 
     /**
      * Leaves one namespace's current readings. Called on the thread that reads the state, at a cadence of
-     * the caller's choosing rather than per access - one of the four costs a round trip to work out.
+     * the caller's choosing rather than per access - one of them costs a round trip to work out.
+     *
+     * <p>{@code pendingHighWater} is a mark rather than a reading of the moment: the deepest any one key has
+     * been seen holding for something that has not arrived. It travels with the rest because it is about the
+     * same namespace and is wanted at the same time, not because it means the same kind of thing.
      */
-    void reading(String namespace, long entries, long accesses, long backfills, long backfillMillis);
+    void reading(String namespace, long entries, long accesses, long backfills, long backfillMillis,
+            long pendingHighWater);
 }

@@ -188,15 +188,41 @@ class ObservationPublisherTest {
 
         wired.publish("orders");
 
-        // Four numbers per namespace rather than the one ratio they imply: a ratio published here would be
-        // an average over the whole run, and a state layer that fell off its cliff a minute ago still reads
+        // Counts per namespace rather than the one ratio they imply: a ratio published here would be an
+        // average over the whole run, and a state layer that fell off its cliff a minute ago still reads
         // as healthy in it. Two scrapes of counts give any window a reader wants.
         assertThat(observations.read("orders").orElseThrow().metrics())
                 .containsOnly(entry("errorCount", 0L),
                         entry("nestStateEntries.nest.orders.doc.$root", 4_000L),
                         entry("nestStateAccesses.nest.orders.doc.$root", 900L),
                         entry("nestStateBackfills.nest.orders.doc.$root", 30L),
-                        entry("nestStateBackfillMillis.nest.orders.doc.$root", 210L));
+                        entry("nestStateBackfillMillis.nest.orders.doc.$root", 210L),
+                        entry("nestStatePendingHighWater.nest.orders.doc.$root", 0L));
+    }
+
+    /**
+     * The reading no other one can stand in for. What waits under a key lives inside that key's entry, so a
+     * queue growing towards the limit that bounds it moves none of the numbers above - the namespace holds
+     * the same entries, the layer behind it holds the same, and the key is hot enough to be served from
+     * memory throughout. Every published number stays flat and then the run stops.
+     *
+     * <p>Zero and absent are the same thing here on purpose, unlike the stored reading beside it: a
+     * namespace where nothing has waited has genuinely had nothing waiting, which is a fact about the run
+     * rather than a question nobody could ask.
+     */
+    @Test
+    void publishWiresHowDeepOneKeysWaitHasEverGotIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(4_000L, 900L, 30L, 210L, 9_512L, OptionalLong.empty())));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .describedAs("a key that got within five hundred of the limit says so before it is reached")
+                .contains(entry("nestStatePendingHighWater.nest.orders.doc.$root", 9_512L));
     }
 
     /**

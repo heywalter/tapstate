@@ -24,17 +24,34 @@ import java.util.OptionalLong;
  * waiting to happen. It is absent rather than zero where there is no cold layer to ask, since a run
  * holding its state in memory alone has no second number and reporting one would invent it.
  *
+ * <p>{@code pendingHighWater} is the odd one out and is a mark rather than a level: the deepest any one
+ * key has been seen holding for something that has not arrived, since the run began. It is here because
+ * nothing else in this record can see that quantity - what waits lives <em>inside</em> one entry, so a
+ * single key holding a queue of ten thousand moves {@code entries} by one, moves {@code stored} not at all,
+ * and moves {@code backfills} least of all, the key being hot enough to stay in memory. The run then stops
+ * on the limit that bounds it with every number here flat behind it. A mark rather than a level because a
+ * queue that filled and drained is exactly what a reader wants to know about, and because two readings
+ * cannot recover it: a maximum is not a difference. It does not fall, and a restart begins it again.
+ *
  * @param entries how many keys the namespace holds in memory now
  * @param accesses how many times the state was reached for since the run began, read or written
  * @param backfills how many of those found nothing in memory and went to the layer behind
  * @param backfillMillis how long those took in total
+ * @param pendingHighWater the deepest one key of this namespace has been seen holding for something that
+ *     has not arrived, since the run began
  * @param stored how many keys the layer behind the memory holds, where there is one to ask
  */
 public record NestStateReading(long entries, long accesses, long backfills, long backfillMillis,
-        OptionalLong stored) {
+        long pendingHighWater, OptionalLong stored) {
 
     /** A reading from a run with no cold layer to ask, whose state is however much is in memory. */
     public NestStateReading(long entries, long accesses, long backfills, long backfillMillis) {
-        this(entries, accesses, backfills, backfillMillis, OptionalLong.empty());
+        this(entries, accesses, backfills, backfillMillis, 0L, OptionalLong.empty());
+    }
+
+    /** A reading from a run where nothing has been reported waiting under any one key. */
+    public NestStateReading(long entries, long accesses, long backfills, long backfillMillis,
+            OptionalLong stored) {
+        this(entries, accesses, backfills, backfillMillis, 0L, stored);
     }
 }

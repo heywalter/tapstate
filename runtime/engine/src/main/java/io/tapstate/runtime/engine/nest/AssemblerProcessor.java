@@ -919,7 +919,11 @@ public final class AssemblerProcessor extends AbstractProcessor {
                     });
             store.save(key, document.assembly);
             refuseToLetOneDocumentGrowPastItsWidth(key, document.assembly);
-            NestLimits.refuse(vertex, key, document.assembly.pending(), pendingLimit);
+            long pending = document.assembly.pending();
+            // Reported before it is weighed, so that the count that stopped the run is the one on record
+            // rather than the last one that was allowed.
+            store.holding(pending);
+            NestLimits.refuse(vertex, key, pending, pendingLimit);
             if (refuseToKeepMoreDeletionsThanAllowed(key, document.assembly) > 0) {
                 keeping.add(key);
             } else {

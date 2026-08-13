@@ -18,18 +18,20 @@ import java.util.Map;
  * read as neither.
  *
  * <p>Handles are kept once obtained - they belong to the store rather than to whichever thread ran it - so
- * a reading costs four lookups and four writes.
+ * a reading costs one lookup and one write per number.
  */
 final class JetNestStateGauge implements NestStateGauge {
 
     private final Map<String, Metric> byName = new HashMap<>();
 
     @Override
-    public void reading(String namespace, long entries, long accesses, long backfills, long backfillMillis) {
+    public void reading(String namespace, long entries, long accesses, long backfills, long backfillMillis,
+            long pendingHighWater) {
         metric(NestStateMetricNames.ENTRIES, namespace).set(entries);
         metric(NestStateMetricNames.ACCESSES, namespace).set(accesses);
         metric(NestStateMetricNames.BACKFILLS, namespace).set(backfills);
         metric(NestStateMetricNames.BACKFILL_MILLIS, namespace).set(backfillMillis);
+        metric(NestStateMetricNames.PENDING_HIGH_WATER, namespace).set(pendingHighWater);
     }
 
     private Metric metric(String kind, String namespace) {

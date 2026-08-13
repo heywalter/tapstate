@@ -71,6 +71,18 @@ public final class ObservationPublisher {
     private static final String NEST_BACKFILL_MILLIS_PREFIX = "nestStateBackfillMillis.";
 
     /**
+     * The deepest one key of the namespace has been seen holding for something that has not arrived, since
+     * the run began. A mark rather than a count, and the only reading here that no other one can stand in
+     * for: a queue waiting under a single key lives inside a single entry, so it moves none of the four
+     * above however long it grows, and the run stops on the limit that bounds it with all of them flat.
+     *
+     * <p>Published and not judged. Whether a parent is still coming is not knowable from how much arrived
+     * before it, so nothing here is an alarm - what a deep queue calls for is someone looking at the source
+     * the rows point into.
+     */
+    private static final String NEST_PENDING_HIGH_WATER_PREFIX = "nestStatePendingHighWater.";
+
+    /**
      * How much the namespace holds altogether, against the entries above which are only what is in memory.
      * Published where there is a layer behind the memory to ask and left out where there is not: a run
      * holding its state in memory alone has no second number, and one reported anyway would be the first
@@ -327,6 +339,7 @@ public final class ObservationPublisher {
             metrics.put(NEST_ACCESSES_PREFIX + namespace, reading.accesses());
             metrics.put(NEST_BACKFILLS_PREFIX + namespace, reading.backfills());
             metrics.put(NEST_BACKFILL_MILLIS_PREFIX + namespace, reading.backfillMillis());
+            metrics.put(NEST_PENDING_HIGH_WATER_PREFIX + namespace, reading.pendingHighWater());
             reading.stored().ifPresent(stored -> metrics.put(NEST_STORED_PREFIX + namespace, stored));
         });
         // One entry per namespace that discarded something, and none for a namespace that discarded
