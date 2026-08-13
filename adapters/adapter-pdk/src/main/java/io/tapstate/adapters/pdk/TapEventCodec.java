@@ -1,7 +1,9 @@
 package io.tapstate.adapters.pdk;
 
 import java.math.BigInteger;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -106,6 +108,9 @@ public final class TapEventCodec {
      * contents all pass through unchanged is returned as it is, so the ordinary row costs no copy.
      */
     private static Object converted(Object value) {
+        if (value instanceof ZonedDateTime zonedDateTime) {
+            return Date.from(zonedDateTime.toInstant());
+        }
         if (value instanceof Integer || value instanceof Short || value instanceof Byte) {
             return ((Number) value).longValue();
         }
