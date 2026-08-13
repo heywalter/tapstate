@@ -629,6 +629,7 @@ class ControlApiTest {
                         + "topology verb are projected onto HTTP")
                 .contains("artifact.apply", "artifact.get", "artifact.list", "connection.test",
                         "connection.test-result", "connection.discover-schema", "connection.schema",
+                        "source.draft",
                         "cluster.members");
     }
 
@@ -648,7 +649,8 @@ class ControlApiTest {
      */
     @SpringBootConfiguration
     @EnableAutoConfiguration
-    @Import({RestApiConfiguration.class, ArtifactController.class, ConnectionController.class,
+    @Import({RestApiConfiguration.class, SourceDraftTestConfiguration.class, ArtifactController.class,
+            SourceDraftController.class, ConnectionController.class,
             ClusterController.class, HealthController.class, ApiExceptionHandler.class, FaultController.class})
     static class TestApp {
 

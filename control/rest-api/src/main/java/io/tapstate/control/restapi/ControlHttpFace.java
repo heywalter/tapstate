@@ -33,7 +33,8 @@ import tools.jackson.databind.DeserializationFeature;
 @Import({RestApiConfiguration.class, ArtifactController.class, ConnectionController.class,
         ConnectorController.class, PipelineController.class, PipelineObservationController.class,
         PipelineLogsController.class, PipelineStreamConfiguration.class, ClusterController.class,
-        HealthController.class, SourceController.class, AuthController.class, TokenController.class,
+        HealthController.class, AuthController.class, TokenController.class, SourceController.class,
+        SourceDraftController.class,
         ApiExceptionHandler.class})
 public class ControlHttpFace {
 
@@ -59,4 +60,5 @@ public class ControlHttpFace {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private abstract static class NonNullSourceJson {
     }
+
 }

@@ -35,11 +35,25 @@ public final class SourceRepresentation {
 
     /** Builds a core Source while applying catalog-driven secret replacement semantics. */
     public SourceResource toModel(SourceDraft draft, SourceResource existing) {
+        return toModel(draft, existing, true);
+    }
+
+    /** Builds a draft Source while applying only the draft's explicit secret removals. */
+    SourceResource toDraftModel(SourceDraft draft) {
+        return toModel(draft, null, false);
+    }
+
+    private SourceResource toModel(
+            SourceDraft draft, SourceResource existing, boolean enforceSecretRules) {
         Objects.requireNonNull(draft, "draft");
         ConnectorCatalogEntry connector = connector(draft.connector());
         Map<String, ConfigField> secrets = secretFields(connector);
-        validateSuppliedSecrets(draft, secrets);
-        List<String> clearSecrets = validateClearSecrets(draft, secrets);
+        if (enforceSecretRules) {
+            validateSuppliedSecrets(draft, secrets);
+        }
+        List<String> clearSecrets = enforceSecretRules
+                ? validateClearSecrets(draft, secrets)
+                : draft.clearSecrets();
 
         Map<String, Object> config = new LinkedHashMap<>(draft.config());
         if (existing != null && existing.connector().equals(draft.connector())) {
@@ -47,7 +61,7 @@ public final class SourceRepresentation {
                 if (!config.containsKey(secret)
                         && existing.config().containsKey(secret)
                         && existing.config().get(secret) != null) {
-                    config.put(secret, copyJsonValue(existing.config().get(secret)));
+                    config.put(secret, SourceDraft.copyJsonValue(existing.config().get(secret)));
                 }
             }
         }
@@ -57,12 +71,12 @@ public final class SourceRepresentation {
                 draft.id(),
                 draft.metadata(),
                 draft.connector(),
-                copyJsonMap(config, false),
+                SourceDraft.copyJsonMap(config, false),
                 sourceMode(draft.mode()),
                 tableModels(draft.tables()),
-                copyJsonMap(draft.options(), true),
+                SourceDraft.copyJsonMap(draft.options(), true),
                 srsModel(draft.srs()),
-                copyJsonMap(draft.experimental(), true));
+                SourceDraft.copyJsonMap(draft.experimental(), true));
     }
 
     /** Builds a normalized response with every catalog secret removed. */
@@ -188,7 +202,7 @@ public final class SourceRepresentation {
                 require(table.pk() == null || table.pk().stream().noneMatch(Objects::isNull),
                         "spec table pk cannot contain null entries");
                 yield TableRef.spec(
-                        table.name(), table.filter(), table.pk(), copyJsonMap(table.options(), true));
+                        table.name(), table.filter(), table.pk(), SourceDraft.copyJsonMap(table.options(), true));
             }
             default -> throw malformed("unknown table type: " + table.type());
         };
@@ -262,47 +276,4 @@ public final class SourceRepresentation {
                 ControlError.MALFORMED_REQUEST, Map.of("reason", reason), null);
     }
 
-    static Map<String, Object> copyJsonMap(Map<String, Object> value, boolean preserveNull) {
-        if (value == null) {
-            return preserveNull ? null : Map.of();
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : value.entrySet()) {
-            if (entry.getKey() == null) {
-                throw new IllegalArgumentException("JSON object keys must not be null");
-            }
-            result.put(entry.getKey(), copyJsonValue(entry.getValue()));
-        }
-        return Collections.unmodifiableMap(result);
-    }
-
-    private static Object copyJsonValue(Object value) {
-        if (value == null || value instanceof String || value instanceof Boolean) {
-            return value;
-        }
-        if (value instanceof Number number) {
-            if (number instanceof Double doubleValue && !Double.isFinite(doubleValue)
-                    || number instanceof Float floatValue && !Float.isFinite(floatValue)) {
-                throw new IllegalArgumentException("JSON numbers must be finite");
-            }
-            return value;
-        }
-        if (value instanceof List<?> list) {
-            List<Object> result = new ArrayList<>(list.size());
-            list.forEach(item -> result.add(copyJsonValue(item)));
-            return Collections.unmodifiableList(result);
-        }
-        if (value instanceof Map<?, ?> map) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                if (!(entry.getKey() instanceof String key)) {
-                    throw new IllegalArgumentException("JSON object keys must be strings");
-                }
-                result.put(key, copyJsonValue(entry.getValue()));
-            }
-            return Collections.unmodifiableMap(result);
-        }
-        throw new IllegalArgumentException(
-                "unsupported JSON value type: " + value.getClass().getName());
-    }
 }

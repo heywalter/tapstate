@@ -50,28 +50,33 @@ public final class ControlOperations {
                     + "version has moved on, if another resource still references the id, or if the id is a "
                     + "pipeline that is not stopped.");
 
-    // connection domain: each probing verb runs an external probe and persists its result for later query
-    // and display, so it mutates persisted state (a write) and is audited; its read-back peer returns the
-    // latest persisted result (or a 404 when the connection was never probed), mutates nothing, and is
-    // read and unaudited. connection.test / connection.test-result answer "does it connect"; their pair
-    // connection.discover-schema / connection.schema answer "what is inside" (the discovered source model).
-
-    // source domain
+    // Source CRUD remains available to the authenticated REST face while its MCP projection is retired.
+    // The draft operation is the only Source operation exposed to MCP.
     public static final Operation SOURCE_CREATE = new Operation(
             "source.create", Scope.WRITE, true, ControlApiSchema.ref("source.create"),
             "Create and persist one Source through the Server control API.", CLI_POC);
     public static final Operation SOURCE_DRAFT = mcp(
             "source.draft", Scope.READ, false,
-            "Render canonical YAML for a Source with a known connector through the Server's live connector "
-                    + "contract. This does not create an artifact or audit record.");
-    public static final Operation SOURCE_LIST = mcp(
-            "source.list", Scope.READ, false,
-            "List Sources with secret-redacted config and configured-secret field names.");
-    public static final Operation SOURCE_GET = mcp(
-            "source.get", Scope.READ, false,
-            "Get one Source with secret-redacted config and configured-secret field names.");
-    public static final Operation SOURCE_UPDATE = new Operation("source.update", Scope.WRITE, true, null, CLI_POC);
-    public static final Operation SOURCE_DELETE = new Operation("source.delete", Scope.WRITE, true, null, CLI_POC);
+            "Render canonical YAML for a Source with a known connector through the live connector contract."
+                    + " This does not create an artifact or audit record.");
+    public static final Operation SOURCE_LIST = new Operation(
+            "source.list", Scope.READ, false, ControlApiSchema.ref("source.list"),
+            "List Sources with secret-redacted config and configured-secret field names.", CLI_POC);
+    public static final Operation SOURCE_GET = new Operation(
+            "source.get", Scope.READ, false, ControlApiSchema.ref("source.get"),
+            "Get one Source with secret-redacted config and configured-secret field names.", CLI_POC);
+    public static final Operation SOURCE_UPDATE = new Operation(
+            "source.update", Scope.WRITE, true, null,
+            "Replace one Source through the Server control API.", CLI_POC);
+    public static final Operation SOURCE_DELETE = new Operation(
+            "source.delete", Scope.WRITE, true, null,
+            "Delete one Source through the Server control API.", CLI_POC);
+
+    // connection domain: each probing verb runs an external probe and persists its result for later query
+    // and display, so it mutates persisted state (a write) and is audited; its read-back peer returns the
+    // latest persisted result (or a 404 when the connection was never probed), mutates nothing, and is
+    // read and unaudited. connection.test / connection.test-result answer "does it connect"; their pair
+    // connection.discover-schema / connection.schema answer "what is inside" (the discovered source model).
 
     public static final Operation CONNECTION_TEST = mcp(
             "connection.test", Scope.WRITE, true,

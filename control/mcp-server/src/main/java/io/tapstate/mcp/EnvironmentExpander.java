@@ -28,6 +28,36 @@ final class EnvironmentExpander {
         };
     }
 
+    static boolean containsReference(Object value) {
+        return switch (value) {
+            case Map<?, ?> map -> map.values().stream().anyMatch(EnvironmentExpander::containsReference);
+            case List<?> list -> list.stream().anyMatch(EnvironmentExpander::containsReference);
+            case String text -> REFERENCE.matcher(text).find();
+            case null, default -> false;
+        };
+    }
+
+    static Object restoreReferences(Object value, Object original) {
+        if (value instanceof Map<?, ?> output && original instanceof Map<?, ?> input) {
+            Map<String, Object> restored = new LinkedHashMap<>();
+            output.forEach((key, item) -> restored.put(
+                    String.valueOf(key), restoreReferences(item, inputValue(input, key))));
+            return restored;
+        }
+        if (value instanceof List<?> output && original instanceof List<?> input) {
+            List<Object> restored = new ArrayList<>(output.size());
+            for (int index = 0; index < output.size(); index++) {
+                Object originalItem = index < input.size() ? input.get(index) : null;
+                restored.add(restoreReferences(output.get(index), originalItem));
+            }
+            return restored;
+        }
+        if (value instanceof String && original instanceof String text && REFERENCE.matcher(text).find()) {
+            return text;
+        }
+        return value;
+    }
+
     private static Map<String, Object> expandMap(Map<?, ?> source, Map<String, String> environment) {
         Map<String, Object> expanded = new LinkedHashMap<>();
         source.forEach((key, value) -> expanded.put(String.valueOf(key), expand(value, environment)));
@@ -38,6 +68,15 @@ final class EnvironmentExpander {
         List<Object> expanded = new ArrayList<>(source.size());
         source.forEach(value -> expanded.add(expand(value, environment)));
         return expanded;
+    }
+
+    private static Object inputValue(Map<?, ?> input, Object key) {
+        for (Map.Entry<?, ?> entry : input.entrySet()) {
+            if (String.valueOf(entry.getKey()).equals(String.valueOf(key))) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     private static String expandText(String text, Map<String, String> environment) {

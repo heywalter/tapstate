@@ -31,6 +31,7 @@ import io.tapstate.control.core.PipelineLogQueryService;
 import io.tapstate.control.core.PipelineObservationQueryService;
 import io.tapstate.control.core.SchemaDiscoveryService;
 import io.tapstate.control.core.SchemaQueryService;
+import io.tapstate.control.core.SourceDraftService;
 import io.tapstate.control.core.SourceRepresentation;
 import io.tapstate.control.core.SourceService;
 import io.tapstate.control.core.TokenSecrets;
@@ -199,6 +200,11 @@ class ControlPlaneConfiguration {
         return new ArtifactMutationService(
                 artifactStore, storePort.desired(), storePort.state(), storePort.observations(),
                 storePort.meta(), auditGate);
+    }
+
+    @Bean
+    SourceDraftService sourceDraftService(ConnectorCatalogView connectorCatalogView) {
+        return new SourceDraftService(connectorCatalogView::merged);
     }
 
     // ---- the connector plane: the R5 synchronous connection-test verb, wired end to end ----

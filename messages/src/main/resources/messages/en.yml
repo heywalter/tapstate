@@ -253,10 +253,10 @@ control.unreachable:
   solution: "Check the Server URL and availability, then retry the tool call."
 mcp.connector-spec-unavailable:
   message: "Connector {connector} does not provide a complete live spec."
-  solution: "Register the connector runtime and retry connector_get before source_create."
+  solution: "Register the connector runtime and retry connector_get before using the connector."
 mcp.environment-missing:
   message: "Environment variable {variable} is required by the Source config."
-  solution: "Inject the variable into the MCP process environment and retry source_create."
+  solution: "Inject the variable into the MCP process environment and retry the connection operation."
 mcp.server-rejected:
   message: "The Tapstate Server rejected the request with HTTP status {status} without a structured error code."
   solution: "Inspect the Server logs and verify that the MCP sidecar and Server use compatible control contracts."
