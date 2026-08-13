@@ -107,13 +107,50 @@ final class TargetModelResolver {
      * The target table one sync element writes: the resolved model under the name its rename gives the source
      * table. A rename with no model behind it still names a table, so the sink is pointed at the renamed one
      * rather than at whatever table id the first row happens to carry.
+     *
+     * <p>The name a rename is applied to is the model's own, falling back to the stream's key only when there
+     * is no model. For a source table the two are the same string. They part company for a stream whose key
+     * is not a table name at all - a nest emits under the id of the step that assembled it, while the table
+     * its documents land in is the root's - and renaming the key there would name the target after the step.
      */
     static TargetTable rename(TargetTable target, String sourceName, RenameSpec rename) {
         if (rename == null) {
             return target;
         }
         List<TargetField> fields = target == null ? List.of() : target.fields();
-        return new TargetTable(TableRename.apply(sourceName, rename), fields);
+        String named = target == null ? sourceName : target.name();
+        return new TargetTable(TableRename.apply(named, rename), fields);
+    }
+
+    /**
+     * The same model keyed on {@code key} instead of on the table's own primary key, key columns leading in
+     * the order given. What a nest's documents are matched on when they are upserted is the nest root's key,
+     * which is the author's choice and need not be the root table's primary key; the rest of the model - the
+     * table the documents land in and the columns they carry - is the root table's unchanged.
+     *
+     * <p>A key naming a column the model does not carry is left out rather than invented. It reaches the sink
+     * as a key one column short, which the sink reports against the table it is writing; conjuring a column
+     * would instead produce a descriptor the connector cannot create.
+     */
+    static TargetTable keyedOn(TargetTable model, List<String> key) {
+        if (key == null || key.isEmpty()) {
+            return model;
+        }
+        List<TargetField> fields = new ArrayList<>(model.fields().size());
+        for (String column : key) {
+            for (TargetField field : model.fields()) {
+                if (field.name().equals(column)) {
+                    fields.add(new TargetField(field.name(), field.type(), true));
+                    break;
+                }
+            }
+        }
+        for (TargetField field : model.fields()) {
+            if (!key.contains(field.name())) {
+                fields.add(new TargetField(field.name(), field.type(), false));
+            }
+        }
+        return new TargetTable(model.name(), fields);
     }
 
     /** Applies one sync element's rename rules to every source table that can reach that sink. */

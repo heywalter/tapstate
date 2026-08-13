@@ -75,12 +75,29 @@ final class StoreBackedDagSource implements DagSource {
     private final NestSettings nestSettings;
 
     StoreBackedDagSource(StorePort storePort) {
-        this(storePort, new PdkSinkWriterBinder());
+        this(storePort, assembledSinkWriterBinder());
     }
 
     /** A source whose nests are held to what {@code nestSettings} allows, and the member configured from. */
     StoreBackedDagSource(StorePort storePort, NestSettings nestSettings) {
-        this(storePort, PdkSinkWriterFactory::new, nestSettings);
+        this(storePort, assembledSinkWriterBinder(), nestSettings);
+    }
+
+    /**
+     * The binder the product is assembled with, named rather than written inline at each construction.
+     *
+     * <p>It has to be this one and not a method reference to the factory. A method reference binds to the
+     * interface's single abstract method, which is the shape taking one model, and the default that adapts
+     * a model-per-stream call to it has to pick one of them - so it picks none as soon as there is more than
+     * one, and a pipeline reading two tables reaches its sink with no model at all.
+     */
+    static SinkWriterBinder assembledSinkWriterBinder() {
+        return new PdkSinkWriterBinder();
+    }
+
+    /** The binder this source will bind its sinks through. */
+    SinkWriterBinder sinkWriterBinder() {
+        return sinkWriterBinder;
     }
 
     StoreBackedDagSource(StorePort storePort, SinkWriterBinder sinkWriterBinder) {
@@ -101,8 +118,16 @@ final class StoreBackedDagSource implements DagSource {
         Map<String, String> sourceKeyByTable = sourceKeyByTable(sourceVertices);
         // The linear builder does not expose a per-sink upstream table set. Binding every selected table keeps
         // a non-first source table from losing its discovered model or rename when it reaches a serve sink.
-        Map<String, TargetTable> targets = targetModelResolver.resolveAll(pipeline);
+        Map<String, TargetTable> bySourceTable = targetModelResolver.resolveAll(pipeline);
+        // A nest emits under the id of the step that assembled it rather than under a table name, so the
+        // resolution above - which answers per source table - says nothing about it. Registering it here is
+        // what lets the sink key its upsert and name the table it writes; without it the sink falls back to
+        // a bare name carrying neither.
+        Map<String, TargetTable> assembled = assembledTargets(pipeline, bySourceTable, sourceVertices);
+        Map<String, TargetTable> targets = new LinkedHashMap<>(bySourceTable);
+        targets.putAll(assembled);
         Set<String> servedTables = sourceTables(sourceVertices);
+        servedTables.addAll(assembled.keySet());
         Map<String, List<String>> sourceKeysById = sourceKeysById(sourceVertices);
         FrontierBinding frontier = frontierBinding(sourceVertices);
         return PipelineDagBuilder.build(
@@ -213,6 +238,39 @@ final class StoreBackedDagSource implements DagSource {
             tables.add(vertex.table());
         }
         return tables;
+    }
+
+    /**
+     * The write-side model for what each nest in this pipeline emits, keyed by the stream it emits under.
+     *
+     * <p>A nest's documents are the root's rows with the assembled children hanging off them, so the table
+     * they land in and the columns they carry are the root table's. What they are matched on is not: a
+     * document is addressed by the nest root's key, which the author writes and which need not be the root
+     * table's primary key.
+     *
+     * <p>A nest whose root table was never discovered contributes nothing. That leaves the sink where it was
+     * before this resolution existed - naming the stream and knowing no more about it - which is the same
+     * place any undiscovered table leaves it, rather than a failure of its own.
+     */
+    private Map<String, TargetTable> assembledTargets(
+            PipelineResource pipeline, Map<String, TargetTable> bySourceTable,
+            Map<String, SourceVertex> sourceVertices) {
+        Map<String, TargetTable> assembled = new LinkedHashMap<>();
+        if (pipeline.transforms() == null) {
+            return assembled;
+        }
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable(sourceVertices));
+        for (Step step : pipeline.transforms()) {
+            if (!(step instanceof Step.Inline inline) || !(inline.body() instanceof TransformBody.Nest nest)) {
+                continue;
+            }
+            NestTable root = byAlias.get(nest.root().from());
+            TargetTable model = root == null ? null : bySourceTable.get(root.name());
+            if (model != null) {
+                assembled.put(step.id(), TargetModelResolver.keyedOn(model, nest.root().key()));
+            }
+        }
+        return assembled;
     }
 
     private Map<String, List<String>> sourceKeysById(Map<String, SourceVertex> sourceVertices) {
@@ -594,7 +652,7 @@ final class StoreBackedDagSource implements DagSource {
         }
     }
 
-    private static final class PdkSinkWriterBinder implements SinkWriterBinder {
+    static final class PdkSinkWriterBinder implements SinkWriterBinder {
 
         @Override
         public SupplierEx<? extends SinkWriter> bind(
