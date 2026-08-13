@@ -1,0 +1,13 @@
+# A source regex containing a negative lookahead must survive canonical persistence and be readable
+# when the pipeline starts. The target count proves the selected source table crossed the product.
+name: negative-lookahead-source-regex-roundtrip
+setup:
+  connectors: [e2e_file]
+  apply: [src_file.tap.yml, tgt_file.tap.yml, pipeline.tap.yml]
+  discover: [src_file]
+pipeline: pipeline.tap.yml
+seed:
+  src_file.orders: { rows: 2 }
+steps:
+  - start
+  - await: { count: { tgt_file.orders: 2 } }
