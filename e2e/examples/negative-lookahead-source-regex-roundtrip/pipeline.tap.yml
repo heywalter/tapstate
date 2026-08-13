@@ -1,0 +1,9 @@
+version: tapstate/v1
+kind: pipeline
+id: regex_roundtrip_pipeline
+source: src_file
+settings: { read_mode: snapshot_only }
+serve:
+  from: /.*/
+  sync:
+    - source: tgt_file

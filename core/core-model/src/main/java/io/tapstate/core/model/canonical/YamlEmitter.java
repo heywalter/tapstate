@@ -117,7 +117,9 @@ final class YamlEmitter {
             if (c < 0x20 || c == 0x7F) {
                 return false;
             }
-            if (flow && ",[]{}".indexOf(c) >= 0) {
+            // Flow plain scalars cannot carry mapping indicators such as the question mark in a
+            // regex lookaround; quote them so the canonical text remains parseable.
+            if (flow && ",[]{}?:".indexOf(c) >= 0) {
                 return false;
             }
         }
