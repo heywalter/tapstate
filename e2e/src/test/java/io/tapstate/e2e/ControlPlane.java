@@ -405,6 +405,39 @@ final class ControlPlane {
     }
 
     /**
+     * How many records this pipeline's live job has driven to its sinks, or empty when it has no live job
+     * or has published no observation yet.
+     *
+     * <p>This is a count of writes, not of source changes, which is what makes it the reading a witness
+     * of coalescing rests on: a node that folds several changes into one send costs several changes here
+     * and one record. Cumulative over a run, so what a witness compares is two readings of it.
+     */
+    Optional<Long> recordCount(String pipelineId) {
+        HttpResponse<String> response = send(authedGet("/api/pipelines/" + pipelineId + "/metrics"));
+        return interpretRecordCount(response.statusCode(), response.body(), pipelineId);
+    }
+
+    static Optional<Long> interpretRecordCount(int status, String body, String pipelineId) {
+        if (status == 404 && MonitorError.NO_OBSERVATION.code().equals(codeOf(body))) {
+            return Optional.empty();
+        }
+        if (status != 200) {
+            throw new AssertionError(
+                    "could not read the metrics of " + pipelineId + ": expected HTTP 200, got " + status
+                            + " - " + body);
+        }
+        if (!(JsonReader.parse(body) instanceof Map<?, ?> map)
+                || !(map.get("metrics") instanceof Map<?, ?> metrics)) {
+            throw new AssertionError("metrics answer carried no metrics: " + body);
+        }
+        // Absent while no job is live, which is a real reading and not a broken face: the count comes from
+        // the run itself, so a pipeline between runs has none rather than zero.
+        return metrics.get("recordCount") instanceof Number count
+                ? Optional.of(count.longValue())
+                : Optional.empty();
+    }
+
+    /**
      * The durable source position this pipeline has acked for one table, or empty when it has acked none
      * there yet. This is the frontier as a reader sees it: below it, every change is either at a sink or
      * held somewhere it survives a restart from.
