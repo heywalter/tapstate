@@ -45,10 +45,19 @@ nothing downstream can notice.
 With the switch off, none of this is needed: no comparison is made, so no source has to
 send anything more.
 
-**If the switch is on and an update arrives with no before image, the pipeline stops** with
-`nest.key-change-tracking-requires-before-image`, naming the stream and the table. It stops
-rather than carrying on because the alternative is a document that silently disagrees with
-its source.
+**A source that cannot supply them stops the pipeline**, rather than letting it carry on: the
+alternative is a document that silently disagrees with its source.
+
+Which end refuses depends on the source, and the two read differently:
+
+| what happens | when | what you see |
+|---|---|---|
+| the connector refuses to start | the server itself is configured without before images - `binlog_row_image=MINIMAL` on MySQL, for one | `connector.capture-failed`, carrying the connector's own sentence naming the setting to change |
+| the tree refuses the update | the source starts and streams, but an individual update arrives carrying no earlier row | `nest.key-change-tracking-requires-before-image`, naming the stream and the table |
+
+On MySQL it is the first: the connector checks `binlog_row_image` as it starts and stops
+there, so no update is produced for the tree to check. Set it to `FULL` (the default) and
+the run proceeds normally.
 
 > **Known limitation.** The check happens when the row arrives, not when you apply the
 > pipeline. Refusing at apply time would need the connector catalog to say whether a source

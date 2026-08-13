@@ -227,6 +227,56 @@ class PdkCapturePortTest {
         assertThat(reported.get()).isNotNull();
     }
 
+    /**
+     * What the error channel carries is a coded capture failure, not the connector's own throwable.
+     *
+     * <p>Reporting it is half the contract; the other half is what the reader can do with it. This
+     * failure is the last one in the pipeline to keep its diagnosis: nothing above this port knows what a
+     * Debezium exception is, and the reading a user is shown - the published failure code - is built by
+     * walking the cause chain for something coded. An uncoded throwable makes that walk find nothing, so a
+     * connector refusing to start for a reason it stated precisely ("the server is not configured to use a
+     * FULL binlog_row_image") reaches the user as "the job died", with the sentence that says what to
+     * change surviving only in a log line.
+     *
+     * <p>The snapshot side of this same port already wraps what it catches. The stream side was the one
+     * that did not, which is why the codes that went missing were the ones a cdc failure would have
+     * carried.
+     */
+    @Test
+    void cdcThatFailsWhileStreamingReportsACodedCaptureFailure(@TempDir Path dir) throws Exception {
+        Path jar = Synthetic.throwingStreamSource(dir);
+        PdkCapturePort port = new PdkCapturePort(provisioner(jar, "synthetic.ThrowingStream", null));
+        AtomicReference<Throwable> reported = new AtomicReference<>();
+        CountDownLatch failed = new CountDownLatch(1);
+        CaptureListener listener = new CaptureListener() {
+            @Override
+            public void onEvent(Envelope event) {
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                reported.set(error);
+                failed.countDown();
+            }
+        };
+        try (Subscription sub = port.cdc(config("t1"), listener)) {
+            assertThat(failed.await(5, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(reported.get())
+                .as("what the error channel carries, which is what the published code is derived from")
+                .isInstanceOf(TapstateException.class);
+        TapstateException coded = (TapstateException) reported.get();
+        assertThat(coded.code().code()).isEqualTo(ConnectorError.CAPTURE_FAILED.code());
+        assertThat(coded.args())
+                .as("the connector that failed, and enough of its own words to act on")
+                .containsKey("connector")
+                .containsKey("detail");
+        assertThat(coded.getCause())
+                .as("the connector's own throwable is kept underneath rather than replaced by the code")
+                .isNotNull();
+    }
+
     @Test
     void cdcSubscriptionCloseIsIdempotent(@TempDir Path dir) throws Exception {
         // The Subscription contract promises idempotent close; a second close must be a no-op, not a
