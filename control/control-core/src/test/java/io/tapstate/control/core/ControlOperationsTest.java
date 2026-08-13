@@ -151,7 +151,7 @@ class ControlOperationsTest {
                 .extracting(Operation::id)
                 .containsExactlyInAnyOrder(
                         "connector.list", "connector.get",
-                        "source.list", "source.get", "source.draft",
+                        "source.draft",
                         "connection.test", "connection.test-result",
                         "connection.discover-schema", "connection.schema",
                         "artifact.validate", "artifact.apply",

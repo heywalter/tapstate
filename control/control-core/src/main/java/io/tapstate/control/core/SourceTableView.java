@@ -14,6 +14,6 @@ public record SourceTableView(
 
     public SourceTableView {
         pk = pk == null ? null : List.copyOf(pk);
-        options = SourceRepresentation.copyJsonMap(options, true);
+        options = SourceDraft.copyJsonMap(options, true);
     }
 }
