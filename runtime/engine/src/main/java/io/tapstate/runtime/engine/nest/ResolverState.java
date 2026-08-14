@@ -130,11 +130,29 @@ public final class ResolverState implements Serializable {
         this.parentKey = null;
         this.order = order;
         this.deleted = true;
-        List<ReleasedChild> released = waiting.stream()
-                .map(held -> new ReleasedChild(held.child(), Duration.ofMillis(now - held.arrivedAt())))
-                .toList();
+        List<ReleasedChild> released = heldFor(now);
         waiting.clear();
         return released;
+    }
+
+    /**
+     * What deleting this mapping at {@code order} would release, without releasing it - empty where the
+     * deletion does not win, exactly as applying it would be.
+     *
+     * <p>Separate from applying it for the same reason {@link #forgetWaiting()} is separate from
+     * {@link #waiting()}: a released child is released by being written somewhere, and until that write is
+     * done this entry is the only place it is. Emptied first and the write then failing leaves it nowhere,
+     * with the replay that would rebuild it rejected as a change already seen.
+     */
+    public List<ReleasedChild> wouldRelease(SourceOrder order, long now) {
+        Objects.requireNonNull(order, "order");
+        return wins(order) ? heldFor(now) : List.of();
+    }
+
+    private List<ReleasedChild> heldFor(long now) {
+        return waiting.stream()
+                .map(held -> new ReleasedChild(held.child(), Duration.ofMillis(now - held.arrivedAt())))
+                .toList();
     }
 
     /**
@@ -167,13 +185,19 @@ public final class ResolverState implements Serializable {
     }
 
     /**
-     * Hands back everything waiting here and stops waiting for it, leaving the mapping itself alone. It is
-     * what a key being vacated gives up: those children asked a question of a value the row no longer
-     * answers to, and the row now answers to another one, so the answer they are waiting for will never
-     * come here. The mapping is not handed over with them - the row declares it again where it now belongs.
+     * Stops waiting for everything held here, leaving the mapping itself alone. It is what a key being
+     * vacated gives up: those children asked a question of a value the row no longer answers to, and the
+     * row now answers to another one, so the answer they are waiting for will never come here. The mapping
+     * is not given up with them - the row declares it again where it now belongs.
+     *
+     * <p><b>Separate from reading them on purpose.</b> The rows have to be somewhere durable before this
+     * entry stops being the only place they are: a drain stores what it touched however it ended, so an
+     * entry emptied for a hand-over that then failed to land is stored empty, and the replay that would
+     * rebuild it is rejected as a change already seen. Read with {@link #waiting()}, publish, then call
+     * this.
      */
-    public List<NestElement> handOverWaiting() {
-        return drain();
+    public void forgetWaiting() {
+        drain();
     }
 
     private boolean wins(SourceOrder candidate) {

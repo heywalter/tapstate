@@ -325,19 +325,41 @@ public final class RootAssembly implements Serializable {
         return held != null && !held.children().isEmpty();
     }
 
-    public List<NestElement> detachSubtree(ElementRef from) {
+    /**
+     * The rows beneath {@code from}, without taking them out of this document.
+     *
+     * <p>Separate from taking them out because the two may not happen in the other order: a drain stores
+     * every document it touched however it ended, so a document that gave up a subtree which then failed to
+     * be published is stored without it, while the rows reached nowhere else. A replay does not bring them
+     * back - it resumes above the change that moved them, so nothing looks for them again.
+     */
+    public List<NestElement> subtreeAt(ElementRef from) {
         Objects.requireNonNull(from, "from");
-        Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
-        Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
-        ElementNode leaving = slot == null ? null : slot.get(from.elementKey());
+        ElementNode leaving = nodeAt(from);
         if (leaving == null) {
             return List.of();
         }
-        List<NestElement> handedOver = new ArrayList<>();
-        collectBeneath(leaving, from.pathId(), identityOf(from.pathId(), leaving), handedOver);
-        slot.remove(from.elementKey());
+        List<NestElement> beneath = new ArrayList<>();
+        collectBeneath(leaving, from.pathId(), identityOf(from.pathId(), leaving), beneath);
+        return beneath;
+    }
+
+    public List<NestElement> detachSubtree(ElementRef from) {
+        Objects.requireNonNull(from, "from");
+        ElementNode leaving = nodeAt(from);
+        if (leaving == null) {
+            return List.of();
+        }
+        List<NestElement> handedOver = subtreeAt(from);
+        containerFor(from).get(from.field()).remove(from.elementKey());
         forgetNames(leaving, from.pathId());
         return handedOver;
+    }
+
+    private ElementNode nodeAt(ElementRef from) {
+        Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
+        Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
+        return slot == null ? null : slot.get(from.elementKey());
     }
 
     /**

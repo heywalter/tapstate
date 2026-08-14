@@ -725,7 +725,12 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private void settle(Object key, Touched document, NestElement change) {
         RootAssembly assembly = document.assembly;
         if (parking != null && change.departure() && assembly.holdsSubtreeAt(change.movedFrom())) {
-            hand(ParkedSubtree.At.of(change), assembly.detachSubtree(change.movedFrom()), change.positions());
+            // Published before the document gives it up. Detaching first and then failing to park stores a
+            // document without rows that reached nowhere else, and the replay that would move them again
+            // resumes above the change that moved them - so nothing looks for them ever again. A failure
+            // here costs a retry that parks the same rows twice, which their identities make harmless.
+            hand(ParkedSubtree.At.of(change), assembly.subtreeAt(change.movedFrom()), change.positions());
+            assembly.detachSubtree(change.movedFrom());
             return;
         }
         assembly.take(change);

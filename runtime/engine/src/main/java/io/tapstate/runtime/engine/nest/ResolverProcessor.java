@@ -521,9 +521,15 @@ public final class ResolverProcessor extends AbstractProcessor {
         emit(new KeyedElement(parent, arriving, event.ts()));
         if (NestKeys.isDeletion(event)) {
             deleted.put(key, event.positions());
-            for (ReleasedChild child : state.deleteMapping(order, clock.millis())) {
+            // Written out before the entry gives them up: the drain stores what it touched however it
+            // ended, so an entry emptied for children that were never written is stored with them gone
+            // from the one place they were, and the replay that would rebuild it is rejected as a change
+            // already seen. A failure here costs a retry that writes some of them twice instead.
+            long releasedAt = clock.millis();
+            for (ReleasedChild child : state.wouldRelease(order, releasedAt)) {
                 deadLetter.unassemblable(vertex, child);
             }
+            state.deleteMapping(order, releasedAt);
         } else {
             deleted.remove(key);
             for (NestElement child : state.declare(parent, order)) {
@@ -557,7 +563,8 @@ public final class ResolverProcessor extends AbstractProcessor {
         if (leaving.equals(joining)) {
             return;
         }
-        List<NestElement> waiting = stateFor(leaving, touched).handOverWaiting();
+        ResolverState leftBehind = stateFor(leaving, touched);
+        List<NestElement> waiting = leftBehind.waiting();
         if (waiting.isEmpty()) {
             return;
         }
@@ -565,6 +572,11 @@ public final class ResolverProcessor extends AbstractProcessor {
         ParkedSubtree held = parking.load(at);
         ParkedSubtree now = new ParkedSubtree(waiting);
         parking.save(at, held == null ? now : held.and(now));
+        // Emptied only now that the rows are somewhere both instances can reach. Emptying first and then
+        // failing to publish stores an entry that has given up rows nothing else ever received, and the
+        // replay that would rebuild them is rejected as a change already seen. A failure here instead costs
+        // a retry that parks the same rows twice, which their identities make harmless.
+        leftBehind.forgetWaiting();
         // The frontier stays below this change until those children have been taken in. The first change to
         // park under an address is the one kept: a second move onto the same address is further along the
         // same stream, and it is the earlier of the two that has to be replayable.

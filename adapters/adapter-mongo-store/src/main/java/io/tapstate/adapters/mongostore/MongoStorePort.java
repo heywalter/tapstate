@@ -1,5 +1,6 @@
 package io.tapstate.adapters.mongostore;
 
+import com.mongodb.WriteConcern;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.gridfs.GridFSBuckets;
 import io.tapstate.spi.store.ArtifactStore;
@@ -81,6 +82,22 @@ public final class MongoStorePort implements StorePort {
      */
     public static final String NEST_STATE_DATABASE = "tapstate_nest";
 
+    /**
+     * What an operator-state write is acknowledged on. Every other store here can take the client's
+     * default, because what it holds can be worked out again from something else that survived. This one
+     * cannot: it is where a change let past the source's read offset is being kept, it has no replica of
+     * its own to fall back on, and the promise its port makes is that returning from a write means the
+     * change is durable. A default that acknowledges on the primary alone breaks exactly that promise -
+     * the write is reported done, the frontier advances past the change on the strength of it, and a
+     * primary lost before the write replicated takes the change with it, with nothing anywhere reporting
+     * a loss. Journaled as well as replicated, because a majority holding it only in memory has the same
+     * shape one power cut further out.
+     *
+     * <p>The dead-letter collection is written with it too: what could not be assembled is the one copy
+     * of those rows there is.
+     */
+    public static final WriteConcern NEST_STATE_WRITE_CONCERN = WriteConcern.MAJORITY.withJournal(true);
+
     private final ArtifactStore artifacts;
     private final StateStore state;
     private final DesiredStore desired;
@@ -119,7 +136,8 @@ public final class MongoStorePort implements StorePort {
         // Operator state alone sits in its own database on the same client, for the reasons on the
         // constant. Same connection, same credentials, same lifecycle - a different database. What that
         // operator could not assemble goes in the same database, being produced by the same run.
-        MongoDatabase nestState = connection.client().getDatabase(NEST_STATE_DATABASE);
+        MongoDatabase nestState = connection.client().getDatabase(NEST_STATE_DATABASE)
+                .withWriteConcern(NEST_STATE_WRITE_CONCERN);
         this.keyedState = new MongoKeyedStateStore(nestState.getCollection(OPERATOR_STATE));
         this.nestDeadLetters = new MongoNestDeadLetterStore(nestState.getCollection(NEST_DEAD_LETTERS));
     }
