@@ -1,0 +1,10 @@
+# Invalid: an id must carry no control character. It travels into places that write it as a line
+# of text and read it back by splitting on lines, so one holding a newline is recorded as several
+# names and read back as names that were never used - leaving state behind, or dropping another id.
+version: tapstate/v1
+kind: source
+id: "src\norders"
+connector: mysql
+config: { host: 10.0.0.1, username: u, password: p }
+mode: cdc
+tables: [ orders ]

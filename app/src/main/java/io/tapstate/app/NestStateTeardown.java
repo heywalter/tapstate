@@ -3,6 +3,7 @@ package io.tapstate.app;
 import com.hazelcast.core.HazelcastInstance;
 import io.tapstate.runtime.engine.nest.NestStateStats;
 import io.tapstate.spi.store.KeyedStateStore;
+import io.tapstate.spi.store.NestDeadLetterStore;
 
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
@@ -56,10 +57,12 @@ final class NestStateTeardown {
 
     private final HazelcastInstance member;
     private final KeyedStateStore store;
+    private final NestDeadLetterStore deadLetters;
 
-    NestStateTeardown(HazelcastInstance member, KeyedStateStore store) {
+    NestStateTeardown(HazelcastInstance member, KeyedStateStore store, NestDeadLetterStore deadLetters) {
         this.member = Objects.requireNonNull(member, "member");
         this.store = Objects.requireNonNull(store, "store");
+        this.deadLetters = Objects.requireNonNull(deadLetters, "deadLetters");
     }
 
     /**
@@ -131,6 +134,10 @@ final class NestStateTeardown {
         for (String namespace : pending) {
             member.getMap(namespace).destroy();
             store.dropNamespace(namespace);
+            // What the run could not assemble is kept under the same namespace and is as much this run's
+            // as the state is. Left behind it outlives what it describes, and a later run of the same
+            // pipeline reads records of changes it never saw as though they were its own.
+            deadLetters.dropNamespace(namespace);
             // What was counted about a namespace goes with the namespace. Left behind, the counts would
             // keep describing a run that is over, and a reader cannot tell a count standing still from one
             // that is merely quiet.

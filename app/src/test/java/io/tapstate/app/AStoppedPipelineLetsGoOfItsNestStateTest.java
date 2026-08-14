@@ -36,6 +36,7 @@ import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import io.tapstate.spi.store.NestDeadLetterRecord;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -159,6 +160,28 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
                 .isPresent();
     }
 
+    /**
+     * What the run could not assemble is kept under the same namespaces the state is, and is as much this
+     * run's as the state is. Left behind it outlives what it describes: the next run of the same pipeline
+     * reads records of changes it never saw, with nothing to say they belong to a run that is over.
+     */
+    @Test
+    void stoppingLetsGoOfWhatTheRunCouldNotAssembleAsWellAsWhatItKept() {
+        InMemoryStorePort store = seedStore();
+        seedState(store, ROOT_NAMESPACE, ITEMS_NAMESPACE, SHAPE_NAMESPACE, OTHER_PIPELINE_NAMESPACE);
+        store.nestDeadLetters().record(new NestDeadLetterRecord(ITEMS_NAMESPACE, "e1", "orders", "1:1",
+                0L, 0L, Map.of("id", 1)));
+        store.nestDeadLetters().record(new NestDeadLetterRecord(OTHER_PIPELINE_NAMESPACE, "e2", "orders",
+                "1:1", 0L, 0L, Map.of("id", 2)));
+
+        actuator(store).stop(PIPELINE);
+
+        assertThat(store.nestDeadLetters().read(ITEMS_NAMESPACE, 10)).isEmpty();
+        assertThat(store.nestDeadLetters().read(OTHER_PIPELINE_NAMESPACE, 10))
+                .describedAs("a stop drops what this pipeline named, never what merely looks like it")
+                .hasSize(1);
+    }
+
     @Test
     @DisplayName("a stop lets go of where the run wrote, not where the pipeline edited under it would")
     void stateTheRunKeptIsDroppedThoughTheNestStepWasTakenOutWhileItRan() {
@@ -192,7 +215,7 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
     void whatEachRunSaidItWouldKeepAddsUpUntilAStopLetsGoOfIt() {
         InMemoryStorePort store = seedStore();
         seedState(store, ROOT_NAMESPACE, ITEMS_NAMESPACE);
-        NestStateTeardown teardown = new NestStateTeardown(member, store.keyedState());
+        NestStateTeardown teardown = new NestStateTeardown(member, store.keyedState(), store.nestDeadLetters());
         teardown.willKeepStateIn(PIPELINE, Set.of(ROOT_NAMESPACE));
         // A later run of the same pipeline keeps state somewhere else - an embed renamed, or taken out and
         // put back. The earlier run's entries are still there, and a record that only remembered the run
@@ -233,7 +256,7 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
         seedState(store, ROOT_NAMESPACE, ITEMS_NAMESPACE, SHAPE_NAMESPACE);
         // What a stop that died between noting the drop and finishing it leaves behind: the note, and the
         // state it names. A stop is driven once, on the transition, so nothing will drive it again.
-        new NestStateTeardown(member, store.keyedState())
+        new NestStateTeardown(member, store.keyedState(), store.nestDeadLetters())
                 .note(PIPELINE, Set.of(ROOT_NAMESPACE, ITEMS_NAMESPACE, SHAPE_NAMESPACE));
 
         actuator(store).start(PIPELINE);
@@ -267,7 +290,7 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
         String namespace = "nest." + PIPELINE + ".late_writer.$root";
         EngineLifecycleActuator actuator = new EngineLifecycleActuator(new Engine(member),
                 new WritesStateAsItCloses(namespace), new NoOpCaptureCoordinator(),
-                new NestStateTeardown(member, store.keyedState()));
+                new NestStateTeardown(member, store.keyedState(), store.nestDeadLetters()));
 
         actuator.start(PIPELINE);
         awaitRunning();
@@ -289,7 +312,7 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
     void droppingTheSameNamespacesAgainIsNotAnError() {
         InMemoryStorePort store = seedStore();
         seedState(store, ROOT_NAMESPACE);
-        NestStateTeardown teardown = new NestStateTeardown(member, store.keyedState());
+        NestStateTeardown teardown = new NestStateTeardown(member, store.keyedState(), store.nestDeadLetters());
         teardown.note(PIPELINE, Set.of(ROOT_NAMESPACE));
 
         teardown.finishPending(PIPELINE);
@@ -412,7 +435,7 @@ class AStoppedPipelineLetsGoOfItsNestStateTest {
     /** The actuator as production composes it, over a capture coordinator that does nothing. */
     private EngineLifecycleActuator actuator(InMemoryStorePort store) {
         return new EngineLifecycleActuator(new Engine(member), new StoreBackedDagSource(store),
-                new NoOpCaptureCoordinator(), new NestStateTeardown(member, store.keyedState()));
+                new NoOpCaptureCoordinator(), new NestStateTeardown(member, store.keyedState(), store.nestDeadLetters()));
     }
 
     /** An entry in each namespace, in both places state is kept, as a run would have left them. */

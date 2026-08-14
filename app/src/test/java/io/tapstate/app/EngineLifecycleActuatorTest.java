@@ -119,7 +119,7 @@ class EngineLifecycleActuatorTest {
      * is nothing. It is here because the actuator will not be built without one, which is the point.
      */
     private NestStateTeardown teardown() {
-        return new NestStateTeardown(member, new InMemoryKeyedStateStore());
+        return new NestStateTeardown(member, new InMemoryKeyedStateStore(), new InMemoryNestDeadLetterStore());
     }
 
     private static void awaitStatus(Job job, JobStatus expected) {

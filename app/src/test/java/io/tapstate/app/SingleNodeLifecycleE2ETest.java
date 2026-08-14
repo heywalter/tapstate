@@ -73,7 +73,7 @@ class SingleNodeLifecycleE2ETest {
         Engine engine = new Engine(member);
         EngineLifecycleActuator actuator =
                 new EngineLifecycleActuator(engine, new IdleDagSource(), new NoOpCaptureCoordinator(),
-                        new NestStateTeardown(member, storePort.keyedState()));
+                        new NestStateTeardown(member, storePort.keyedState(), storePort.nestDeadLetters()));
         PipelineConverger converger = new PipelineConverger(storePort.desired(), storePort.state(), actuator, clock);
         ObservationPublisher publisher = new ObservationPublisher(storePort.state(), storePort.observations());
         driver = new ConvergenceDriver(converger, storePort.desired(), publisher);

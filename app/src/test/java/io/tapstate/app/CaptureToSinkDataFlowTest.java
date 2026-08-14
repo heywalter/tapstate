@@ -157,7 +157,7 @@ class CaptureToSinkDataFlowTest {
         DagSource dagSource = new StoreBackedDagSource(store, capturingSink);
 
         LifecycleActuator actuator = new EngineLifecycleActuator(
-                new Engine(member), dagSource, coordinator, new NestStateTeardown(member, store.keyedState()));
+                new Engine(member), dagSource, coordinator, new NestStateTeardown(member, store.keyedState(), store.nestDeadLetters()));
 
         actuator.start(PIPELINE);
         try {

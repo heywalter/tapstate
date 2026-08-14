@@ -77,7 +77,7 @@ class DataPlaneActuationConfiguration {
 
     @Bean
     NestStateTeardown nestStateTeardown(HazelcastInstance hazelcastMember, StorePort storePort) {
-        return new NestStateTeardown(hazelcastMember, storePort.keyedState());
+        return new NestStateTeardown(hazelcastMember, storePort.keyedState(), storePort.nestDeadLetters());
     }
 
     @Bean

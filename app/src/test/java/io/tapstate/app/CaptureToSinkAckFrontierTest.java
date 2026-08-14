@@ -314,7 +314,7 @@ class CaptureToSinkAckFrontierTest {
                 (connectorId, settings, writeMode, ddl, target) -> (SupplierEx<SinkWriter>) CapturingSinkWriter::new;
         DagSource dagSource = wrapDag.apply(new StoreBackedDagSource(store, capturingSink));
         return new EngineLifecycleActuator(
-                new Engine(member), dagSource, coordinator, new NestStateTeardown(member, store.keyedState()));
+                new Engine(member), dagSource, coordinator, new NestStateTeardown(member, store.keyedState(), store.nestDeadLetters()));
     }
 
     private static Envelope change(int id) {

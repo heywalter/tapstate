@@ -757,7 +757,24 @@ public final class DslParser {
             throw m.errorAt("id", DslError.ILLEGAL_VALUE,
                     Map.of("value", id, "expected", "an id without '.', the reserved addressing separator (§2)"));
         }
+        // An id travels into places that write it as a line of text and read it back by splitting on
+        // lines, so one carrying a newline is recorded as several and read back as names that were never
+        // used. Refused here rather than encoded around downstream: every such place would have to be
+        // found, and one missed is state left behind or another id's state dropped in its place.
+        if (id != null && hasControlCharacter(id)) {
+            throw m.errorAt("id", DslError.ILLEGAL_VALUE,
+                    Map.of("value", id, "expected", "an id without control characters"));
+        }
         return id;
+    }
+
+    private static boolean hasControlCharacter(String id) {
+        for (int i = 0; i < id.length(); i++) {
+            if (Character.isISOControl(id.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Coerces a scalar field to an enum by its {@code yaml()} value; illegal-value on miss. */
