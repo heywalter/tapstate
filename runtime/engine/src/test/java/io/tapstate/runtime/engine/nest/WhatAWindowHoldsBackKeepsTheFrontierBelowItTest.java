@@ -106,7 +106,7 @@ class WhatAWindowHoldsBackKeepsTheFrontierBelowItTest {
         ElementRef ref = new ElementRef(List.of("policies"), null, List.of("PN-" + policyId), List.of(policyId));
         return new KeyedElement(List.of(customerId),
                 new NestElement(ref, row("policy_id", policyId, "policy_no", "PN-" + policyId), at(seq),
-                        Map.of(POLICIES, new ChainPosition(at(seq), null))));
+                        Map.of(POLICIES, new ChainPosition(at(seq), null))), seq);
     }
 
     /** A claim that hangs under a policy which has not arrived: held for an ancestor, not by a window. */
@@ -114,7 +114,7 @@ class WhatAWindowHoldsBackKeepsTheFrontierBelowItTest {
         ElementRef ref = new ElementRef(List.of("policies", "claims"), List.of(policyId), List.of("CL1"), null);
         return new KeyedElement(List.of(customerId),
                 new NestElement(ref, row("claim_id", "CL1", "policy_id", policyId), at(seq),
-                        Map.of(POLICIES, new ChainPosition(at(seq), null))));
+                        Map.of(POLICIES, new ChainPosition(at(seq), null))), seq);
     }
 
     private void feed(AssemblerProcessor processor, int ordinal, Object... items) {

@@ -109,7 +109,7 @@ class ADocumentGoesOutAtOnceAndThenOnceAWindowTest {
         ElementRef ref = new ElementRef(List.of("policies"), null, List.of("PN-" + policyId), List.of(policyId));
         return new KeyedElement(List.of(customerId),
                 new NestElement(ref, row("policy_id", policyId, "policy_no", "PN-" + policyId), at(seq),
-                        Map.of("policy", new ChainPosition(at(seq), null))));
+                        Map.of("policy", new ChainPosition(at(seq), null))), seq);
     }
 
     private List<Envelope> feed(AssemblerProcessor processor, int ordinal, Object... items) {

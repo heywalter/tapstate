@@ -111,7 +111,7 @@ public final class ResolverProcessor extends AbstractProcessor {
      * <p>Recorded only where the identity really did change, which the row itself says. Every other row
      * would be waiting for something nobody is ever going to leave.
      */
-    private final Set<List<Object>> tookOver = new LinkedHashSet<>();
+    private final Map<List<Object>, Long> tookOver = new LinkedHashMap<>();
 
     /**
      * What this instance has left in the parking area and not yet seen taken in, against the positions of the
@@ -405,7 +405,7 @@ public final class ResolverProcessor extends AbstractProcessor {
     private void handle(NestInbound edge, Object item, Map<Object, ResolverState> touched) {
         if (edge.isCascade()) {
             KeyedElement arrived = (KeyedElement) item;
-            route(arrived.key(), arrived.element(), touched);
+            route(arrived.key(), arrived.element(), arrived.ts(), touched);
             return;
         }
         Envelope event = (Envelope) item;
@@ -430,11 +430,11 @@ public final class ResolverProcessor extends AbstractProcessor {
                 // this instance's own. A row that is leaving nowhere arrives here keyed the same as its twin
                 // and is dropped: it has already been dealt with as an arrival.
                 if (parentBefore != null && !parentBefore.equals(parent)) {
-                    route(parentBefore, departureOf(arriving), touched);
+                    route(parentBefore, departureOf(arriving), event.ts(), touched);
                 }
                 return;
             }
-            route(parent, arriving, touched);
+            route(parent, arriving, event.ts(), touched);
         }
     }
 
@@ -447,11 +447,11 @@ public final class ResolverProcessor extends AbstractProcessor {
      * <p>Nothing is sent where the key did not move. The element is where it always was, and a departure
      * from an address it never left would take it out of the only document it is in.
      */
-    private void sendDeparture(List<Object> parentBefore, List<Object> parent, NestElement arriving) {
+    private void sendDeparture(List<Object> parentBefore, List<Object> parent, NestElement arriving, long ts) {
         if (parentBefore == null || parentBefore.equals(parent)) {
             return;
         }
-        emit(new KeyedElement(parentBefore, departureOf(arriving)));
+        emit(new KeyedElement(parentBefore, departureOf(arriving), ts));
     }
 
     /** The half of a move that stays behind: the same change with no row, so it places nothing. */
@@ -497,8 +497,8 @@ public final class ResolverProcessor extends AbstractProcessor {
         // that arrives looks for it. Only an ordering, not a guarantee: the two are routed by different keys
         // and may be worked by different members, so what makes the hand-over land is the arriving side
         // looking again rather than the two being sent in this order.
-        sendDeparture(parentBefore, parent, arriving);
-        emit(new KeyedElement(parent, arriving));
+        sendDeparture(parentBefore, parent, arriving, event.ts());
+        emit(new KeyedElement(parent, arriving, event.ts()));
         if (NestKeys.isDeletion(event)) {
             deleted.put(key, event.positions());
             for (ReleasedChild child : state.deleteMapping(order, clock.millis())) {
@@ -507,10 +507,10 @@ public final class ResolverProcessor extends AbstractProcessor {
         } else {
             deleted.remove(key);
             for (NestElement child : state.declare(parent, order)) {
-                emit(new KeyedElement(parent, child));
+                emit(new KeyedElement(parent, child, event.ts()));
             }
-            if (!collectVacated(key, state) && tookOverFrom(edge, event, row)) {
-                tookOver.add(key);
+            if (!collectVacated(key, state, event.ts()) && tookOverFrom(edge, event, row)) {
+                tookOver.put(key, event.ts());
             }
         }
     }
@@ -613,7 +613,7 @@ public final class ResolverProcessor extends AbstractProcessor {
      * mapping that now exists. Offered rather than released outright: the row that declares this key may not
      * have arrived, in which case they go on waiting - here, where something will answer them.
      */
-    private boolean collectVacated(List<Object> key, ResolverState state) {
+    private boolean collectVacated(List<Object> key, ResolverState state, long ts) {
         if (parking == null) {
             return false;
         }
@@ -624,7 +624,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         }
         for (NestElement child : waiting.changes()) {
             switch (state.resolve(child, clock.millis())) {
-                case RESOLVED -> emit(new KeyedElement(state.parentKey(), child));
+                case RESOLVED -> emit(new KeyedElement(state.parentKey(), child, ts));
                 case HELD -> { }
                 case PARENT_ABSENT ->
                         deadLetter.unassemblable(vertex, new ReleasedChild(child, Duration.ZERO));
@@ -651,22 +651,25 @@ public final class ResolverProcessor extends AbstractProcessor {
         if (parking == null || tookOver.isEmpty()) {
             return;
         }
-        for (List<Object> key : List.copyOf(tookOver)) {
-            ResolverState state = store.load(key);
+        for (Map.Entry<List<Object>, Long> waited : List.copyOf(tookOver.entrySet())) {
+            ResolverState state = store.load(waited.getKey());
             if (state == null) {
                 continue;
             }
-            if (collectVacated(key, state)) {
-                store.save(key, state);
+            // The time of the change that took the identity over, kept since it was recorded. What lands
+            // here was parked before this level ever saw it, so its own time is no longer anywhere - and
+            // this is the change that puts it in a document, which is the time a document is stamped by.
+            if (collectVacated(waited.getKey(), state, waited.getValue())) {
+                store.save(waited.getKey(), state);
             }
         }
     }
 
     /** One change from beneath, offered to the key its join field names. */
-    private void route(Object key, NestElement element, Map<Object, ResolverState> touched) {
+    private void route(Object key, NestElement element, long ts, Map<Object, ResolverState> touched) {
         ResolverState state = stateFor(key, touched);
         switch (state.resolve(element, clock.millis())) {
-            case RESOLVED -> emit(new KeyedElement(state.parentKey(), element));
+            case RESOLVED -> emit(new KeyedElement(state.parentKey(), element, ts));
             // Held: it is in the state now, and the drain writes that through before this level promises
             // anything, so there is nothing further to do here and nothing to record about it.
             case HELD -> { }

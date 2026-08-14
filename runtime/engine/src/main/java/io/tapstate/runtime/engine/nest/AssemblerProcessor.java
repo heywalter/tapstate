@@ -591,7 +591,9 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private void handle(NestInbound edge, Object item, Map<Object, Touched> touched) {
         if (edge.isCascade()) {
             KeyedElement arrived = (KeyedElement) item;
-            settle(arrived.key(), touched(arrived.key(), touched), arrived.element());
+            Touched document = touched(arrived.key(), touched);
+            document.ts = arrived.ts();
+            settle(arrived.key(), document, arrived.element());
             return;
         }
         Envelope event = (Envelope) item;

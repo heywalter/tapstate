@@ -289,6 +289,6 @@ class TheDeepestOneKeyHasHeldIsPublishedWithTheOtherReadingsTest {
         return new KeyedElement(List.of(customerId), new NestElement(
                 new ElementRef(List.of("policies"), null, List.of("PN-" + policyId), List.of(policyId)),
                 row("policy_id", policyId, "policy_no", "PN-" + policyId), at(seq),
-                Map.of("policy", new ChainPosition(at(seq), null))));
+                Map.of("policy", new ChainPosition(at(seq), null))), seq);
     }
 }

@@ -11,9 +11,14 @@ import java.util.Objects;
  * key of the document the element belongs to. Keeping it beside the change rather than inside is what
  * lets an element wait for a parent it cannot yet name: a waiting bucket holds changes, not routes.
  *
+ * <p>{@code ts} is the source's time for the change, carried here rather than on the element itself: the
+ * element is what gets parked and stored, and a time is only wanted while the change is on its way up. A
+ * document is stamped from it on arrival, so a change that travelled without one would place itself
+ * downstream at the epoch instead of where the source put it.
+ *
  * <p>{@link Serializable} because it crosses between members.
  */
-public record KeyedElement(Object key, NestElement element) implements Serializable {
+public record KeyedElement(Object key, NestElement element, long ts) implements Serializable {
 
     public KeyedElement {
         Objects.requireNonNull(key, "key");
@@ -22,6 +27,6 @@ public record KeyedElement(Object key, NestElement element) implements Serializa
 
     /** The same change, routed by the key of the level above. */
     public KeyedElement routedBy(Object key) {
-        return new KeyedElement(key, element);
+        return new KeyedElement(key, element, ts);
     }
 }

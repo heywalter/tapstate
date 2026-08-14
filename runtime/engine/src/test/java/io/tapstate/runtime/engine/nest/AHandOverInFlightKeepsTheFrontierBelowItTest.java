@@ -163,14 +163,14 @@ class AHandOverInFlightKeepsTheFrontierBelowItTest {
     private static KeyedElement policyElement(long seq, String customerId) {
         return new KeyedElement(List.of(customerId), new NestElement(policyRef(),
                 row("policy_id", "P1", "policy_no", "PN-P1"), at(seq),
-                Map.of(POLICIES, new ChainPosition(at(seq), null))));
+                Map.of(POLICIES, new ChainPosition(at(seq), null))), seq);
     }
 
     private static KeyedElement claimElement(long seq, String customerId) {
         ElementRef ref = new ElementRef(List.of("policies", "claims"), List.of("P1"), List.of("CL1"), null);
         return new KeyedElement(List.of(customerId), new NestElement(ref,
                 row("claim_id", "CL1", "policy_id", "P1"), at(seq),
-                Map.of(POLICIES, new ChainPosition(at(seq), null))));
+                Map.of(POLICIES, new ChainPosition(at(seq), null))), seq);
     }
 
     /**
@@ -180,14 +180,14 @@ class AHandOverInFlightKeepsTheFrontierBelowItTest {
      */
     private static KeyedElement departureOfP1From(String customerId) {
         return new KeyedElement(List.of(customerId), new NestElement(policyRef(), null, at(MOVED_AT),
-                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef(), true));
+                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef(), true), MOVED_AT);
     }
 
     /** The half that arrives, which is what collects whatever was parked for the element. */
     private static KeyedElement arrivalOfP1At(String customerId) {
         return new KeyedElement(List.of(customerId), new NestElement(policyRef(),
                 row("policy_id", "P1", "policy_no", "PN-P1"), at(MOVED_AT),
-                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef(), true));
+                Map.of(POLICIES, new ChainPosition(at(MOVED_AT), null)), policyRef(), true), MOVED_AT);
     }
 
     private void feed(AssemblerProcessor processor, int ordinal, Object... items) {
