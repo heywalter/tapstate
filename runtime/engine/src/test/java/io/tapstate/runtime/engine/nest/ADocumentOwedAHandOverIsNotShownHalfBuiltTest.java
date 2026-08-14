@@ -133,13 +133,107 @@ class ADocumentOwedAHandOverIsNotShownHalfBuiltTest {
                 .containsExactly("C2:0");
     }
 
+    /**
+     * A window that has already been opened over the key a move is arriving at is the way round the hold,
+     * and it is reached without anything unusual happening: the key was being written to before the move
+     * began, so its window is open with a version folded into it. Nothing puts that version down again
+     * when the move arrives - the hold refuses the render and leaves the window alone - so a window that
+     * flushed on the clock would send the very document the hold exists to keep from being seen, out of a
+     * path the hold was never consulted on.
+     *
+     * <p>What makes it worth a case of its own is that the version it sends is not obviously wrong: it is
+     * the document as it stood, correct for the key it used to be about, and short only the tree that is
+     * still parked. A sink upserts it and nothing counts an error.
+     */
+    @Test
+    void aWindowThatRunsOutIsNotAWayRoundTheHold() throws Exception {
+        AssemblerProcessor losing = assembler();
+        AssemblerProcessor gaining = windowed();
+        customer(losing, "C1");
+        policies(losing, "C1", 2);
+        // C2 exists and is being written to, so its window is open with a version folded into it.
+        feed(gaining, OWN_ROWS, customerAt(1, "C2"));
+        feed(gaining, OWN_ROWS, customerAt(2, "C2"));
+
+        feed(gaining, OWN_ROWS, renamed("C1", "C2"));
+        clock.advance(PAST_THE_WINDOW);
+        List<Object> emitted = new ArrayList<>();
+        gaining.tryProcess();
+        out.drainQueueAndReset(0, emitted, false);
+
+        assertThat(documentsIn(emitted))
+                .describedAs("the window ran out while the tree was still parked, and what it would have "
+                        + "sent is the same half-built document the render refused")
+                .isEmpty();
+    }
+
+    /**
+     * The positive control for the case above, and the one that says the hold is a hold rather than a
+     * wedge: the same window, the same clock, the tree landed. Without it "nothing went out" would be
+     * satisfied just as well by a window that never flushes at all.
+     */
+    @Test
+    void theHeldBackWindowGoesOutWholeOnceTheTreeLands() throws Exception {
+        AssemblerProcessor losing = assembler();
+        AssemblerProcessor gaining = windowed();
+        customer(losing, "C1");
+        policies(losing, "C1", 2);
+        feed(gaining, OWN_ROWS, customerAt(1, "C2"));
+        feed(gaining, OWN_ROWS, customerAt(2, "C2"));
+        feed(gaining, OWN_ROWS, renamed("C1", "C2"));
+
+        feed(losing, DEPARTURES, renamed("C1", "C2"));
+        clock.advance(PAST_THE_WINDOW);
+        List<Object> emitted = new ArrayList<>();
+        gaining.tryProcess();
+        out.drainQueueAndReset(0, emitted, false);
+
+        assertThat(documentsIn(emitted))
+                .describedAs("one send, and it is the whole document")
+                .containsExactly("C2:2");
+    }
+
+    /**
+     * The other control: a window over a key owed nothing still flushes on the clock. It is what says the
+     * refusal above is about being owed rows rather than about windows having quietly stopped working.
+     */
+    @Test
+    void aWindowOverAKeyOwedNothingStillFlushes() throws Exception {
+        AssemblerProcessor assembler = windowed();
+        feed(assembler, OWN_ROWS, customerAt(1, "C9"));
+        feed(assembler, OWN_ROWS, customerAt(2, "C9"));
+
+        clock.advance(PAST_THE_WINDOW);
+        List<Object> emitted = new ArrayList<>();
+        assembler.tryProcess();
+        out.drainQueueAndReset(0, emitted, false);
+
+        assertThat(documentsIn(emitted)).containsExactly("C9:0");
+    }
+
     // ---- harness ------------------------------------------------------------------------
 
+    /** Long enough that a folded version is due to go out, far short of the protection beside it. */
+    private static final long SEND_WINDOW_MILLIS = 50L;
+    private static final long PAST_THE_WINDOW = 100L;
+
     private AssemblerProcessor assembler() throws Exception {
+        return assembler(NestSendPolicy.within(0), 1_000L);
+    }
+
+    /**
+     * The same assembler sending on a window, and protected for far longer than the case advances the
+     * clock - so what holds the document back is being owed a tree rather than the wait not being up.
+     */
+    private AssemblerProcessor windowed() throws Exception {
+        return assembler(NestSendPolicy.within(SEND_WINDOW_MILLIS), 1_000_000L);
+    }
+
+    private AssemblerProcessor assembler(NestSendPolicy sending, long protection) throws Exception {
         AssemblerProcessor processor = new AssemblerProcessor(TOPOLOGY.assembler(), TOPOLOGY.slots(),
                 documents, "doc", null, null, ReplayFloor.NONE,
-                NestSettings.defaults().withMigrationProtection(NAMESPACE, 1_000L), clock,
-                NestSendPolicy.within(0), stores.forParking(TOPOLOGY.assembler()), (from, released) -> { });
+                NestSettings.defaults().withMigrationProtection(NAMESPACE, protection), clock,
+                sending, stores.forParking(TOPOLOGY.assembler()), (from, released) -> { });
         processor.init(out, new TestProcessorContext());
         return processor;
     }
@@ -154,8 +248,13 @@ class ADocumentOwedAHandOverIsNotShownHalfBuiltTest {
     }
 
     private void customer(AssemblerProcessor processor, String customerId) {
-        feed(processor, OWN_ROWS, Envelope.insert(1, "customer",
-                row("customer_id", customerId, "name", "n"), null).withOrder(at(1)));
+        feed(processor, OWN_ROWS, customerAt(1, customerId));
+    }
+
+    /** A root row for {@code customerId} at {@code seq}, so a case can write to one key twice over. */
+    private static Envelope customerAt(long seq, String customerId) {
+        return Envelope.insert(seq, "customer", row("customer_id", customerId, "name", "n" + seq), null)
+                .withOrder(at(seq));
     }
 
     private void policies(AssemblerProcessor processor, String customerId, int count) {

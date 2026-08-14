@@ -48,6 +48,20 @@ import java.util.Set;
  */
 public final class ResolverProcessor extends AbstractProcessor {
 
+    /**
+     * The shortest gap between two passes over the tombstones that may stop being kept.
+     *
+     * <p>A vertex with nothing arriving is asked to make progress over and over, and a pass reads back
+     * every entry still keeping one and then asks where each chain its deletion covered would resume -
+     * a crossing to the durable plane, once per chain, uncached. A tombstone is kept precisely until the
+     * frontier passes it, so without an interval those reads repeat as fast as the idle loop turns for
+     * as long as the frontier lags. What is being bounded here is measured in hours.
+     */
+    private static final long SWEEP_INTERVAL_MILLIS = 1_000L;
+
+    /** When the tombstones were last weighed for dropping, or null before the first pass. */
+    private Long weighedAt;
+
     private final NestVertex vertex;
     private final NestStore<ResolverState> store;
     private final NestDeadLetter deadLetter;
@@ -222,6 +236,28 @@ public final class ResolverProcessor extends AbstractProcessor {
             return false;
         }
         collectWhatWasTakenOver();
+        weighTombstones();
+        if (!flush()) {
+            return false;
+        }
+        // Only once what the second look sent has actually left: a bound offered ahead of the changes queued
+        // behind it would say they had gone, and they are right here.
+        return sayWhatIsNoLongerHeld();
+    }
+
+    /**
+     * Drops the tombstones whose deletion a restart could no longer deliver again. Held to the sweep
+     * interval, for the reason the interval exists - see where it is declared.
+     */
+    private void weighTombstones() {
+        if (deleted.isEmpty()) {
+            return;
+        }
+        long now = clock.millis();
+        if (weighedAt != null && now - weighedAt < SWEEP_INTERVAL_MILLIS) {
+            return;
+        }
+        weighedAt = now;
         Iterator<Map.Entry<Object, Map<String, ChainPosition>>> candidates = deleted.entrySet().iterator();
         while (candidates.hasNext()) {
             Map.Entry<Object, Map<String, ChainPosition>> candidate = candidates.next();
@@ -233,12 +269,6 @@ public final class ResolverProcessor extends AbstractProcessor {
                 candidates.remove();
             }
         }
-        if (!flush()) {
-            return false;
-        }
-        // Only once what the second look sent has actually left: a bound offered ahead of the changes queued
-        // behind it would say they had gone, and they are right here.
-        return sayWhatIsNoLongerHeld();
     }
 
     /**
