@@ -507,6 +507,13 @@ public final class ResolverProcessor extends AbstractProcessor {
         List<Object> key = NestKeys.valuesOf(row, vertex.partitionKey());
         List<Object> parent = NestKeys.valuesOf(row, vertex.parentKeyFields());
         ResolverState state = stateFor(key, touched);
+        // Asked before anything goes out, because what this level sends on has to agree with what it kept.
+        // The entry rejects a row it has already moved past - a replay resuming below a reparent is the
+        // ordinary way to meet one - and sending it on regardless puts the element back into the document
+        // that reparent took it out of, with the entry here still right and nothing counting the document.
+        if (!state.accepts(order)) {
+            return;
+        }
         Map<String, Object> was = NestKeys.replacedRow(edge, event);
         List<Object> parentBefore = was == null ? null : NestKeys.valuesOf(was, vertex.parentKeyFields());
         Object parentWas = was == null ? null : parentIdentity(edge, parentBefore);

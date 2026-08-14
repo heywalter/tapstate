@@ -222,6 +222,17 @@ public final class ResolverState implements Serializable {
         drain();
     }
 
+    /**
+     * Whether a row at {@code candidate} is newer than whatever this entry has already applied - asked
+     * before anything is sent on, so that what leaves this level agrees with what it kept. A row it would
+     * reject and that went out anyway puts an element back into a document a later change took it out of,
+     * which no count anywhere is about.
+     */
+    public boolean accepts(SourceOrder candidate) {
+        Objects.requireNonNull(candidate, "candidate");
+        return wins(candidate);
+    }
+
     private boolean wins(SourceOrder candidate) {
         return order == null || candidate.compareTo(order) > 0;
     }
