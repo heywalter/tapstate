@@ -330,6 +330,7 @@ verbs exit with code `3`.
 ## Documentation
 
 - [Quickstart](docs/quickstart-online.md)
+- [Tutorials](docs/tutorials/) - worked scenarios with sample data
 - Architecture: coming soon
 - Connectors: coming soon
 - Deployment: coming soon
