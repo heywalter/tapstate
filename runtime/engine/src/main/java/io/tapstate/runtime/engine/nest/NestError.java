@@ -26,6 +26,15 @@ public enum NestError implements TapstateErrorCode {
     SIBLING_EMBEDS_TARGET_DIFFERENT_PARENT_KEYS(
             "nest.sibling-embeds-target-different-parent-keys", Set.of("embedPath", "fields")),
 
+    /**
+     * Checking the tree: an embed joins onto a column that does not identify its parent, so many parent rows
+     * share one identity and the rows beneath collapse into whichever of them got there. Sibling embeds catch
+     * this by disagreeing with each other; an only child has nobody to disagree with, so the column it names
+     * is taken as the level's identity however wrong it is.
+     */
+    EMBED_TARGET_NOT_PARENT_KEY(
+            "nest.embed-target-not-parent-key", Set.of("embedPath", "fields", "parentKey")),
+
     /** Checking the tree: two embeds under one parent claim the same path, where one would overwrite the other. */
     EMBED_PATH_CONFLICT("nest.embed-path-conflict", Set.of("path", "embedPathA", "embedPathB")),
 

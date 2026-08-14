@@ -281,10 +281,10 @@ nest.sibling-embeds-target-different-parent-keys {embedPath=$root, fields=custom
 The lines say the level is keyed by `orders.id`; the customer says it is keyed by `orders.customer_id`.
 A level cannot be both, so the pipeline is refused rather than run.
 
-### A lookup is not a nest, and this one fails quietly
+### A lookup is not a nest, and it is refused wherever you put it
 
-The refusal above is the friendly case. Now put that same lookup somewhere it has no siblings to
-disagree with - the product a line points at:
+The refusal above leans on the siblings disagreeing. The same mistake with nothing to disagree with -
+the product a line points at - is caught by asking the level's own key instead:
 
 ```yaml
         - from: i
@@ -299,13 +299,18 @@ disagree with - the product a line points at:
               path: product
 ```
 
-This is accepted. It starts, it runs, `errorCount` stays at 0 - and the documents are wrong. Measured
-on this dataset: **20 of 600 lines come back with a `product`, and the other 580 have none**.
+Starting the pipeline fails with:
+
+```
+nest.embed-target-not-parent-key {embedPath=lines, fields=product_id, parentKey=id}
+```
 
 The reason follows directly from the rule. `on: { id: product_id }` declares that the lines level is
-identified by `product_id`. There are 600 lines but only 20 distinct products, so 600 lines collapse
-into 20 identity slots and each product attaches to exactly one line. Group the survivors by
-`product_id` and you get 20 groups of exactly one.
+identified by `product_id`, and `order_items` is keyed by `id`. Were it allowed to run, there would be
+600 lines but only 20 distinct products, so 600 lines would collapse into 20 identity slots and each
+product would attach to exactly one line: **20 of 600 lines coming back with a `product` and the other
+580 with none, while `errorCount` stayed at 0 throughout**. That is the shape this refusal exists to
+prevent - it is the one failure here that no counter would have shown you.
 
 **So: a nest embeds children that belong to a parent. It does not look up rows a parent refers to.**
 The test is one question - *does this row belong to exactly one parent, and does it carry that

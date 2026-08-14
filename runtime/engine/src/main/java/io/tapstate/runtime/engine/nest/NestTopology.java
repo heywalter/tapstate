@@ -100,7 +100,9 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
         List<String> rootIdentity = identityOf(ROOT_NAMESPACE, rootKey, top);
         for (Node node : all) {
             if (!node.children().isEmpty()) {
-                node.identity(identityOf(render(node.pathId()), null, node.children()));
+                List<String> identity = identityOf(render(node.pathId()), null, node.children());
+                checkIdentifiesItsOwnRows(node, identity, tables);
+                node.identity(identity);
             }
         }
         for (Node node : all) {
@@ -332,6 +334,31 @@ public record NestTopology(List<NestVertex> vertices, List<NestStream> streams, 
                     Map.of("embedPath", owner, "fields", String.join(", ", named)), null);
         }
         return chosen;
+    }
+
+    /**
+     * Refuses a level whose children join onto a column that does not identify its rows. What a child names
+     * is not a column to look the parent up by; it is the declaration of what the level is keyed on, and the
+     * level is partitioned by it. Name one many rows share and they collapse into a single identity, taking
+     * whichever row got there and leaving the rest with nothing - quietly, since every count stays at zero.
+     *
+     * <p>Siblings catch this by disagreeing with each other. An only child has nobody to disagree with, which
+     * is why the level's own key has to be asked. Only a declared key can say whether a column identifies a
+     * row, so a level whose table declares none is left alone rather than guessed at.
+     */
+    private static void checkIdentifiesItsOwnRows(Node node, List<String> identity,
+            Function<String, NestTable> tables) {
+        NestTable table = tables.apply(node.embed().from());
+        if (table == null || table.primaryKey().isEmpty()) {
+            return;
+        }
+        if (new LinkedHashSet<>(identity).equals(new LinkedHashSet<>(table.primaryKey()))) {
+            return;
+        }
+        throw new TapstateException(NestError.EMBED_TARGET_NOT_PARENT_KEY,
+                Map.of("embedPath", render(node.pathId()),
+                        "fields", String.join(", ", identity),
+                        "parentKey", String.join(", ", table.primaryKey())), null);
     }
 
     /**

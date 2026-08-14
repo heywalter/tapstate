@@ -71,6 +71,22 @@ class NestTreeWellFormednessTest {
     }
 
     @Test
+    void refusesAnOnlyChildEmbedJoiningOnAnythingButItsParentsKey() {
+        TransformBody.Nest tree = nest("customer", List.of("customer_id"),
+                embed("policy", "customer_id", "customer_id", EmbedAs.ARRAY, "policies", List.of("policy_no"),
+                        embed("document", "document_id", "author_id", EmbedAs.OBJECT, "author", null)));
+
+        assertThatThrownBy(() -> compile(tree))
+                .describedAs("a level with one child has nothing to disagree with, so the column it joins on"
+                        + " is taken as that level's identity however wrong it is")
+                .isInstanceOf(TapstateException.class)
+                .hasMessageContaining("nest.embed-target-not-parent-key")
+                .hasMessageContaining("embedPath=policies")
+                .hasMessageContaining("fields=author_id")
+                .hasMessageContaining("parentKey=policy_id");
+    }
+
+    @Test
     void refusesTwoEmbedsClaimingTheSamePlaceInTheDocument() {
         TransformBody.Nest tree = nest("customer", List.of("customer_id"),
                 embed("policy", "customer_id", "customer_id", EmbedAs.ARRAY, "rows", List.of("policy_no")),

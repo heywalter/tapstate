@@ -98,6 +98,7 @@ nest.array-key-unresolvable
 nest.capacity-estimate-incomplete
 nest.chain-axis-limit-exceeded
 nest.embed-path-conflict
+nest.embed-target-not-parent-key
 nest.key-change-tracking-requires-before-image
 nest.memory-budget-below-partition-count
 nest.memory-budget-changed-while-running
