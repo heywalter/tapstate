@@ -51,6 +51,33 @@ class SettledFloorTest {
         assertThat(acked.calls).isEmpty();
     }
 
+    /**
+     * The shape a parting raise arrives in. Once every queue behind an edge has finished there is nothing
+     * left to take a lowest of, and the engine offers the highest value any of those queues ever reported -
+     * a maximum where every other step took a minimum, and one that can land far above anything this sink
+     * was ever given. An instance that finished while still holding a change it never sent is exactly the
+     * case such a bound would carry a frontier over.
+     *
+     * <p>What stops it is not that the raise fails to arrive - whether it is handed to a processor at all is
+     * the engine's scheduling to decide, and it has been observed both ways. It is that a position is only
+     * ever advanced to because it settled here, so a bound above everything settled moves the frontier no
+     * further than the last batch that actually arrived. The value being unreachable is what
+     * {@link SettledFloor#gaps()} then reports as a distance, which is a reading rather than a hazard.
+     */
+    @Test
+    void a_bound_far_above_everything_settled_reaches_only_what_settled() {
+        RecordingAck acked = new RecordingAck();
+        SettledFloor floor = new SettledFloor(AXES, SettledFloor.DEFAULT_MAX_ENTRIES_PER_CHAIN);
+
+        floor.settled(entries("orders", 1, 2, 3), acked);
+        floor.bound(boundAt("orders", 100), acked);
+
+        assertThat(acked.calls)
+                .describedAs("a frontier may only reach a position that arrived and settled here, whatever "
+                        + "value a bound carries")
+                .containsExactly("orders=w3");
+    }
+
     @Test
     void advances_nothing_when_the_bound_is_below_every_settled_entry() {
         RecordingAck acked = new RecordingAck();

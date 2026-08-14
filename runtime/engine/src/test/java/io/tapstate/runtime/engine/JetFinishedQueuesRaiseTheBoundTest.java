@@ -42,16 +42,23 @@ import org.junit.jupiter.api.Test;
  * trusting the bound carries straight over the change nobody sent. Nothing reports it - every count is
  * right and the change is neither delivered nor replayable.
  *
- * <p><b>How far the raise travels is the whole point, and it is not far.</b> The raise is produced when the
- * edge's last queue finishes, which is also the moment the edge itself is finished and retired. A processor
- * whose only inbound edge that was is put straight into completing, and the raised bound is dropped
- * unhandled: neither watermark callback is ever invoked with it. Only a processor that still has another
- * inbound edge to be fed from is handed it. So the hazard belongs to vertices that merge edges, and a sink
- * fed by a single edge cannot be handed the raise at all.
+ * <p><b>How far the raise travels was pinned here as a third case, and that case was wrong.</b> It asserted
+ * that a processor whose last inbound edge produced the raise is never handed it - the reasoning being that
+ * such a processor is put straight into completing, so neither watermark callback is invoked with it. A CI
+ * run observed the opposite and failed on it. Whether the raise is handed over is the engine's scheduling
+ * to decide, and asserting a never about it is the same mistake the paragraph below describes, made one
+ * case further along.
  *
- * <p>All three cases are pinned together because each alone is green for the wrong reason. That the raise
- * never arrives says nothing unless the raise is shown to exist; that it exists says nothing about the sink
- * unless the sink's shape is shown to be exempt.
+ * <p><b>Nothing depends on that outcome, which is why the case is gone rather than made deterministic.</b>
+ * A sink is safe from the raise however it is scheduled, and not because the raise fails to arrive: a
+ * frontier only ever advances to a position that settled at the sink, so a bound above everything settled
+ * moves it no further than the last batch that actually arrived, and the unreachable remainder shows up as
+ * a distance to read rather than as a change carried over. That is pinned deterministically and with no
+ * engine in the way, by {@code SettledFloorTest.a_bound_far_above_everything_settled_reaches_only_what_settled}.
+ * What is left here characterises the substrate; it is not what makes the frontier correct.
+ *
+ * <p>Both cases are pinned together because each alone is green for the wrong reason: that a queue
+ * finishing leaves the bound low says nothing unless the raise is shown to exist at all.
  *
  * <p>The senders here emit bounds and no data at all. A bound worked out as an edge finishes is held back
  * one drain when data was drained alongside it, and that drain never comes for an edge that has finished -
@@ -138,7 +145,7 @@ class JetFinishedQueuesRaiseTheBoundTest {
 
     @Test
     void aQueueFinishingLeavesTheBoundWhereTheQueueStillOpenPutIt() {
-        runOneEdge(false);
+        runOneEdge();
 
         await(() -> boundsSeen().contains(global(LOW)));
 
@@ -187,40 +194,12 @@ class JetFinishedQueuesRaiseTheBoundTest {
                 .contains(edge(LEFT, HIGH));
     }
 
-    @Test
-    void aRaiseOnTheLastEdgeAProcessorHasIsNeverHandedToIt() {
-        runOneEdge(true);
-
-        // The same shape as the case above but for the second edge, and the raise is worked out the same
-        // way. Waiting for the job to have finished is what makes the absence below a decision.
-        await(() -> job.getFuture().isDone());
-
-        assertThat(highFinishedFirstOn("senders"))
-                .describedAs("the same gate as the case above, and it is what leaves the absence below with "
-                        + "one meaning: had the low instance finished first, the high promise would reach a "
-                        + "receiver as the bound the still-open queue leaves behind, and the absence would "
-                        + "be failing for a raise this case is not about")
-                .isTrue();
-        assertThat(boundsSeen())
-                .describedAs("the low promise never arrived either, so the absence below would be about "
-                        + "the job never having run; and the edge did complete, without which there is no "
-                        + "raise for the absence below to be about")
-                .contains(global(LOW), edge(LEFT, LOW), edgeCompleted(LEFT));
-        assertThat(boundsSeen())
-                .describedAs("the raise worked out as the last edge finished was handed to the processor, "
-                        + "where a sink is put straight into completing instead and never sees it. Asked as "
-                        + "whether the value reached a receiver at all - asking instead what came after the "
-                        + "edge completed passes on any run where a receiver was handed it first, which is "
-                        + "the same run the case is meant to catch")
-                .doesNotContain(edge(LEFT, HIGH));
-    }
-
     // ---- the job under test ------------------------------------------------------------
 
-    /** One edge into the receivers; its low instance finishes only when {@code lowFinishes}. */
-    private void runOneEdge(boolean lowFinishes) {
+    /** One edge into the receivers, whose low instance stays open so the edge never finishes entirely. */
+    private void runOneEdge() {
         DAG dag = new DAG();
-        Vertex senders = senders(dag, "senders", lowFinishes);
+        Vertex senders = senders(dag, "senders", false);
         Vertex receivers = receivers(dag);
         dag.edge(Edge.from(senders).to(receivers, LEFT));
         job = member.getJet().newJob(dag);
