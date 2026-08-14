@@ -10,6 +10,10 @@ import io.tapdata.entity.event.dml.TapInsertRecordEvent;
 import io.tapdata.entity.event.dml.TapUpdateRecordEvent;
 import org.junit.jupiter.api.Test;
 
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -96,6 +100,24 @@ class TapEventCodecTest {
         assertThat(env.op()).isEqualTo(Op.READ);
         assertThat(env.after()).isEqualTo(Map.of("id", 7L));
         assertThat(env.before()).isNull();
+    }
+
+    @Test
+    void decodesZonedDateTimesToDatesAtEveryRowDepth() {
+        ZonedDateTime topLevel = ZonedDateTime.of(2026, 8, 12, 21, 8, 43, 123_000_000, ZoneId.of("Asia/Shanghai"));
+        ZonedDateTime nestedMap = topLevel.plusHours(1);
+        ZonedDateTime nestedList = topLevel.plusHours(2);
+        TapInsertRecordEvent event = TapInsertRecordEvent.create().table("orders").after(Map.of(
+                "top_level", topLevel,
+                "nested", Map.of("map_value", nestedMap),
+                "items", List.of(nestedList)));
+
+        Envelope env = TapEventCodec.decodeChange(event);
+
+        assertThat(env.after()).isEqualTo(Map.of(
+                "top_level", Date.from(topLevel.toInstant()),
+                "nested", Map.of("map_value", Date.from(nestedMap.toInstant())),
+                "items", List.of(Date.from(nestedList.toInstant()))));
     }
 
     // ---- ts: source reference time, falling back to event time ----
