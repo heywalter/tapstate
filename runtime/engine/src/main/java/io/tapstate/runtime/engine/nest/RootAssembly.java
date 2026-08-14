@@ -356,19 +356,25 @@ public final class RootAssembly implements Serializable {
 
     public List<NestElement> detachSubtree(ElementRef from) {
         Objects.requireNonNull(from, "from");
-        ElementNode leaving = nodeAt(from);
+        Map<List<Object>, ElementNode> slot = slotFor(from);
+        ElementNode leaving = slot == null ? null : slot.get(from.elementKey());
         if (leaving == null) {
             return List.of();
         }
         List<NestElement> handedOver = subtreeAt(from);
-        containerFor(from).get(from.field()).remove(from.elementKey());
+        slot.remove(from.elementKey());
         forgetNames(leaving, from.pathId());
         return handedOver;
     }
 
-    private ElementNode nodeAt(ElementRef from) {
+    /** The elements one embed of one parent holds, or null where nothing addresses that place yet. */
+    private Map<List<Object>, ElementNode> slotFor(ElementRef from) {
         Map<String, Map<List<Object>, ElementNode>> source = containerFor(from);
-        Map<List<Object>, ElementNode> slot = source == null ? null : source.get(from.field());
+        return source == null ? null : source.get(from.field());
+    }
+
+    private ElementNode nodeAt(ElementRef from) {
+        Map<List<Object>, ElementNode> slot = slotFor(from);
         return slot == null ? null : slot.get(from.elementKey());
     }
 
