@@ -11,7 +11,7 @@ shapes everything else**. Along the way you will learn which shapes a nest can e
 cannot, which is the part that is hard to guess and quiet when you get it wrong.
 
 Time: about 30 minutes. It assumes you have been through the
-[online quickstart](../quickstart-online.md) once, so the stack is up, the CLI is installed, and the
+[online quickstart](../../quickstart-online.md) once, so the stack is up, the CLI is installed, and the
 MySQL and MongoDB connectors are registered.
 
 ## 1. Load the shop
@@ -439,7 +439,7 @@ db.orders.aggregate([{ $project: { c: { $size: { $ifNull: ["$items", []] } } } }
 The total must be unchanged. If it grew by one, the line was copied instead of moved, which means the
 branch it moved within does not have `trackKeyChanges: true`. Editing a key is off by default - a tree
 that never edits its keys pays nothing for it. See
-[nest structural key changes](../nest-structural-key-changes.md) for what the switch costs and what it
+[nest structural key changes](../../nest-structural-key-changes.md) for what the switch costs and what it
 needs from the source.
 
 ## 8. Where the assembled state lives
@@ -487,7 +487,7 @@ The shop database is a plain MySQL database - `DROP DATABASE shop;` when you are
 
 ## What to read next
 
-- [Nest structural key changes](../nest-structural-key-changes.md) - what happens when a key is
+- [Nest structural key changes](../../nest-structural-key-changes.md) - what happens when a key is
   edited, and what tracking it costs.
-- [Nest throughput limits](../nest-throughput-limits.md) - what a nest does when one root takes far
+- [Nest throughput limits](../../nest-throughput-limits.md) - what a nest does when one root takes far
   more changes than the others.
