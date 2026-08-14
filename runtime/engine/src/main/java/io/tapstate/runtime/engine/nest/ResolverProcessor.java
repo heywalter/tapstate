@@ -111,7 +111,18 @@ public final class ResolverProcessor extends AbstractProcessor {
      * <p>Recorded only where the identity really did change, which the row itself says. Every other row
      * would be waiting for something nobody is ever going to leave.
      */
-    private final Map<List<Object>, Long> tookOver = new LinkedHashMap<>();
+    private final Map<List<Object>, Awaited> tookOver = new LinkedHashMap<>();
+
+    /**
+     * An identity taken over: the source's time for the change that took it, and when this instance started
+     * looking. The second is what bounds the first - the half that would hand something over may never be
+     * worked at all, and only time tells that apart from one that has not been worked yet.
+     */
+    private record Awaited(long ts, long since) {
+    }
+
+    /** How long a half of a move is waited for before it is taken to be one that is never coming. */
+    private final long migrationProtection;
 
     /**
      * What this instance has left in the parking area and not yet seen taken in, against the positions of the
@@ -126,7 +137,15 @@ public final class ResolverProcessor extends AbstractProcessor {
      * reason the parking area exists. So the record here is never removed by the collecting side reaching
      * into it: what says the hand-over landed is the parking area itself, which both can see.
      */
-    private final Map<ParkedSubtree.At, Map<String, ChainPosition>> vacated = new LinkedHashMap<>();
+    private final Map<ParkedSubtree.At, Vacated> vacated = new LinkedHashMap<>();
+
+    /**
+     * A subtree this instance left for another identity: the positions the frontier has to stay below while
+     * it sits there, and when it was left. The second bounds the first, for the same reason the arriving
+     * side is bounded - an identity that never takes it in would pin the chain for the life of the job.
+     */
+    private record Vacated(Map<String, ChainPosition> since, long parkedAt) {
+    }
 
     /** A resolver in a job that propagates no frontier: it promises nothing and passes nothing on. */
     public ResolverProcessor(NestVertex vertex, NestStore<ResolverState> store, NestDeadLetter deadLetter) {
@@ -192,6 +211,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         this.parking = parking;
         this.pendingLimit =
                 Objects.requireNonNull(settings, "settings").pendingAllowedIn(vertex.mapName());
+        this.migrationProtection = settings.migrationProtectionIn(vertex.mapName());
         this.vertex = Objects.requireNonNull(vertex, "vertex");
         this.store = Objects.requireNonNull(store, "store");
         this.deadLetter = Objects.requireNonNull(deadLetter, "deadLetter");
@@ -510,7 +530,7 @@ public final class ResolverProcessor extends AbstractProcessor {
                 emit(new KeyedElement(parent, child, event.ts()));
             }
             if (!collectVacated(key, state, event.ts()) && tookOverFrom(edge, event, row)) {
-                tookOver.put(key, event.ts());
+                tookOver.put(key, new Awaited(event.ts(), clock.millis()));
             }
         }
     }
@@ -548,7 +568,7 @@ public final class ResolverProcessor extends AbstractProcessor {
         // The frontier stays below this change until those children have been taken in. The first change to
         // park under an address is the one kept: a second move onto the same address is further along the
         // same stream, and it is the earlier of the two that has to be replayable.
-        vacated.putIfAbsent(at, event.positions());
+        vacated.putIfAbsent(at, new Vacated(event.positions(), clock.millis()));
     }
 
     /**
@@ -557,8 +577,8 @@ public final class ResolverProcessor extends AbstractProcessor {
      */
     private SourceOrder lowestVacatedOn(String chain) {
         SourceOrder lowest = null;
-        for (Map<String, ChainPosition> since : vacated.values()) {
-            ChainPosition held = since.get(chain);
+        for (Vacated outstanding : vacated.values()) {
+            ChainPosition held = outstanding.since().get(chain);
             if (held != null && (lowest == null || held.order().compareTo(lowest) < 0)) {
                 lowest = held.order();
             }
@@ -577,10 +597,52 @@ public final class ResolverProcessor extends AbstractProcessor {
      * long as the job runs, with every count reading healthy.
      */
     private boolean sayWhatIsNoLongerHeld() {
-        if (!forgetWhatHasBeenTakenIn() || bounds == null) {
+        // Both, and never short-circuited: giving up on one subtree and having another taken in are
+        // independent ways of holding less, and a turn where both happen has to say so once for both.
+        boolean collected = forgetWhatHasBeenTakenIn();
+        boolean gaveUp = giveUpOnSubtreesNobodyCollected();
+        if (!(collected || gaveUp) || bounds == null) {
             return true;
         }
         return bounds.release(this::tryEmit);
+    }
+
+    /**
+     * Hands on the subtrees left for an identity that never took them in, and lets go of what they were
+     * holding back. Whether the other half is coming is not something this instance can be told - the two
+     * are routed by different keys and may be worked by different members - so time is the only thing that
+     * separates a hand-over not collected <em>yet</em> from one nobody is ever going to collect.
+     *
+     * <p><b>Handed on rather than dropped.</b> These rows were read out of the entry they were waiting in
+     * and nothing will send them again, so dropping them loses data no assertion about a document could
+     * see. The hold goes in the same breath, deliberately: an entry given up on is no longer something a
+     * replay would finish, so keeping the frontier beneath it would be waiting for what has already been
+     * decided against - which is how a bound becomes unreachable for the life of the job.
+     */
+    private boolean giveUpOnSubtreesNobodyCollected() {
+        if (parking == null || vacated.isEmpty()) {
+            return false;
+        }
+        long now = clock.millis();
+        boolean letGo = false;
+        Iterator<Map.Entry<ParkedSubtree.At, Vacated>> outstanding = vacated.entrySet().iterator();
+        while (outstanding.hasNext()) {
+            Map.Entry<ParkedSubtree.At, Vacated> entry = outstanding.next();
+            if (now - entry.getValue().parkedAt() < migrationProtection) {
+                continue;
+            }
+            ParkedSubtree waiting = parking.load(entry.getKey());
+            if (waiting != null) {
+                Duration heldFor = Duration.ofMillis(now - entry.getValue().parkedAt());
+                for (NestElement change : waiting.changes()) {
+                    deadLetter.unassemblable(vertex, new ReleasedChild(change, heldFor));
+                }
+                parking.remove(entry.getKey());
+            }
+            outstanding.remove();
+            letGo = true;
+        }
+        return letGo;
     }
 
     /**
@@ -597,8 +659,7 @@ public final class ResolverProcessor extends AbstractProcessor {
             return false;
         }
         boolean letGo = false;
-        Iterator<Map.Entry<ParkedSubtree.At, Map<String, ChainPosition>>> outstanding =
-                vacated.entrySet().iterator();
+        Iterator<Map.Entry<ParkedSubtree.At, Vacated>> outstanding = vacated.entrySet().iterator();
         while (outstanding.hasNext()) {
             if (parking.load(outstanding.next().getKey()) == null) {
                 outstanding.remove();
@@ -651,7 +712,16 @@ public final class ResolverProcessor extends AbstractProcessor {
         if (parking == null || tookOver.isEmpty()) {
             return;
         }
-        for (Map.Entry<List<Object>, Long> waited : List.copyOf(tookOver.entrySet())) {
+        long now = clock.millis();
+        for (Map.Entry<List<Object>, Awaited> waited : List.copyOf(tookOver.entrySet())) {
+            // Nothing has been handed over for this identity, and waiting is right until it stops being.
+            // Left recorded it is read from the store on every turn for the life of the job, and in the
+            // ordinary case - a tracked key change on a row with no children waiting under the old value -
+            // there was never going to be anything to collect.
+            if (now - waited.getValue().since() >= migrationProtection) {
+                tookOver.remove(waited.getKey());
+                continue;
+            }
             ResolverState state = store.load(waited.getKey());
             if (state == null) {
                 continue;
@@ -659,7 +729,7 @@ public final class ResolverProcessor extends AbstractProcessor {
             // The time of the change that took the identity over, kept since it was recorded. What lands
             // here was parked before this level ever saw it, so its own time is no longer anywhere - and
             // this is the change that puts it in a document, which is the time a document is stamped by.
-            if (collectVacated(waited.getKey(), state, waited.getValue())) {
+            if (collectVacated(waited.getKey(), state, waited.getValue().ts())) {
                 store.save(waited.getKey(), state);
             }
         }
