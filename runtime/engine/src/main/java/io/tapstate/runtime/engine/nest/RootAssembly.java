@@ -276,6 +276,16 @@ public final class RootAssembly implements Serializable {
             return false;
         }
         slot.remove(from.elementKey());
+        // The name children reach a parent by is that parent's identity, so one given up may not go on
+        // answering: a child naming it would be placed under a node that is no longer what the name says,
+        // and the document would be wrong with every count in place. Removed only where it still points at
+        // this node, since another may have taken the name over in the meantime.
+        if (from.identity() != null && !from.identity().equals(to.identity())) {
+            Map<Object, ElementNode> named = byIdentity.get(from.pathId());
+            if (named != null) {
+                named.remove(from.identity(), moved);
+            }
+        }
         moved.set(change.fields(), change.order(), change.positions());
         absorbed(change);
         Map<String, Map<List<Object>, ElementNode>> target = containerFor(to);
@@ -799,6 +809,15 @@ public final class RootAssembly implements Serializable {
                 // Off the waiting bucket and into the tree, which is not the same as out of here: until a
                 // document carries it away it is as unsent as it was while it waited.
                 absorbed(change);
+                // And it takes up its name here like any element placed directly, letting go of whatever
+                // was waiting on it. A move may change the name children reach it by, and one arriving this
+                // way without taking it up leaves its descendants waiting for the rest of the run - in this
+                // document's state, in no rendered document, and reported by nothing.
+                if (ref.identity() != null) {
+                    byIdentity.computeIfAbsent(ref.pathId(), path -> new LinkedHashMap<>())
+                            .put(ref.identity(), pending.node());
+                    release(ref.pathId(), ref.identity());
+                }
             }
         }
     }
