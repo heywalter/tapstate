@@ -118,6 +118,25 @@ public final class ResolverState implements Serializable {
     }
 
     /**
+     * Stops this entry answering for a parent, without saying the parent is gone. It is what a value being
+     * vacated leaves behind: the row that answered to it now answers to another, so nothing carries this
+     * value any more - but a row may yet declare it, and children naming it are waiting for exactly that.
+     *
+     * <p>Held rather than released, which is the difference from a deletion. A deletion says the parent
+     * will not come back and its children are unassemblable; this says only that the value is unclaimed
+     * right now. Left answering instead, the mapping the row abandoned goes on placing children under a
+     * parent that is not there - in a document they do not belong to, with nothing counting it.
+     */
+    public void stopAnswering(SourceOrder order) {
+        Objects.requireNonNull(order, "order");
+        if (!wins(order)) {
+            return;
+        }
+        this.parentKey = null;
+        this.order = order;
+    }
+
+    /**
      * Marks the declaring row deleted at {@code order}, keeping a tombstone in place of the mapping.
      * Returns the children that were waiting: they can never resolve now, and the caller must route
      * them rather than drop them.
@@ -164,7 +183,10 @@ public final class ResolverState implements Serializable {
         if (deleted) {
             return Resolution.PARENT_ABSENT;
         }
-        if (order == null) {
+        // No declaration yet, or one that has been given up: a value nothing carries right now is not the
+        // same as one whose row is gone, and the difference is what these children are waiting on. The
+        // second case is only reachable through stopAnswering - a deletion leaves the tombstone above.
+        if (order == null || parentKey == null) {
             waiting.add(new Waiting(child, arrivedAt));
             return Resolution.HELD;
         }

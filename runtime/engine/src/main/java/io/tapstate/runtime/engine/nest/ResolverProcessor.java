@@ -555,7 +555,7 @@ public final class ResolverProcessor extends AbstractProcessor {
     private void vacate(NestInbound edge, Envelope event, Map<String, Object> row,
             Map<Object, ResolverState> touched) {
         Map<String, Object> was = NestKeys.replacedRow(edge, event);
-        if (was == null || parking == null) {
+        if (was == null) {
             return;
         }
         List<Object> leaving = NestKeys.valuesOf(was, vertex.partitionKey());
@@ -564,6 +564,14 @@ public final class ResolverProcessor extends AbstractProcessor {
             return;
         }
         ResolverState leftBehind = stateFor(leaving, touched);
+        // The value this row answered to is unclaimed now, and the entry it declared may not go on
+        // answering for it: a child naming it afterwards would be placed under a parent no row carries,
+        // which is a document it does not belong to rather than an error anything counts. Said whether or
+        // not there is anywhere to hand children through, because it is about the mapping and not them.
+        leftBehind.stopAnswering(NestKeys.orderOf(event));
+        if (parking == null) {
+            return;
+        }
         List<NestElement> waiting = leftBehind.waiting();
         if (waiting.isEmpty()) {
             return;
