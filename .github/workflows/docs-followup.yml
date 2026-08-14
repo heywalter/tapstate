@@ -1,15 +1,11 @@
 name: docs-followup
 
-# When a PR labeled `docs-needed` is merged, open a follow-up issue in
-# tapstate/docs assigned to the docs owner, and (optionally) ping Feishu.
+# A merged product PR with `docs-needed` creates one durable demand signal in tapstate/docs.
+# DocsLoop owns correlation, human confirmation and Feishu delivery; this workflow only
+# records the provider fact. Its machine marker makes retries and webhook/poll races idempotent.
 #
-# Required repository secrets:
-#   DOCS_REPO_TOKEN - a token that can create issues in tapstate/docs
-#                     (fine-grained PAT, resource owner tapstate, repo docs,
-#                     Issues: Read and write). The default GITHUB_TOKEN cannot
-#                     write to another repository.
-#   FEISHU_WEBHOOK  - optional. Feishu custom-bot webhook URL. If unset, the
-#                     Feishu step is skipped.
+# Required repository secret:
+#   DOCS_REPO_TOKEN - fine-grained token for tapstate/docs, Issues: Read and write.
 
 on:
   pull_request:
@@ -31,7 +27,20 @@ jobs:
           github-token: ${{ secrets.DOCS_REPO_TOKEN }}
           script: |
             const pr = context.payload.pull_request;
+            const marker = `<!-- docsloop-source-pr: ${pr.base.repo.full_name}#${pr.number}@${pr.merge_commit_sha} -->`;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: 'tapstate',
+              repo: 'docs',
+              state: 'all',
+              labels: 'docs-needed',
+              per_page: 100,
+            });
+            if (issues.some((issue) => issue.body?.includes(marker))) {
+              core.info(`Docs follow-up already exists for ${marker}`);
+              return;
+            }
             const body = [
+              marker,
               `Documentation follow-up for merged PR ${pr.html_url}`,
               ``,
               `**Title:** ${pr.title}`,
@@ -46,17 +55,6 @@ jobs:
               repo: 'docs',
               title: `[docs] ${pr.title}`,
               body,
+              labels: ['docs-needed'],
               assignees: ['heywalter'],
             });
-
-      - name: Notify Feishu
-        if: ${{ env.FEISHU_WEBHOOK != '' }}
-        env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: |
-          set -euo pipefail
-          text="docs follow-up needed: ${PR_TITLE} (${PR_URL}) -> assigned to heywalter in tapstate/docs"
-          payload=$(jq -n --arg t "$text" '{msg_type:"text",content:{text:$t}}')
-          curl -sS -X POST -H 'Content-Type: application/json' -d "$payload" "$FEISHU_WEBHOOK"
