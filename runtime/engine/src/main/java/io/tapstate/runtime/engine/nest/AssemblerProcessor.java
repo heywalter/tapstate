@@ -102,6 +102,13 @@ public final class AssemblerProcessor extends AbstractProcessor {
     private Long forgottenAt;
 
     /**
+     * When the deleted roots were last weighed for dropping, or null before the first pass. Its own
+     * reading rather than the one beside it, so neither sweep can starve the other by running first and
+     * moving a clock they share.
+     */
+    private Long weighedAt;
+
+    /**
      * What the sweeps here measure their own interval against. It is only ever read to decide whether
      * enough time has passed to look again — nothing this vertex holds is ever given up because a clock
      * reached some time.
@@ -319,19 +326,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         if (!sendWhatWindowsHaveRunOutOn()) {
             return false;
         }
-        Iterator<Map.Entry<Object, Map<String, ChainPosition>>> candidates = deleted.entrySet().iterator();
-        while (candidates.hasNext()) {
-            Map.Entry<Object, Map<String, ChainPosition>> candidate = candidates.next();
-            RootAssembly assembly = store.load(candidate.getKey());
-            if (assembly == null) {
-                candidates.remove();
-            } else if (assembly.rootPresent()) {
-                candidates.remove();
-            } else if (forgettable(assembly, candidate.getValue())) {
-                store.remove(candidate.getKey());
-                candidates.remove();
-            }
-        }
+        weighDeletedRoots();
         forgetDeletionsReplayCannotReach();
         // Only after the documents above have gone out, for the usual reason: a bound offered ahead of what is
         // queued behind it would say it had left.
@@ -407,6 +402,39 @@ public final class AssemblerProcessor extends AbstractProcessor {
             }
             owed.remove(entry.getKey());
             outstanding.remove();
+        }
+    }
+
+    /**
+     * Drops what is left of the roots whose deletion has gone downstream and can no longer come back.
+     *
+     * <p>Held to the sweep interval, which is what the interval is for. Each pass reads back every
+     * candidate document and then asks where each chain the deletion covered would resume - and that
+     * second question crosses to the durable plane once per chain, uncached. A candidate that is not
+     * droppable yet stays a candidate, so without the interval those reads repeat as fast as the idle
+     * loop turns, for as long as the frontier has not passed the deletion.
+     */
+    private void weighDeletedRoots() {
+        if (deleted.isEmpty()) {
+            return;
+        }
+        long now = clock.millis();
+        if (weighedAt != null && now - weighedAt < SWEEP_INTERVAL_MILLIS) {
+            return;
+        }
+        weighedAt = now;
+        Iterator<Map.Entry<Object, Map<String, ChainPosition>>> candidates = deleted.entrySet().iterator();
+        while (candidates.hasNext()) {
+            Map.Entry<Object, Map<String, ChainPosition>> candidate = candidates.next();
+            RootAssembly assembly = store.load(candidate.getKey());
+            if (assembly == null) {
+                candidates.remove();
+            } else if (assembly.rootPresent()) {
+                candidates.remove();
+            } else if (forgettable(assembly, candidate.getValue())) {
+                store.remove(candidate.getKey());
+                candidates.remove();
+            }
         }
     }
 
@@ -1026,6 +1054,14 @@ public final class AssemblerProcessor extends AbstractProcessor {
             }
             if (window.unsent == null) {
                 open.remove();
+                continue;
+            }
+            // The same hold a fresh render is subject to, applied to a version folded into a window that
+            // was already open before the move began. Without it the window is the way round the hold: it
+            // renders and sends the document while the subtree it is owed is still parked, which is the
+            // half-built version the hold exists to keep from ever being seen. The window stays open, so
+            // the version goes out on the next pass after the rows land.
+            if (isOwedAHandOver(entry.getKey())) {
                 continue;
             }
             RootAssembly assembly = store.load(entry.getKey());
