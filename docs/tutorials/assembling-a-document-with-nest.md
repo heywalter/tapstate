@@ -1,14 +1,14 @@
 # Assembling one document out of many tables
 
-A relational shop keeps an order in eight tables. An application that wants to show one order wants
+A relational shop keeps an order in nine tables. An application that wants to show one order wants
 one document. A `nest` transform is how Tapstate turns the first into the second and then keeps it
 that way: every insert, update and delete on any of those tables lands in the document a second
 later, without anyone re-running a query.
 
-This tutorial builds that document from scratch. By the end you will have a customer document holding
-the customer's orders, each order's invoice, its lines and the options chosen on them, its payments,
-and its parcels with their tracking events - and you will know **which shapes a nest can express and
-which it cannot**, which is the part that is hard to guess.
+This tutorial builds that document from scratch, and then builds two more from the same nine tables -
+one rooted at the customer, one at the product - because **which root you choose is the decision that
+shapes everything else**. Along the way you will learn which shapes a nest can express and which it
+cannot, which is the part that is hard to guess and quiet when you get it wrong.
 
 Time: about 30 minutes. It assumes you have been through the
 [online quickstart](../quickstart-online.md) once, so the stack is up, the CLI is installed, and the
@@ -313,15 +313,19 @@ parent's identity?* An option belongs to its line and carries `item_id`: yes. A 
 by many lines and carries only its own id: no. The second one needs a fan-out from one product row to
 every line that references it, which is a different mechanism with a different cost.
 
-When you need referred-to data in the document today, either carry it on the row that belongs to the
-parent (the shop's `order_items.sku` is exactly that), or build a second document rooted at the table
-you were trying to look up.
+When you need referred-to data in the document today there are two answers, and the shop has one of
+each: carry it on the row that belongs to the parent - `order_items.sku` is exactly that, a product
+field copied onto the line so it travels with it - or build a second document rooted at the table you
+were trying to look up, which is what section 6 does with `products`.
 
 ## 5. Turn the tree around: a customer document
 
 The rule also tells you what to do when the document you want is the other way up. A customer's
 orders point at the customer, so with the **customer as the root** that same relationship runs the
-right way and everything below comes along:
+right way and everything below comes along.
+
+This is a second pipeline - `id: customer_doc`, reading the same sources plus one carrying
+`customers`, writing to the same target - and only its transform differs:
 
 ```yaml
     root:
@@ -372,7 +376,37 @@ Twelve documents now hold all 300 orders, all 600 lines, all 400 options, all 18
 parcels and all 247 events - four levels deep, and each customer's own columns sit at the top of their
 document.
 
-## 6. Watch it follow the source
+## 6. The same move again: a product document
+
+Section 4 ended with a product that could not be pulled into a line. Root a document at `products`
+instead and the same relationship reads the right way round - a line carries `product_id`, which is
+the product's identity, so it routes to the product that owns it:
+
+A third pipeline, `id: product_doc`:
+
+```yaml
+transforms:
+  - id: product_view
+    type: nest
+    from: { p: products, i: order_items }
+    root:
+      from: p
+      key: [ id ]
+      embed:
+        - from: i
+          on: { product_id: id }     # order_items.product_id matches products.id
+          as: array
+          path: lines
+          arrayKey: [ id ]
+```
+
+Twenty documents, one per product, holding all 600 lines between them - every line filed under the
+product it refers to. The relationship that could not be expressed in one direction is ordinary in
+the other, and this is the general shape of the answer: **a nest document is rooted at the "one" side
+of every relationship it contains.** Which document you need decides which root you pick, and a
+dataset usually supports more than one.
+
+## 7. Watch it follow the source
 
 The point of a nest is that the document stays right without being rebuilt. Change the source and
 watch, one statement at a time:
@@ -408,7 +442,7 @@ that never edits its keys pays nothing for it. See
 [nest structural key changes](../nest-structural-key-changes.md) for what the switch costs and what it
 needs from the source.
 
-## 7. Where the assembled state lives
+## 8. Where the assembled state lives
 
 A nest holds partly assembled documents between events. That state is in memory up to the budget you
 set with `entries_in_memory`, and written through to MongoDB behind it, in a database of its own:
@@ -436,11 +470,13 @@ tapstate -c http://127.0.0.1:8080 -u admin metrics order_doc
 Two things to know: the state is dropped when the pipeline stops, so read these while it runs; and
 `tapstate_nest` is not the control store (`tapstate`) and not your target.
 
-## 8. Clean up
+## 9. Clean up
 
 ```sh
-# in the CLI session
+# in the CLI session, one per pipeline you started
 stop order_doc
+stop customer_doc
+stop product_doc
 ```
 
 ```js
