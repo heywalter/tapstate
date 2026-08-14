@@ -664,6 +664,7 @@ final class Repl {
                     out.println(item.change().toLowerCase(Locale.ROOT) + "  " + item.kind() + "  " + item.id());
                 }
                 out.flush();
+                renderApplyWarnings(applied.warnings());
                 yield Cli.EXIT_OK;
             }
             case ApplyOutcome.Rejected rejected -> renderRejection(rejected.code(), rejected.message());
@@ -2269,6 +2270,34 @@ final class Repl {
      */
     private static int reportStatus(ConnectionReport report) {
         return "FAILED".equalsIgnoreCase(report.outcome()) ? Cli.EXIT_DIAGNOSTIC : Cli.EXIT_OK;
+    }
+
+    /**
+     * Renders the server's advisory findings about a batch it applied: each one's code, then its message
+     * rendered from this CLI's own bundled catalog, then the catalogued next step when there is one.
+     *
+     * <p>They print to stderr, apart from the per-artifact outcome lines on stdout, so a caller piping the
+     * apply (e.g. {@code apply > applied.txt}) keeps a machine-readable stdout and still sees the notes.
+     * A finding is never a refusal: nothing here touches the exit status, which stays the applied batch's.
+     *
+     * <p>A code this catalog does not know renders as the bare code — a server one version ahead makes a
+     * finding less legible, never invisible.
+     */
+    private void renderApplyWarnings(List<ApplyOutcome.Warning> warnings) {
+        if (warnings.isEmpty()) {
+            return;
+        }
+        PrintWriter err = commandLine.getErr();
+        MessageCatalog catalog = MessageCatalog.bundled();
+        for (ApplyOutcome.Warning warning : warnings) {
+            MessageCatalog.Rendered rendered = catalog.render(warning.code(), warning.params());
+            err.println(Ansi.AUTO.string("@|bold,yellow warning:|@") + " " + warning.code());
+            err.println("  " + rendered.message());
+            if (rendered.solution() != null) {
+                err.println("  " + rendered.solution());
+            }
+        }
+        err.flush();
     }
 
     /** Renders a coded server refusal: the {@code code} (when present) then the rendered message, to err. */

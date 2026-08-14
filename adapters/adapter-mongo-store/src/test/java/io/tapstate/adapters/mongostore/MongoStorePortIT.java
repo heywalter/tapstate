@@ -5,6 +5,8 @@ import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;
 import io.tapstate.core.dsl.DslParser;
+import io.tapstate.core.event.ChainPosition;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.core.lifecycle.DesiredState;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.PipelineState;
@@ -13,6 +15,7 @@ import io.tapstate.spi.store.ConnectionTestItem;
 import io.tapstate.spi.store.ConnectionTestResult;
 import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.DiscoveredSourceModel;
+import io.tapstate.spi.store.NestDeadLetterRecord;
 import io.tapstate.spi.store.RegistrationSource;
 import io.tapstate.spi.store.SourceModel;
 import io.tapstate.spi.store.SourceTable;
@@ -120,6 +123,62 @@ class MongoStorePortIT {
         }
     }
 
+    /**
+     * Operator state is the one sub-store that does not live beside the others. It is the working state of
+     * a running job rather than anything an operator configured, and it is written at event rates, so it
+     * is kept out of the database holding the configuration - named here by the literal rather than by the
+     * constant, because the name is the contract: two Tapstate installs pointed at one Mongo are meant to
+     * find the same one.
+     */
+    @Test
+    void nestStateLandsInItsOwnDatabaseRatherThanTheOneHoldingPipelineConfiguration() {
+        String uri = REPLICA_SET.getReplicaSetUrl();
+        MongoConnectionSettings settings = new MongoConnectionSettings(uri, null, Duration.ofSeconds(5));
+        try (MongoConnection connection = new MongoConnection(settings)) {
+            connection.verify();
+            MongoStorePort port = new MongoStorePort(connection);
+
+            port.keyedState().save("nest.orders_sync.assemble.items", "k1",
+                    "held-child".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(port.keyedState().load("nest.orders_sync.assemble.items", "k1")).isPresent();
+            String configured = new ConnectionString(uri).getDatabase();
+            try (MongoClient raw = MongoClients.create(uri)) {
+                assertThat(raw.getDatabase("tapstate_nest")
+                        .getCollection(MongoStorePort.OPERATOR_STATE).countDocuments()).isEqualTo(1);
+                assertThat(raw.getDatabase(configured)
+                        .getCollection(MongoStorePort.OPERATOR_STATE).countDocuments()).isZero();
+            }
+        }
+    }
+
+    /**
+     * And so does what that operator could never assemble, for the same reason and into the same database:
+     * it is produced by the same run at the same rates and dropped with the same namespace, so an operation
+     * aimed at what an operator configured should not be able to reach it by accident either.
+     */
+    @Test
+    void nestDeadLettersLandInTheSameDatabaseAsTheStateTheyCameFrom() {
+        String uri = REPLICA_SET.getReplicaSetUrl();
+        MongoConnectionSettings settings = new MongoConnectionSettings(uri, null, Duration.ofSeconds(5));
+        try (MongoConnection connection = new MongoConnection(settings)) {
+            connection.verify();
+            MongoStorePort port = new MongoStorePort(connection);
+
+            port.nestDeadLetters().record(new NestDeadLetterRecord("nest.orders_sync.assemble.items",
+                    "[\"items\"]#[1]~i", "mysql-a", "1:1", 0L, 9_000L, Map.of("id", 1)));
+
+            assertThat(port.nestDeadLetters().read("nest.orders_sync.assemble.items", 10)).hasSize(1);
+            String configured = new ConnectionString(uri).getDatabase();
+            try (MongoClient raw = MongoClients.create(uri)) {
+                assertThat(raw.getDatabase("tapstate_nest")
+                        .getCollection(MongoStorePort.NEST_DEAD_LETTERS).countDocuments()).isEqualTo(1);
+                assertThat(raw.getDatabase(configured)
+                        .getCollection(MongoStorePort.NEST_DEAD_LETTERS).countDocuments()).isZero();
+            }
+        }
+    }
+
     @Test
     void reclaimingAPipelineEmptiesItsThreeLifecycleStoresAndLeavesTheSharedChainStanding() {
         String uri = REPLICA_SET.getReplicaSetUrl();
@@ -135,8 +194,10 @@ class MongoStorePortIT {
             port.observations().save(new Observation("doomed", PipelineState.STOPPED,
                     Map.of(), Map.of(), Map.of("orders", "w7")));
             port.meta().create("orders@mysql-1", "7d");
-            port.meta().upsertConsumerOffset("orders@mysql-1", new ConsumerOffset("doomed", Map.of("orders", 5L), "w7"));
-            port.meta().upsertConsumerOffset("orders@mysql-1", new ConsumerOffset("survivor", Map.of("orders", 9L), "w9"));
+            port.meta().upsertConsumerOffset("orders@mysql-1", new ConsumerOffset("doomed", Map.of("orders", 5L),
+                    new ChainPosition(new SourceOrder(1, 5), "gtid:aaa-1:5")));
+            port.meta().upsertConsumerOffset("orders@mysql-1", new ConsumerOffset("survivor", Map.of("orders", 9L),
+                    new ChainPosition(new SourceOrder(1, 9), "gtid:aaa-1:9")));
 
             port.state().delete("doomed");
             port.desired().delete("doomed");
@@ -156,7 +217,8 @@ class MongoStorePortIT {
                 assertThat(database.getCollection(MongoStorePort.SRS_META).countDocuments()).isEqualTo(1);
             }
             assertThat(port.meta().read("orders@mysql-1").orElseThrow().consumerOffsets())
-                    .containsExactly(new ConsumerOffset("survivor", Map.of("orders", 9L), "w9"));
+                    .containsExactly(new ConsumerOffset("survivor", Map.of("orders", 9L),
+                    new ChainPosition(new SourceOrder(1, 9), "gtid:aaa-1:9")));
         }
     }
 

@@ -74,21 +74,31 @@ public final class ApplyService {
     private final ArtifactStore store;
     private final AuditGate auditGate;
     private final SchemaStore schemas;
+    private final PlanAdvisories advisories;
     private final DslParser parser = new DslParser();
     private final CanonicalWriter writer = new CanonicalWriter();
 
     public ApplyService(
-            Supplier<TapstateCatalog> catalog, ArtifactStore store, AuditGate auditGate, SchemaStore schemas) {
+            Supplier<TapstateCatalog> catalog, ArtifactStore store, AuditGate auditGate, SchemaStore schemas,
+            PlanAdvisories advisories) {
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.store = Objects.requireNonNull(store, "store");
         this.auditGate = Objects.requireNonNull(auditGate, "auditGate");
         this.schemas = Objects.requireNonNull(schemas, "schemas");
+        // Named rather than defaulted: a service that quietly reported "nothing to advise" for every batch
+        // would be indistinguishable from one whose rules all passed, so an assembly with no rules yet
+        // states that by handing over PlanAdvisories.none().
+        this.advisories = Objects.requireNonNull(advisories, "advisories");
     }
 
     /**
      * Validates and canonicalizes {@code drafts} as one batch, returning the artifacts an apply
-     * would upsert. Throws the first {@link DslException} (a coded, user-facing diagnostic) on any
-     * structural / reference / mode / capability violation.
+     * would upsert together with the advisory findings over them. Throws the first {@link DslException}
+     * (a coded, user-facing diagnostic) on any structural / reference / mode / capability violation.
+     *
+     * <p>The advisory pass runs last, over a batch every gate above it has already accepted — so a rule
+     * reads resources that are known good, and a refusal is never buried under advice about a batch that
+     * is not going anywhere.
      */
     public ApplyPlan plan(List<ArtifactDraft> drafts) {
         Objects.requireNonNull(drafts, "drafts");
@@ -111,13 +121,17 @@ public final class ApplyService {
             }
         }
         Workspace workspace = Workspace.of(resources, catalog.get());
-        RowExpressionTypeRules.validate(resources, discoveredTables(resources));
+        // Read once and handed to both: the gate judges the batch against it, then the advisory pass
+        // advises on the same reading rather than paying a second round trip for a possibly different one.
+        Map<String, List<DiscoveredTable>> discovered = discoveredTables(resources);
+        RowExpressionTypeRules.validate(resources, discovered);
+        List<Resource> validated = List.copyOf(workspace.resources());
         List<PreparedArtifact> prepared = new ArrayList<>();
-        for (Resource resource : workspace.resources()) {
+        for (Resource resource : validated) {
             String canonicalForm = writer.write(resource);
             prepared.add(new PreparedArtifact(resource, canonicalForm, CanonicalHash.of(canonicalForm)));
         }
-        return new ApplyPlan(prepared, preconditions);
+        return new ApplyPlan(prepared, advisories.review(validated, discovered), preconditions);
     }
 
     /** Validates and plans a batch while performing no store or audit write. */
@@ -129,13 +143,14 @@ public final class ApplyService {
             return new ArtifactValidationResult(
                     false,
                     List.of(),
-                    List.of(new ValidationDiagnostic(diagnostic.code().code(), diagnostic.args())));
+                    List.of(new ValidationDiagnostic(diagnostic.code().code(), diagnostic.args())),
+                    List.of());
         }
         List<ArtifactOutcome> outcomes = new ArrayList<>();
         for (PreparedArtifact prepared : planned.artifacts()) {
             outcomes.add(outcome(prepared));
         }
-        return new ArtifactValidationResult(true, outcomes, List.of());
+        return new ArtifactValidationResult(true, outcomes, List.of(), planned.warnings());
     }
 
     /**
@@ -191,7 +206,7 @@ public final class ApplyService {
             if (conflicted != null) {
                 throw new TapstateException(ArtifactError.VERSION_CONFLICT, Map.of("id", conflicted), null);
             }
-            return new ApplyResult(outcomes);
+            return new ApplyResult(outcomes, plan.warnings());
         });
     }
 
@@ -243,7 +258,10 @@ public final class ApplyService {
                             for (SourceField field : table.fields()) {
                                 columns.put(field.name(), field.type());
                             }
-                            tables.add(new DiscoveredTable(table.name(), columns));
+                            // The row count travels with the columns, absence and all: a table nobody
+                            // counted has to stay distinguishable from one counted and found empty.
+                            tables.add(new DiscoveredTable(
+                                    table.name(), columns, table.approximateRowCount()));
                         }
                         bySource.put(source.id(), tables);
                     });

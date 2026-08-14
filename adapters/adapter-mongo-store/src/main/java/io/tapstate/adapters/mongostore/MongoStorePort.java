@@ -1,5 +1,6 @@
 package io.tapstate.adapters.mongostore;
 
+import com.mongodb.WriteConcern;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.gridfs.GridFSBuckets;
 import io.tapstate.spi.store.ArtifactStore;
@@ -9,6 +10,8 @@ import io.tapstate.spi.store.ConnectorCatalogStore;
 import io.tapstate.spi.store.ConnectorSpecStore;
 import io.tapstate.spi.store.ConnectorRegistry;
 import io.tapstate.spi.store.DesiredStore;
+import io.tapstate.spi.store.KeyedStateStore;
+import io.tapstate.spi.store.NestDeadLetterStore;
 import io.tapstate.spi.store.ObservationStore;
 import io.tapstate.spi.store.SchemaStore;
 import io.tapstate.spi.store.SrsMetaStore;
@@ -24,8 +27,10 @@ import java.util.Objects;
  * derived connector catalog rows, the latest connection-test result per connection, the plain-upsert
  * per-pipeline observation store, and the SRS meta store (one durable coordination record per mining
  * chain) — each bound to its own collection (or GridFS bucket) on the verified connection's database.
- * This is the store bridge the assembly root wires into the platform under {@code --role=all}; the app
- * sees only the driver-free {@link StorePort}, so no driver type escapes this module (rule R3).
+ * Operator state is the one exception and sits in a database of its own on the same client, for the
+ * reasons on {@link #NEST_STATE_DATABASE}. This is the store bridge the assembly root wires into the
+ * platform under {@code --role=all}; the app sees only the driver-free {@link StorePort}, so no driver
+ * type escapes this module (rule R3).
  */
 public final class MongoStorePort implements StorePort {
 
@@ -52,6 +57,46 @@ public final class MongoStorePort implements StorePort {
     public static final String CONNECTION_TEST_RESULTS = "connection_test_results";
     /** The collection holding one SRS coordination record per mining chain. */
     public static final String SRS_META = "srs_meta";
+    /** The collection holding one stateful-operator state document per key, per namespace. */
+    public static final String OPERATOR_STATE = "operator_state";
+
+    /**
+     * The collection holding one document per element a stateful operator could never assemble. It sits
+     * beside the state rather than with everything else because it is produced by the same run at the same
+     * rates and is dropped with the same namespace - and because a dump or a restore aimed at what an
+     * operator configured should not carry a pipeline's discarded rows along with it.
+     */
+    public static final String NEST_DEAD_LETTERS = "nest_dead_letters";
+
+    /**
+     * The database holding operator state, which is deliberately not the one holding everything else.
+     * What an operator configured and what a running job is holding have nothing in common but the
+     * connection: one is edited by hand and read rarely, the other is written at event rates and read
+     * back by key, and an operation aimed at one of them - a restore, a dump, a drop - should not be able
+     * to reach the other by accident.
+     *
+     * <p>The name is fixed rather than derived or configurable. Two installs pointed at one Mongo are
+     * meant to find the same database, and a pipeline of the same id in both of them then shares one
+     * state: the price of the fixed name, taken knowingly. Telling them apart later is a matter of what
+     * goes in the namespace, not of what the database is called.
+     */
+    public static final String NEST_STATE_DATABASE = "tapstate_nest";
+
+    /**
+     * What an operator-state write is acknowledged on. Every other store here can take the client's
+     * default, because what it holds can be worked out again from something else that survived. This one
+     * cannot: it is where a change let past the source's read offset is being kept, it has no replica of
+     * its own to fall back on, and the promise its port makes is that returning from a write means the
+     * change is durable. A default that acknowledges on the primary alone breaks exactly that promise -
+     * the write is reported done, the frontier advances past the change on the strength of it, and a
+     * primary lost before the write replicated takes the change with it, with nothing anywhere reporting
+     * a loss. Journaled as well as replicated, because a majority holding it only in memory has the same
+     * shape one power cut further out.
+     *
+     * <p>The dead-letter collection is written with it too: what could not be assembled is the one copy
+     * of those rows there is.
+     */
+    public static final WriteConcern NEST_STATE_WRITE_CONCERN = WriteConcern.MAJORITY.withJournal(true);
 
     private final ArtifactStore artifacts;
     private final StateStore state;
@@ -64,9 +109,12 @@ public final class MongoStorePort implements StorePort {
     private final ConnectionTestResultStore connectionTestResults;
     private final ObservationStore observations;
     private final SrsMetaStore meta;
+    private final KeyedStateStore keyedState;
+    private final NestDeadLetterStore nestDeadLetters;
 
     /**
-     * Binds the ten sub-stores to their own collections on the verified connection's database. The
+     * Binds the sub-stores to their own collections on the verified connection's database, bar operator
+     * state, which gets a database of its own on the same client ({@link #NEST_STATE_DATABASE}). The
      * connection must have been verified first (its client opened); the sub-stores share that one
      * client and are closed with it when the connection closes.
      */
@@ -85,6 +133,13 @@ public final class MongoStorePort implements StorePort {
                 new MongoConnectionTestResultStore(database.getCollection(CONNECTION_TEST_RESULTS));
         this.observations = new MongoObservationStore(database.getCollection(PIPELINE_OBSERVATION));
         this.meta = new MongoSrsMetaStore(database.getCollection(SRS_META));
+        // Operator state alone sits in its own database on the same client, for the reasons on the
+        // constant. Same connection, same credentials, same lifecycle - a different database. What that
+        // operator could not assemble goes in the same database, being produced by the same run.
+        MongoDatabase nestState = connection.client().getDatabase(NEST_STATE_DATABASE)
+                .withWriteConcern(NEST_STATE_WRITE_CONCERN);
+        this.keyedState = new MongoKeyedStateStore(nestState.getCollection(OPERATOR_STATE));
+        this.nestDeadLetters = new MongoNestDeadLetterStore(nestState.getCollection(NEST_DEAD_LETTERS));
     }
 
     @Override
@@ -140,5 +195,15 @@ public final class MongoStorePort implements StorePort {
     @Override
     public SrsMetaStore meta() {
         return meta;
+    }
+
+    @Override
+    public KeyedStateStore keyedState() {
+        return keyedState;
+    }
+
+    @Override
+    public NestDeadLetterStore nestDeadLetters() {
+        return nestDeadLetters;
     }
 }

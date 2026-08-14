@@ -130,6 +130,31 @@ class MongoSchemaStoreTest {
     }
 
     @Test
+    void aTablesRowCountSurvivesTheRoundTrip() {
+        DiscoveredSourceModel envelope = discovered("x", new SourceModel(List.of(
+                new SourceTable("orders", List.of(), List.of(), List.of(), 4_200_000L))));
+
+        DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(MongoSchemaStore.toDocument(envelope));
+
+        assertThat(read.model().tables().get(0).approximateRowCount()).isEqualTo(4_200_000L);
+        assertThat(read).isEqualTo(envelope);
+    }
+
+    @Test
+    void aStoredTableFromBeforeCountingReadsBackUncountedRatherThanEmpty() {
+        // A document written before discovery counted rows carries no count at all. Read as zero it
+        // would describe every table discovered until now as empty, which is the one answer a reader
+        // sizing something off it would act on.
+        Document stored = MongoSchemaStore.toDocument(discovered("x", new SourceModel(List.of(
+                new SourceTable("orders", List.of(), List.of(), List.of(), 4_200_000L)))));
+        stored.getList("tables", Document.class).get(0).remove("approximateRowCount");
+
+        DiscoveredSourceModel read = MongoSchemaStore.toDiscovered(stored);
+
+        assertThat(read.model().tables().get(0).approximateRowCount()).isNull();
+    }
+
+    @Test
     void aStoredDocumentCarriesTheStampThatSaysItsTypesAreResolved() {
         Document document = MongoSchemaStore.toDocument(
                 new DiscoveredSourceModel("conn_1", "mysql", 1000L, ordersModel()));

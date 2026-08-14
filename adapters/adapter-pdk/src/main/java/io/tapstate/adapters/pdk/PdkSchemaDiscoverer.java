@@ -10,12 +10,17 @@ import io.tapstate.spi.store.SourceTable;
 import io.tapdata.entity.schema.TapIndex;
 import io.tapdata.entity.schema.TapIndexField;
 import io.tapdata.entity.schema.TapTable;
+import io.tapdata.pdk.apis.functions.connector.source.BatchCountFunction;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -35,22 +40,102 @@ import java.util.Set;
  */
 public final class PdkSchemaDiscoverer implements SchemaDiscoverer {
 
+    /**
+     * How long the counting phase of one discovery may run for. Discovery is a synchronous verb its
+     * callers give a fixed window — thirty seconds on the shipped clients — and the schema is what the
+     * window is for; counting is a measurement taken alongside it. This leaves the larger part of that
+     * window to discovery itself, which is what the caller is actually waiting on.
+     */
+    public static final Duration DEFAULT_COUNT_BUDGET = Duration.ofSeconds(10);
+
     private final ConnectorProvisioner provisioner;
+    private final Duration countBudget;
 
     public PdkSchemaDiscoverer(ConnectorProvisioner provisioner) {
-        this.provisioner = provisioner;
+        this(provisioner, DEFAULT_COUNT_BUDGET);
     }
+
+    public PdkSchemaDiscoverer(ConnectorProvisioner provisioner, Duration countBudget) {
+        this.provisioner = provisioner;
+        this.countBudget = requirePositive(countBudget);
+    }
+
+    /**
+     * A budget that reaches no table at all is a wiring fault, not a configuration meaning "do not
+     * count": it would read as configured while every table came back uncounted with nothing saying why.
+     */
+    private static Duration requirePositive(Duration countBudget) {
+        Objects.requireNonNull(countBudget, "countBudget");
+        if (countBudget.isZero() || countBudget.isNegative()) {
+            throw new IllegalArgumentException("countBudget must be positive");
+        }
+        return countBudget;
+    }
+
+    private static final Logger LOG = LoggerFactory.getLogger(PdkSchemaDiscoverer.class);
 
     @Override
     public SourceModel discover(ConnectionConfig config) {
         PdkConnector connector = PdkConnector.open(
                 config.connectorId(), provisioner.resolve(config.connectorId()), config.settings());
         try {
-            return toSourceModel(drive(connector));
+            List<TapTable> tables = drive(connector);
+            return toSourceModel(tables, counts(connector, tables));
         } finally {
             connector.stopQuietly();
             connector.close();
         }
+    }
+
+    /**
+     * How many rows each discovered table holds, for the tables the connector will answer for. Counting
+     * is a capability of its own, separate from discovering: a connector registering no count function
+     * contributes no counts at all, and one whose count fails contributes none for that table.
+     *
+     * <p>A failure here never reaches the caller as a failure. The schema is what discovery was asked
+     * for and the count is taken alongside it; refusing the schema because a number could not be
+     * produced would take away what the author needs over what only sizes their state, and the reader
+     * of a count already has to handle its absence — no connector is obliged to offer one. The failure
+     * is logged rather than swallowed, so a count that never arrives can still be explained.
+     *
+     * <p>The phase is held to a wall-clock budget, checked before each table. A source wide enough, or
+     * slow enough to count, would otherwise spend the window its caller gives the whole verb, and hand
+     * the author a timeout where the schema they asked for should have been. What the budget bounds is
+     * which counts are started, not how long one runs: the frozen connector API offers no way to cut a
+     * count short, so the phase costs at most the budget plus one table's count. Tables past it are left
+     * uncounted — the same absence an uncountable connector already produces — and the shortfall is
+     * logged, so "why does this table have no count" still has an answer.
+     */
+    private Map<TapTable, Long> counts(PdkConnector connector, List<TapTable> tables) {
+        BatchCountFunction count = connector.functions().getBatchCountFunction();
+        if (count == null) {
+            return Map.of();
+        }
+        Map<TapTable, Long> counted = new IdentityHashMap<>();
+        try {
+            connector.underLoader(() -> {
+                long deadline = System.nanoTime() + countBudget.toNanos();
+                for (int i = 0; i < tables.size(); i++) {
+                    if (System.nanoTime() - deadline >= 0) {
+                        LOG.warn("connector {} spent its {} count budget, leaving {} of {} tables uncounted",
+                                connector.connectorId(), countBudget, tables.size() - i, tables.size());
+                        break;
+                    }
+                    TapTable table = tables.get(i);
+                    try {
+                        counted.put(table, count.count(connector.context(), table));
+                    } catch (Throwable t) {
+                        // Per table, so one source refusing to be counted does not cost the rest theirs.
+                        LOG.warn("connector {} could not count table {}: {}",
+                                connector.connectorId(), table.getId(), detail(t));
+                    }
+                }
+                return null;
+            });
+        } catch (Throwable t) {
+            LOG.warn("connector {} could not be asked to count: {}", connector.connectorId(), detail(t));
+        }
+        return counted;
     }
 
     /**
@@ -77,10 +162,11 @@ public final class PdkSchemaDiscoverer implements SchemaDiscoverer {
         }
     }
 
-    private static SourceModel toSourceModel(List<TapTable> tables) {
+    private static SourceModel toSourceModel(List<TapTable> tables, Map<TapTable, Long> counts) {
         List<SourceTable> mapped = new ArrayList<>(tables.size());
         for (TapTable table : tables) {
-            mapped.add(new SourceTable(table.getId(), fields(table), primaryKey(table), indexes(table)));
+            mapped.add(new SourceTable(
+                    table.getId(), fields(table), primaryKey(table), indexes(table), counts.get(table)));
         }
         return new SourceModel(mapped);
     }

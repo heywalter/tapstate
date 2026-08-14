@@ -63,7 +63,8 @@ public final class CaptureRunUnit {
      *   <li>a shared-ring tail provisions the mining chain first, seeding its meta — the precondition for
      *       recording the cdc-start position;</li>
      *   <li>the snapshot phase drains to the pass-through sink: on a shared-ring run it records the cdc-start
-     *       position at the seam, otherwise it is a pure drain with no chain to position;</li>
+     *       position at the seam and marks each selected table's snapshot complete once drained, otherwise it
+     *       is a pure drain with no chain to position or mark;</li>
      *   <li>a shared-ring tail then attaches the consumer, runs the cdc phase into the change ring, and
      *       exposes the Jet source; an srs-disabled tail instead streams straight to the pass-through sink.</li>
      * </ol>
@@ -77,6 +78,7 @@ public final class CaptureRunUnit {
         boolean merged = false;
         boolean chainCreated = false;
         boolean consumerAttached = false;
+        long epoch = 0;
         Optional<Subscription> subscription = Optional.empty();
         List<String> tables = spec.config().streams();
         if (tables == null || tables.isEmpty()) {
@@ -85,9 +87,10 @@ public final class CaptureRunUnit {
         try {
             if (plan.sharedRing()) {
                 chainId = MiningChainId.resolve(spec.config(), spec.srsKey());
-                merged = coordinator
-                        .provisionSource(spec.sourceId(), chainId, spec.config().streams(), spec.retention())
-                        .merged();
+                ProvisionOutcome provisioned = coordinator
+                        .provisionSource(spec.sourceId(), chainId, spec.config().streams(), spec.retention());
+                merged = provisioned.merged();
+                epoch = provisioned.epoch();
                 chainCreated = !merged;
             }
 
@@ -98,8 +101,11 @@ public final class CaptureRunUnit {
                     snapshotCounts.merge(event.src(), 1L, Long::sum);
                     passthrough.accept(event);
                 };
+                // A chainless read has no ring and so no generation to order its rows against: they carry no
+                // order at all, which a stateful node downstream rejects rather than guesses at.
                 snapshotCount = chainId != null
-                        ? SnapshotPhase.run(port, spec.config(), chainId.value(), spec.cdcStart(), meta, snapshotPassthrough)
+                        ? SnapshotPhase.run(port, spec.config(), chainId.value(), tables, spec.cdcStart(), epoch,
+                                meta, snapshotPassthrough)
                         : SnapshotPhase.drain(port, spec.config(), snapshotPassthrough);
             }
 
@@ -107,6 +113,7 @@ public final class CaptureRunUnit {
             Optional<StreamSource<SrsItem>> ringSource = Optional.empty();
             if (plan.sharedRing()) {
                 String cid = chainId.value();
+                long ringEpoch = epoch;
                 coordinator.attachConsumer(chainId, spec.pipelineId());
                 consumerAttached = true;
                 Supplier<Collection<ConsumerOffset>> consumers =
@@ -115,8 +122,10 @@ public final class CaptureRunUnit {
                 for (String table : tables) {
                     String ringName = SrsRingbuffer.ringName(cid, table);
                     SrsWriteGate gate = new SrsWriteGate(new SrsRingbuffer(hz.getRingbuffer(ringName)));
-                    CdcChain chain = new CdcChain(
-                            gate, meta, cid, spec.watermark(), spec.positionOrder(), spec.schemaVer());
+                    // One generation across the chain's tables: they are rebuilt together, so a sequence of
+                    // one ring is comparable with a sequence of another exactly when both were opened by the
+                    // same provisioning.
+                    CdcChain chain = new CdcChain(gate, meta, cid, spec.watermark(), ringEpoch, spec.schemaVer());
                     routes.put(table, new CdcPhase.TableRoute(
                             chain, () -> minConsumerReadSeq(meta, cid, table), consumers));
                 }

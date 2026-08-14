@@ -1,7 +1,11 @@
 package io.tapstate.app;
 
+import io.tapstate.core.lifecycle.FrontierStallPressure;
+import io.tapstate.core.lifecycle.NestColdLayerPressure;
 import io.tapstate.runtime.engine.Engine;
+import io.tapstate.runtime.scheduler.FrontierStallWatch;
 import io.tapstate.runtime.scheduler.LifecycleActuator;
+import io.tapstate.runtime.scheduler.NestColdLayerWatch;
 import io.tapstate.runtime.scheduler.ObservationPublisher;
 import io.tapstate.runtime.scheduler.PipelineConverger;
 import io.tapstate.spi.store.StorePort;
@@ -35,13 +39,27 @@ class RuntimeConvergenceConfiguration {
     @Bean
     ObservationPublisher observationPublisher(
             StorePort storePort, Engine engine, PipelineCaptureCoordinator captureCoordinator) {
-        // The publisher's three sources: recordCount rides from the engine's live Jet job, the per-table
-        // sink-acked positions from the store, and the per-table initial load from the capture coordinator.
-        // All are ports, so the scheduler stays clear of the engine, the store and the capture side that back
-        // them; a stopped pipeline, an unacked table or an unloaded one reports absence, not zero.
+        // The publisher's four run-statistic sources: recordCount and the per-chain frontier readings ride
+        // from the engine's live Jet job, the per-table sink-acked positions from the store, and the
+        // per-table initial load from the capture coordinator. All are ports, so the scheduler stays clear
+        // of the engine, the store and the capture side that back them; a stopped pipeline, an unacked
+        // table, an unloaded one or a chain with no reading reports absence, not zero.
+        // The readings also go to a watch that reports a namespace which has stopped being served from
+        // memory. Nothing else about such a pipeline moves -- per-key state fills no edge queue, so the
+        // queues, the lag and the throughput all go on reading normal -- so without this it is not
+        // observable at all except by someone who already suspected it and went looking at two ratios.
         return new ObservationPublisher(storePort.state(), storePort.observations(),
                 engine::recordCount, new StoreBackedSinkPositions(storePort),
-                captureCoordinator::snapshotProgress);
+                captureCoordinator::snapshotProgress, engine::frontierGaps, engine::nestStateReadings,
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, new LoggingNestColdLayerAlert()),
+                engine::frontierStalls,
+                new FrontierStallWatch(FrontierStallPressure.DEFAULT, new LoggingFrontierStallAlert()),
+                // The one number about a nest that nothing else can stand in for: a pipeline discarding
+                // every row it reads and one discarding none produce the same documents and the same
+                // statistics everywhere else, because the rows counted here were never going to appear in
+                // any document. Without it on this face, "is anything being thrown away" is answerable
+                // only by reading logs on whichever member happened to run the vertex.
+                engine::nestDeadLetters);
     }
 
     @Bean

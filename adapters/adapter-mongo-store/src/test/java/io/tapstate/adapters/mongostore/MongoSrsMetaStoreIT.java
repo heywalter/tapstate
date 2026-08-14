@@ -3,6 +3,8 @@ package io.tapstate.adapters.mongostore;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
+import io.tapstate.core.event.ChainPosition;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.spi.store.ConsumerOffset;
 import io.tapstate.spi.store.SchemaVersion;
 import io.tapstate.spi.store.SrsMeta;
@@ -88,7 +90,7 @@ class MongoSrsMetaStoreIT {
 
             store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 10L), null));
             store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p2", Map.of("orders", 20L), null));
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 99L), "gtid:aaa-1:99"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 99L), new ChainPosition(new SourceOrder(1, 99), "gtid:aaa-1:99")));
 
             List<ConsumerOffset> cursors = store.read(CHAIN).orElseThrow().consumerOffsets();
             assertThat(cursors).extracting(ConsumerOffset::pipelineId).containsExactlyInAnyOrder("p1", "p2");
@@ -105,7 +107,7 @@ class MongoSrsMetaStoreIT {
             // The sink has acked a position for p1's cursor; the reader then advances its per-table read
             // cursor. The read cursor and the sink-ack are independent writers of one consumer record, so
             // the reader's advance must leave the acked position untouched.
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 5L), "gtid:aaa-1:100"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 5L), new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100")));
 
             store.advanceConsumerReadSeq(CHAIN, "p1", "orders", 42L);
 
@@ -138,7 +140,7 @@ class MongoSrsMetaStoreIT {
             // must leave the read cursor untouched.
             store.upsertConsumerOffset(CHAIN, new ConsumerOffset("p1", Map.of("orders", 42L), null));
 
-            store.advanceSinkAckedSrcpos(CHAIN, "p1", "gtid:aaa-1:100");
+            store.advanceSinkAcked(CHAIN, "p1", new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100"));
 
             ConsumerOffset p1 = onlyConsumer(store);
             assertThat(p1.sinkAckedSrcpos()).isEqualTo("gtid:aaa-1:100");
@@ -147,12 +149,12 @@ class MongoSrsMetaStoreIT {
     }
 
     @Test
-    void advanceSinkAckedSrcposCreatesTheConsumerWhenItHasNoneYet() {
+    void advanceSinkAckedCreatesTheConsumerWhenItHasNoneYet() {
         withStore(store -> {
             store.create(CHAIN, null);
             // A sink may ack before the reader publishes any cursor: the deep set creates the consumer entry,
             // and its read cursor stays empty until a reader writes one.
-            store.advanceSinkAckedSrcpos(CHAIN, "p1", "gtid:aaa-1:7");
+            store.advanceSinkAcked(CHAIN, "p1", new ChainPosition(new SourceOrder(1, 7), "gtid:aaa-1:7"));
 
             ConsumerOffset p1 = onlyConsumer(store);
             assertThat(p1.sinkAckedSrcpos()).isEqualTo("gtid:aaa-1:7");
@@ -161,13 +163,77 @@ class MongoSrsMetaStoreIT {
     }
 
     @Test
-    void setCdcStartPositionPersistsTheSeamPosition() {
+    void setCdcStartPersistsTheSeamPositionAndItsGeneration() {
         withStore(store -> {
             store.create(CHAIN, null);
 
-            store.setCdcStartPosition(CHAIN, "binlog.000042:1024");
+            store.setCdcStart(CHAIN, "binlog.000042:1024", 3L);
 
-            assertThat(store.read(CHAIN).orElseThrow().cdcStartPosition()).isEqualTo("binlog.000042:1024");
+            SrsMeta record = store.read(CHAIN).orElseThrow();
+            assertThat(record.cdcStartPosition()).isEqualTo("binlog.000042:1024");
+            assertThat(record.snapshotEpoch()).isEqualTo(3L);
+        });
+    }
+
+    @Test
+    void openEpochAllocatesTheNextGenerationAgainstTheRealStore() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            assertThat(store.read(CHAIN).orElseThrow().epoch()).isZero();
+
+            // The counter is advanced by the driver and read back after the write, so two members opening
+            // the same chain cannot both come away with the same generation the way a read-add-write would.
+            assertThat(store.openEpoch(CHAIN)).isEqualTo(1L);
+            assertThat(store.openEpoch(CHAIN)).isEqualTo(2L);
+            assertThat(store.read(CHAIN).orElseThrow().epoch()).isEqualTo(2L);
+        });
+    }
+
+    @Test
+    void openEpochLeavesTheSnapshotsPinnedGenerationAlone() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+            long running = store.openEpoch(CHAIN);
+            store.setCdcStart(CHAIN, "binlog.000042:1024", running);
+
+            store.openEpoch(CHAIN);
+
+            // The restart that opens the next generation is exactly when a snapshot that had not drained
+            // must keep the one it began in. Advancing both would hand a rerun's rows the newer generation
+            // and let them overwrite changes the older one had already applied.
+            SrsMeta record = store.read(CHAIN).orElseThrow();
+            assertThat(record.epoch()).isEqualTo(2L);
+            assertThat(record.snapshotEpoch()).isEqualTo(1L);
+        });
+    }
+
+    @Test
+    void aRecordWrittenBeforeGenerationsExistedReadsBackWithNoneOpened() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+
+            // The meta field set is append-only: a document an older build wrote carries neither
+            // generation, and that has to read back as "no generation opened" rather than as corruption.
+            SrsMeta record = store.read(CHAIN).orElseThrow();
+            assertThat(record.epoch()).isZero();
+            assertThat(record.snapshotEpoch()).isZero();
+        });
+    }
+
+    @Test
+    void markSnapshotCompleteIsPerTableAndIdempotentAgainstTheRealStore() {
+        withStore(store -> {
+            store.create(CHAIN, null);
+
+            store.markSnapshotComplete(CHAIN, "orders");
+            store.markSnapshotComplete(CHAIN, "order_items");
+            store.markSnapshotComplete(CHAIN, "orders");
+
+            // One chain carries many tables, each snapshotted by its own capture run, so the mark is per
+            // table. The re-mark exercises $addToSet against the real driver: set membership, so a replayed
+            // or re-run snapshot of a table that is already marked adds nothing.
+            assertThat(store.read(CHAIN).orElseThrow().snapshotCompletedTables())
+                    .containsExactly("orders", "order_items");
         });
     }
 
@@ -197,11 +263,15 @@ class MongoSrsMetaStoreIT {
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.advanceConsumerReadSeq("nope", "p", "orders", 1L))
                     .isInstanceOf(IllegalStateException.class);
-            assertThatThrownBy(() -> store.advanceSinkAckedSrcpos("nope", "p", "gtid:aaa-1:1"))
+            assertThatThrownBy(() -> store.advanceSinkAcked("nope", "p", new ChainPosition(new SourceOrder(1, 1), "gtid:aaa-1:1")))
                     .isInstanceOf(IllegalStateException.class);
-            assertThatThrownBy(() -> store.setCdcStartPosition("nope", "x"))
+            assertThatThrownBy(() -> store.setCdcStart("nope", "x", 1L))
                     .isInstanceOf(IllegalStateException.class);
             assertThatThrownBy(() -> store.appendSchemaVersion("nope", new SchemaVersion(0, Map.of(), 0)))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> store.markSnapshotComplete("nope", "orders"))
+                    .isInstanceOf(IllegalStateException.class);
+            assertThatThrownBy(() -> store.openEpoch("nope"))
                     .isInstanceOf(IllegalStateException.class);
         });
     }
@@ -211,10 +281,12 @@ class MongoSrsMetaStoreIT {
         withStore(store -> {
             store.create(CHAIN, "7d");
             store.advanceSourceReadOffset(CHAIN, "gtid:aaa-1:500");
-            store.setCdcStartPosition(CHAIN, "gtid:aaa-1:1");
+            store.setCdcStart(CHAIN, "gtid:aaa-1:1", 1L);
             store.appendSchemaVersion(CHAIN, new SchemaVersion(0, Map.of("id", "int"), 0));
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L), "gtid:aaa-1:100"));
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("staying", Map.of("orders", 900L), "gtid:aaa-1:900"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L),
+                    new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100")));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("staying", Map.of("orders", 900L),
+                    new ChainPosition(new SourceOrder(1, 900), "gtid:aaa-1:900")));
 
             store.detachConsumer(CHAIN, "departing");
 
@@ -222,7 +294,8 @@ class MongoSrsMetaStoreIT {
             // The chain record outlives its consumers: it is keyed by the chain, so removing it would be
             // cross-pipeline data loss, and everything on it that is not the departing cursor is untouched.
             assertThat(after.consumerOffsets())
-                    .containsExactly(new ConsumerOffset("staying", Map.of("orders", 900L), "gtid:aaa-1:900"));
+                    .containsExactly(new ConsumerOffset("staying", Map.of("orders", 900L),
+                            new ChainPosition(new SourceOrder(1, 900), "gtid:aaa-1:900")));
             assertThat(after.sourceReadOffset()).isEqualTo("gtid:aaa-1:500");
             assertThat(after.cdcStartPosition()).isEqualTo("gtid:aaa-1:1");
             assertThat(after.schemaHistory()).hasSize(1);
@@ -234,7 +307,8 @@ class MongoSrsMetaStoreIT {
     void detachConsumerRemovesTheEntryOutrightRatherThanBlankingIt() {
         withStore(store -> {
             store.create(CHAIN, null);
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L), "gtid:aaa-1:100"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of("orders", 100L),
+                    new ChainPosition(new SourceOrder(1, 100), "gtid:aaa-1:100")));
 
             store.detachConsumer(CHAIN, "departing");
 
@@ -251,10 +325,10 @@ class MongoSrsMetaStoreIT {
             store.create("chain-a", null);
             store.create("chain-b", null);
             store.create("chain-c", null);
-            store.upsertConsumerOffset("chain-a", new ConsumerOffset("departing", Map.of(), "p-1"));
-            store.upsertConsumerOffset("chain-b", new ConsumerOffset("departing", Map.of(), "p-2"));
-            store.upsertConsumerOffset("chain-b", new ConsumerOffset("staying", Map.of(), "p-3"));
-            store.upsertConsumerOffset("chain-c", new ConsumerOffset("staying", Map.of(), "p-4"));
+            store.upsertConsumerOffset("chain-a", new ConsumerOffset("departing", Map.of(), null));
+            store.upsertConsumerOffset("chain-b", new ConsumerOffset("departing", Map.of(), null));
+            store.upsertConsumerOffset("chain-b", new ConsumerOffset("staying", Map.of(), null));
+            store.upsertConsumerOffset("chain-c", new ConsumerOffset("staying", Map.of(), null));
 
             // Every chain it reads, not just the first: a departing consumer left on any one of them pins
             // that chain for everyone else on it.
@@ -268,7 +342,7 @@ class MongoSrsMetaStoreIT {
     void detachConsumerIsIdempotentAndSilentOnAnUnseededChain() {
         withStore(store -> {
             store.create(CHAIN, null);
-            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of(), "p-1"));
+            store.upsertConsumerOffset(CHAIN, new ConsumerOffset("departing", Map.of(), null));
 
             // A detach states an end condition, so an absent cursor and an absent chain already satisfy it.
             // The advancing mutators refuse an unseeded chain; refusing here would abort a removal partway

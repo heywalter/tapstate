@@ -45,8 +45,9 @@ class ApplyServiceTest {
 
     private final RecordingArtifactStore store = new RecordingArtifactStore();
     private final RecordingAuditStore auditStore = new RecordingAuditStore();
-    private final ApplyService service =
-            new ApplyService(TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore());
+    private final ApplyService service = new ApplyService(
+            TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore(),
+            PlanAdvisories.none());
 
     /** An audit store that captures every record it is asked to write. */
     private static final class RecordingAuditStore implements AuditStore {
@@ -236,7 +237,8 @@ class ApplyServiceTest {
         List<ConnectorCatalogEntry> registered = new ArrayList<>();
         registered.add(CatalogEntryReader.read(acmeRow("cdc")));
         Supplier<TapstateCatalog> live = () -> TapstateCatalog.merged(TapstateCatalog.load(), List.copyOf(registered));
-        ApplyService liveService = new ApplyService(live, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore());
+        ApplyService liveService = new ApplyService(
+                live, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore(), PlanAdvisories.none());
 
         assertThatCode(() -> liveService.plan(List.of(draft(ACME_CDC_SOURCE)))).doesNotThrowAnyException();
 
@@ -320,13 +322,16 @@ class ApplyServiceTest {
 
     @Test
     void aNullCatalogIsRejected() {
-        assertThatThrownBy(() -> new ApplyService(null, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore()))
+        assertThatThrownBy(() -> new ApplyService(
+                null, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore(), PlanAdvisories.none()))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void aNullStoreIsRejected() {
-        assertThatThrownBy(() -> new ApplyService(TapstateCatalog::load, null, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore()))
+        assertThatThrownBy(() -> new ApplyService(
+                TapstateCatalog::load, null, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore(),
+                PlanAdvisories.none()))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -560,7 +565,7 @@ class ApplyServiceTest {
         // control.audit-blocked and nothing reaches the artifact store.
         ApplyService refusing = new ApplyService(
                 TapstateCatalog::load, store, new AuditGate(new FailingAuditStore(), FIXED_CLOCK),
-                new EmptySchemaStore());
+                new EmptySchemaStore(), PlanAdvisories.none());
 
         Throwable t = catchThrowable(() -> refusing.apply("alice", List.of(draft(TGT_MY))));
 
@@ -572,7 +577,8 @@ class ApplyServiceTest {
 
     @Test
     void aNullAuditGateIsRejected() {
-        assertThatThrownBy(() -> new ApplyService(TapstateCatalog::load, store, null, new EmptySchemaStore()))
+        assertThatThrownBy(() -> new ApplyService(
+                TapstateCatalog::load, store, null, new EmptySchemaStore(), PlanAdvisories.none()))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -580,8 +586,8 @@ class ApplyServiceTest {
     void aNullSchemaStoreIsRejected() {
         // The row-expression type check is not optional: a service built without a schema store would
         // silently skip it, and skipping it is exactly the state the check exists to end.
-        assertThatThrownBy(() ->
-                new ApplyService(TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), null))
+        assertThatThrownBy(() -> new ApplyService(
+                TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), null, PlanAdvisories.none()))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -608,6 +614,95 @@ class ApplyServiceTest {
         assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
                 .containsOnly(ArtifactOutcome.Change.UNCHANGED);
         assertThat(store.saveCount).as("a wholly-unchanged batch writes nothing further").isEqualTo(writesAfterSeed);
+    }
+
+    // ---- the advisory channel: findings that inform the author without refusing the batch ----
+
+    @Test
+    void aPlannedBatchCarriesTheAdvisoryFindingsAndStillPreparesEveryArtifact() {
+        ApplyService advised = advisedBy(reporting(WIDE_NAMESPACE));
+
+        ApplyPlan plan = advised.plan(List.of(draft(TGT_MY), draft(SRC_ORA_STANDALONE)));
+
+        assertThat(plan.warnings()).containsExactly(WIDE_NAMESPACE);
+        assertThat(plan.artifacts()).extracting(PreparedArtifact::id)
+                .as("an advisory finding is a note, not a refusal — the batch is planned in full")
+                .containsExactly("tgt_my", "src_ora");
+    }
+
+    @Test
+    void validationReportsAdvisoryFindingsApartFromTheDiagnostics() {
+        // The two lists answer different questions — "why was this refused" and "what should you know
+        // about a batch that was not". A caller must never have to read a severity field to tell them
+        // apart, so a finding lands in warnings and leaves valid / diagnostics untouched.
+        ApplyService advised = advisedBy(reporting(WIDE_NAMESPACE));
+
+        ArtifactValidationResult result = advised.validate(List.of(draft(TGT_MY)));
+
+        assertThat(result.valid()).as("a finding never invalidates the batch").isTrue();
+        assertThat(result.diagnostics()).as("a finding is not merged into the refusal reasons").isEmpty();
+        assertThat(result.warnings()).containsExactly(WIDE_NAMESPACE);
+    }
+
+    @Test
+    void applyCarriesTheAdvisoryFindingsAndStillWritesTheBatch() {
+        ApplyService advised = advisedBy(reporting(WIDE_NAMESPACE));
+
+        ApplyResult result = advised.apply("alice", List.of(draft(TGT_MY)));
+
+        assertThat(result.warnings()).containsExactly(WIDE_NAMESPACE);
+        assertThat(result.outcomes()).extracting(ArtifactOutcome::change)
+                .containsExactly(ArtifactOutcome.Change.CREATED);
+        assertThat(store.get("tgt_my")).as("a warned apply is still an apply").isPresent();
+    }
+
+    @Test
+    void aRefusedBatchIsNeverReviewedForAdvisoryFindings() {
+        // There is no plan to review when validation failed, and the refusal is already the message. A
+        // rule that ran anyway would be judging half-parsed resources and would bury the actual reason.
+        List<List<Resource>> reviewed = new ArrayList<>();
+        ApplyService advised = advisedBy((resources, tablesBySource) -> {
+            reviewed.add(resources);
+            return List.of(WIDE_NAMESPACE);
+        });
+
+        ArtifactValidationResult result = advised.validate(List.of(draft(TGT_MY + "bogus_field: 1\n")));
+
+        assertThat(result.valid()).isFalse();
+        assertThat(result.diagnostics()).extracting(ValidationDiagnostic::code)
+                .containsExactly("dsl.unknown-field");
+        assertThat(result.warnings()).as("a batch that was refused carries no advisory findings").isEmpty();
+        assertThat(reviewed).as("the advisory pass is not reached at all").isEmpty();
+    }
+
+    @Test
+    void anAssemblyWithNoAdvisoryRulesReportsNoWarningsAnywhere() {
+        // The positive control for the three cases above: the same batches, reviewed by the no-op pass,
+        // report nothing — so a populated warnings list can only have come from the advisory rules.
+        assertThat(service.plan(List.of(draft(TGT_MY))).warnings()).isEmpty();
+        assertThat(service.validate(List.of(draft(TGT_MY))).warnings()).isEmpty();
+        assertThat(service.apply("alice", List.of(draft(TGT_MY))).warnings()).isEmpty();
+    }
+
+    @Test
+    void aNullAdvisoryPassIsRejected() {
+        // A service built without one would silently answer "nothing to report" for every batch, which
+        // is indistinguishable from a clean batch — the assembly must name the no-op pass to get it.
+        assertThatThrownBy(() -> new ApplyService(
+                TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore(), null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    /** A stand-in advisory rule that reports the same findings for every batch it is handed. */
+    private static PlanAdvisories reporting(ValidationDiagnostic... findings) {
+        return (resources, tablesBySource) -> List.of(findings);
+    }
+
+    /** The service under test, wired to one advisory pass instead of the default no-op. */
+    private ApplyService advisedBy(PlanAdvisories advisories) {
+        return new ApplyService(
+                TapstateCatalog::load, store, new AuditGate(auditStore, FIXED_CLOCK), new EmptySchemaStore(),
+                advisories);
     }
 
     // ---- optimistic concurrency: an optional per-draft precondition on apply ----
@@ -731,6 +826,10 @@ class ApplyServiceTest {
     }
 
     // ---- fixtures ----
+
+    /** A stand-in finding, shaped like the capacity precheck's: a code plus the named subject it is about. */
+    private static final ValidationDiagnostic WIDE_NAMESPACE =
+            new ValidationDiagnostic("nest.resident-demand-over-budget", Map.of("path", "orders.items"));
 
     private static final String SRC_ORA = """
             version: tapstate/v1

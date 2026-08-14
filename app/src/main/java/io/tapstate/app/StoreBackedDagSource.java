@@ -3,9 +3,11 @@ package io.tapstate.app;
 import com.hazelcast.function.SupplierEx;
 import com.hazelcast.jet.core.DAG;
 import com.hazelcast.jet.core.ProcessorMetaSupplier;
+import com.hazelcast.jet.core.Watermark;
 import io.tapstate.adapters.transform.MapSpec;
 import io.tapstate.adapters.transform.StatelessTransforms;
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.model.FromClause;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.PipelineResource;
 import io.tapstate.core.model.ServeBlock;
@@ -13,9 +15,17 @@ import io.tapstate.core.model.SourceResource;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
 import io.tapstate.core.model.TransformBody;
+import io.tapstate.runtime.engine.ChainAxes;
 import io.tapstate.runtime.engine.DagBindings;
+import io.tapstate.runtime.engine.FrontierBinding;
+import io.tapstate.runtime.engine.FrontierOrders;
 import io.tapstate.runtime.engine.PipelineDagBuilder;
-import io.tapstate.runtime.engine.SinkAckBinding;
+import io.tapstate.runtime.engine.SinkAckFactory;
+import io.tapstate.runtime.engine.nest.DurableNestDeadLetter;
+import io.tapstate.runtime.engine.nest.NestBinding;
+import io.tapstate.runtime.engine.nest.NestClock;
+import io.tapstate.runtime.engine.nest.NestSettings;
+import io.tapstate.runtime.engine.nest.NestTable;
 import io.tapstate.runtime.srs.CaptureRunUnit;
 import io.tapstate.runtime.srs.SrsSourceProcessor;
 import io.tapstate.runtime.srs.StartFrom;
@@ -24,6 +34,9 @@ import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.sink.TargetTable;
 import io.tapstate.spi.sink.WriteMode;
 import io.tapstate.spi.store.ArtifactStore;
+import io.tapstate.spi.store.DiscoveredSourceModel;
+import io.tapstate.spi.store.SourceTable;
+import io.tapstate.spi.store.SrsMeta;
 import io.tapstate.spi.store.StorePort;
 import io.tapstate.spi.transform.TransformPort;
 import java.util.LinkedHashMap;
@@ -59,15 +72,43 @@ final class StoreBackedDagSource implements DagSource {
     private final StorePort storePort;
     private final SinkWriterBinder sinkWriterBinder;
     private final TargetModelResolver targetModelResolver;
+    private final NestSettings nestSettings;
 
     StoreBackedDagSource(StorePort storePort) {
-        this(storePort, new PdkSinkWriterBinder());
+        this(storePort, assembledSinkWriterBinder());
+    }
+
+    /** A source whose nests are held to what {@code nestSettings} allows, and the member configured from. */
+    StoreBackedDagSource(StorePort storePort, NestSettings nestSettings) {
+        this(storePort, assembledSinkWriterBinder(), nestSettings);
+    }
+
+    /**
+     * The binder the product is assembled with, named rather than written inline at each construction.
+     *
+     * <p>It has to be this one and not a method reference to the factory. A method reference binds to the
+     * interface's single abstract method, which is the shape taking one model, and the default that adapts
+     * a model-per-stream call to it has to pick one of them - so it picks none as soon as there is more than
+     * one, and a pipeline reading two tables reaches its sink with no model at all.
+     */
+    static SinkWriterBinder assembledSinkWriterBinder() {
+        return new PdkSinkWriterBinder();
+    }
+
+    /** The binder this source will bind its sinks through. */
+    SinkWriterBinder sinkWriterBinder() {
+        return sinkWriterBinder;
     }
 
     StoreBackedDagSource(StorePort storePort, SinkWriterBinder sinkWriterBinder) {
+        this(storePort, sinkWriterBinder, NestSettings.defaults());
+    }
+
+    StoreBackedDagSource(StorePort storePort, SinkWriterBinder sinkWriterBinder, NestSettings nestSettings) {
         this.storePort = Objects.requireNonNull(storePort, "storePort");
         this.sinkWriterBinder = Objects.requireNonNull(sinkWriterBinder, "sinkWriterBinder");
         this.targetModelResolver = new TargetModelResolver(this.storePort);
+        this.nestSettings = Objects.requireNonNull(nestSettings, "nestSettings");
     }
 
     @Override
@@ -77,17 +118,81 @@ final class StoreBackedDagSource implements DagSource {
         Map<String, String> sourceKeyByTable = sourceKeyByTable(sourceVertices);
         // The linear builder does not expose a per-sink upstream table set. Binding every selected table keeps
         // a non-first source table from losing its discovered model or rename when it reaches a serve sink.
-        Map<String, TargetTable> targets = targetModelResolver.resolveAll(pipeline);
+        Map<String, TargetTable> bySourceTable = targetModelResolver.resolveAll(pipeline);
+        // A nest emits under the id of the step that assembled it rather than under a table name, so the
+        // resolution above - which answers per source table - says nothing about it. Registering it here is
+        // what lets the sink key its upsert and name the table it writes; without it the sink falls back to
+        // a bare name carrying neither.
+        Map<String, TargetTable> assembled = assembledTargets(pipeline, bySourceTable, sourceVertices);
+        Map<String, TargetTable> targets = new LinkedHashMap<>(bySourceTable);
+        targets.putAll(assembled);
         Set<String> servedTables = sourceTables(sourceVertices);
+        servedTables.addAll(assembled.keySet());
         Map<String, List<String>> sourceKeysById = sourceKeysById(sourceVertices);
+        FrontierBinding frontier = frontierBinding(sourceVertices);
         return PipelineDagBuilder.build(
                 pipeline,
-                bindings(sourceVertices, sourceKeyByTable, sourceKeysById, targets, servedTables, stepIds(pipeline)),
-                sinkAckBinding(pipeline, pipelineId));
+                bindings(pipeline, sourceVertices, sourceKeyByTable, sourceKeysById, targets, servedTables,
+                        stepIds(pipeline), frontier),
+                sinkAckFactory(pipeline, pipelineId), frontier);
+    }
+
+    /**
+     * Where this pipeline's nests keep state: the namespace each compiled vertex holds its entries in,
+     * plus the one its shape was written down in. The record goes with the state it describes - kept
+     * behind, it would refuse the next start of a pipeline that has nothing left to abandon, naming paths
+     * that no longer address anything.
+     *
+     * <p>The tree is compiled again here rather than remembered from the build, for the same reason the
+     * build compiles it rather than reading it back: the names come from the tree, so the tree is what is
+     * asked. A pipeline with no nest step keeps nothing and is named nothing, which is what leaves an
+     * ordinary pipeline's stop untouched by any of this.
+     */
+    @Override
+    public Set<String> stateNamespacesOf(String pipelineId) {
+        PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
+        if (!PipelineDagBuilder.hasNest(pipeline)) {
+            return Set.of();
+        }
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable(sourceVertices(pipeline)));
+        Set<String> namespaces =
+                new LinkedHashSet<>(PipelineDagBuilder.nestStateNamespaces(pipeline, byAlias::get));
+        namespaces.add(StoreBackedNestStateLedger.namespaceOf(pipelineId));
+        return namespaces;
     }
 
     private record SourceVertex(
             String pipelineId, String sourceId, String table, SourceCaptureResolution resolution) {
+    }
+
+    /**
+     * Which chain each of the pipeline's source vertices reads: the table it is resolved to, which is the
+     * same stream name that vertex projects into every change it emits. Reading it from the same resolution
+     * the source vertex is built from is what keeps the two the same string - a chain named anything else
+     * would reach a level that was compiled to carry a different one, and the level tears the job down
+     * rather than widening itself to fit.
+     *
+     * <p>Keyed per vertex and not per source: a source selecting several tables reads a chain per table, so
+     * one entry for the source would name one of its tables and leave the changes of the rest outside every
+     * promise the job makes about how far what it read has travelled.
+     */
+    private static FrontierBinding frontierBinding(Map<String, SourceVertex> sourceVertices) {
+        Map<String, String> chainByVertex = new LinkedHashMap<>();
+        sourceVertices.forEach((key, vertex) -> chainByVertex.put(key, vertex.table()));
+        return new FrontierBinding(chainByVertex);
+    }
+
+    /**
+     * The source id behind each table the pipeline's sources read. The nest side resolves an alias by asking
+     * the store for that source's discovered model, so it needs the source itself - which a vertex key no
+     * longer names once a source reading several tables keys its vertices by table.
+     */
+    private static Map<String, String> sourceIdByTable(Map<String, SourceVertex> sourceVertices) {
+        Map<String, String> byTable = new LinkedHashMap<>();
+        for (SourceVertex vertex : sourceVertices.values()) {
+            byTable.putIfAbsent(vertex.table(), vertex.sourceId());
+        }
+        return byTable;
     }
 
     /**
@@ -135,6 +240,39 @@ final class StoreBackedDagSource implements DagSource {
         return tables;
     }
 
+    /**
+     * The write-side model for what each nest in this pipeline emits, keyed by the stream it emits under.
+     *
+     * <p>A nest's documents are the root's rows with the assembled children hanging off them, so the table
+     * they land in and the columns they carry are the root table's. What they are matched on is not: a
+     * document is addressed by the nest root's key, which the author writes and which need not be the root
+     * table's primary key.
+     *
+     * <p>A nest whose root table was never discovered contributes nothing. That leaves the sink where it was
+     * before this resolution existed - naming the stream and knowing no more about it - which is the same
+     * place any undiscovered table leaves it, rather than a failure of its own.
+     */
+    private Map<String, TargetTable> assembledTargets(
+            PipelineResource pipeline, Map<String, TargetTable> bySourceTable,
+            Map<String, SourceVertex> sourceVertices) {
+        Map<String, TargetTable> assembled = new LinkedHashMap<>();
+        if (pipeline.transforms() == null) {
+            return assembled;
+        }
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable(sourceVertices));
+        for (Step step : pipeline.transforms()) {
+            if (!(step instanceof Step.Inline inline) || !(inline.body() instanceof TransformBody.Nest nest)) {
+                continue;
+            }
+            NestTable root = byAlias.get(nest.root().from());
+            TargetTable model = root == null ? null : bySourceTable.get(root.name());
+            if (model != null) {
+                assembled.put(step.id(), TargetModelResolver.keyedOn(model, nest.root().key()));
+            }
+        }
+        return assembled;
+    }
+
     private Map<String, List<String>> sourceKeysById(Map<String, SourceVertex> sourceVertices) {
         Map<String, List<String>> keys = new LinkedHashMap<>();
         for (Map.Entry<String, SourceVertex> entry : sourceVertices.entrySet()) {
@@ -147,11 +285,21 @@ final class StoreBackedDagSource implements DagSource {
     /**
      * The sink-ack wiring that closes the durable frontier: as a sink confirms writes it advances the
      * pipeline consumer's durable sink-acked position through this. The sink knows a chain only by the
-     * {@code src} stream name (a table at L1), so the binding carries a table-to-chain map resolved from
-     * every source the pipeline reads, and the sink-side order matches the capture watermark's order so the
-     * two cannot drift. The map is built here, on the assembly side; only serializable coordinates ship.
+     * {@code src} stream name (a table at L1), so this carries a table-to-chain map resolved from every
+     * source the pipeline reads. The map is built here, on the assembly side; only serializable
+     * coordinates ship.
      */
-    private SinkAckBinding sinkAckBinding(PipelineResource pipeline, String pipelineId) {
+    private SinkAckFactory sinkAckFactory(PipelineResource pipeline, String pipelineId) {
+        return new StoreBackedSinkAckFactory(chainIdByTable(pipeline), pipelineId);
+    }
+
+    /**
+     * The mining chain behind each table the pipeline's sources read. Both directions of the durable
+     * frontier are keyed by it - the sink writes its confirmed position under it, and an operator upstream
+     * reads that position back - so both are resolved the same way, from the same source resolution the
+     * source vertex itself is built from.
+     */
+    private Map<String, String> chainIdByTable(PipelineResource pipeline) {
         Map<String, String> chainIdByTable = new LinkedHashMap<>();
         for (String sourceId : pipeline.sources()) {
             SourceResource source = StoredArtifacts.requireSource(artifacts(), sourceId);
@@ -160,28 +308,144 @@ final class StoreBackedDagSource implements DagSource {
                 chainIdByTable.put(table, resolution.chainId().value());
             }
         }
-        return new SinkAckBinding(
-                new StoreBackedSinkAckFactory(chainIdByTable, pipelineId), MockPositionOrder.INSTANCE);
+        return chainIdByTable;
     }
 
     /**
-     * The leaf and reference bindings for the builder. The four functions run on the assembly side as the
+     * The leaf and reference bindings for the builder. The binding functions run on the assembly side as the
      * builder walks the topology; only the vertex suppliers they return travel onto the DAG, so they may
      * reach the store freely while what they produce stays serializable.
      */
     private DagBindings bindings(
+            PipelineResource pipeline,
             Map<String, SourceVertex> sourceVertices,
             Map<String, String> sourceKeyByTable,
             Map<String, List<String>> sourceKeysById,
             Map<String, TargetTable> targets,
             Set<String> servedTables,
-            Set<String> stepIds) {
+            Set<String> stepIds,
+            FrontierBinding frontier) {
+        ChainAxes axes = frontier.axes();
         return new DagBindings(
-                key -> sourceVertex(sourceVertices.get(key)),
+                key -> sourceVertex(sourceVertices.get(key), axes),
                 StoreBackedDagSource::transformPort,
                 element -> sinkWriter(element, targets, servedTables),
                 ref -> upstreams(ref, sourceKeyByTable, sourceKeysById, sourceVertices, stepIds),
-                sourceKeysById::get);
+                sourceKeysById::get,
+                nestBinding(pipeline, sourceIdByTable(sourceVertices)));
+    }
+
+    /**
+     * What a nest node needs that the engine will not decide: the table behind each embedded alias, where
+     * each vertex keeps its state, and where a change that can never reach a document goes.
+     *
+     * <p>Supplied whether or not the pipeline has a nest in it. It costs a walk of the transforms and
+     * nothing else, and the alternative — deciding here that a pipeline has no nest — is a second place
+     * that has to agree with the builder about what a nest is.
+     *
+     * <p>State goes in a map of the member's own, one per vertex, named by what the topology computed for
+     * that vertex - so a vertex addresses the same entries across restarts and across the several processor
+     * instances a vertex is run as. Whether those entries outlive the member is decided where the member is
+     * configured: with a store behind the maps a restart reads a key back as it is asked for, and without
+     * one the state is rebuilt by replay, which is what the earlier build promised and no more. Dropped
+     * changes are counted and warned about rather than routed anywhere, because where they should go has
+     * not been decided; counting them is the part that is not in question.
+     *
+     * <p>It also carries the read side of the durable frontier, which is how an assembler learns that a
+     * root it deleted can no longer be built back by a replay and its record may be dropped. Without it
+     * every deletion would leave something behind for as long as the job runs.
+     *
+     * <p>The last of the five is what makes the state layer's own name a checked thing rather than an
+     * assumed one: the paths a nest keeps state under are written down as it is built and compared against
+     * on the way up. Editing an embed's path is otherwise silent - it renames where the state is kept
+     * without moving anything into it, and the tree rebuilds from empty while the pipeline reports that it
+     * resumed.
+     */
+    /**
+     * The numbers this pipeline's nests are held to, and the maps they apply to. Compiled here from the
+     * same tree the topology and the teardown names come from, so a budget cannot end up on a namespace no
+     * vertex writes to while the ones that are written to run on the deployment's number.
+     */
+    @Override
+    public NestCapacity capacityOf(String pipelineId) {
+        PipelineResource pipeline = StoredArtifacts.requirePipeline(artifacts(), pipelineId);
+        if (!PipelineDagBuilder.hasNest(pipeline)) {
+            return NestCapacity.none();
+        }
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable(sourceVertices(pipeline)));
+        return new NestCapacity(PipelineDagBuilder.nestStateNamespaces(pipeline, byAlias::get),
+                PipelineDagBuilder.nestSettings(pipeline, byAlias::get, nestSettings));
+    }
+
+    private NestBinding nestBinding(PipelineResource pipeline, Map<String, String> sourceIdByTable) {
+        Map<String, NestTable> byAlias = nestTablesByAlias(pipeline, sourceIdByTable);
+        return new NestBinding(byAlias::get, NestBinding.onMap(),
+                new LoggingNestDeadLetter(new DurableNestDeadLetter()),
+                new StoreBackedReplayFloorFactory(chainIdByTable(pipeline), pipeline.id()),
+                new StoreBackedNestStateLedger(storePort.keyedState()),
+                // What the deployment was started with, with what this pipeline's author wrote over it.
+                // Laid on here rather than held as one value for the process because the shape each
+                // number bounds is the pipeline's, not the process's: one tree is deep and narrow and
+                // the next is shallow and wide, and a single number covers neither.
+                PipelineDagBuilder.nestSettings(pipeline, byAlias::get, nestSettings),
+                NestClock.SYSTEM);
+    }
+
+    /**
+     * The table behind every alias the pipeline's nest steps declare.
+     *
+     * <p>An alias naming a table resolves to that table and the key its discovery model declares; one
+     * naming a step resolves to a table with no key, as does one whose source was never discovered. The
+     * empty key is not a failure here: it is only ever read to fill in an embed that left {@code arrayKey}
+     * out, and an embed that needs it and cannot get it is the author's to fix — the engine says so with a
+     * code. Resolving it to nothing instead would turn that into a crash.
+     *
+     * <p>Aliases are declared per step but asked for pipeline-wide, so two steps declaring one alias over
+     * different tables cannot both be answered. That is refused rather than silently resolved one way.
+     */
+    private Map<String, NestTable> nestTablesByAlias(
+            PipelineResource pipeline, Map<String, String> sourceIdByTable) {
+        Map<String, NestTable> byAlias = new LinkedHashMap<>();
+        if (pipeline.transforms() == null) {
+            return byAlias;
+        }
+        for (Step step : pipeline.transforms()) {
+            if (!(step instanceof Step.Inline inline) || !(inline.body() instanceof TransformBody.Nest)) {
+                continue;
+            }
+            if (!(inline.from() instanceof FromClause.Aliases aliases)) {
+                continue;
+            }
+            aliases.aliases().forEach((alias, ref) -> {
+                NestTable resolved = nestTable(ref, sourceIdByTable);
+                NestTable existing = byAlias.putIfAbsent(alias, resolved);
+                if (existing != null && !existing.name().equals(resolved.name())) {
+                    throw new IllegalStateException("alias '" + alias + "' names table '" + existing.name()
+                            + "' on one nest step and '" + resolved.name() + "' on another; a nest binding "
+                            + "answers per alias, so the two cannot both be resolved");
+                }
+            });
+        }
+        return byAlias;
+    }
+
+    /** One alias's table: its discovered key when the reference names a table, no key otherwise. */
+    private NestTable nestTable(FromRef ref, Map<String, String> sourceIdByTable) {
+        if (!(ref instanceof FromRef.Literal literal)) {
+            // A regex names many upstreams and so no single table key; an embed over one declares its own.
+            return new NestTable(String.valueOf(ref), List.of());
+        }
+        String table = literal.ref();
+        String sourceId = sourceIdByTable.get(table);
+        if (sourceId == null) {
+            // A step id: the stream is another step's output, which has no table key to fall back on.
+            return new NestTable(table, List.of());
+        }
+        return new NestTable(table, storePort.schemas().get(sourceId)
+                .map(DiscoveredSourceModel::model)
+                .flatMap(model -> model.tables().stream().filter(t -> t.name().equals(table)).findFirst())
+                .map(SourceTable::primaryKey)
+                .orElse(List.of()));
     }
 
     /**
@@ -190,14 +454,35 @@ final class StoreBackedDagSource implements DagSource {
      * Resolving the same ring identity the capture side resolves is what points the reader at the ring the
      * writer fills.
      */
-    private ProcessorMetaSupplier sourceVertex(SourceVertex vertex) {
+    private ProcessorMetaSupplier sourceVertex(SourceVertex vertex, ChainAxes axes) {
         if (vertex == null) {
             throw new IllegalStateException("source vertex binding is missing");
         }
+        // The ring knows a generation and a sequence; which axis this stream travels on and how the pair
+        // packs into the one long a bound rides are properties of the whole job, so they are closed over
+        // here rather than reached for from the source.
+        String chain = vertex.table();
+        byte axis = axes.axisOf(chain);
         return SrsSourceProcessor.metaSupplier(
-                vertex.resolution().ringName(vertex.table()), vertex.table(),
-                StartFrom.earliest(), CaptureRunUnit.readCursorPublisher(
-                        vertex.resolution().chainId().value(), vertex.pipelineId(), vertex.table()));
+                vertex.resolution().ringName(vertex.table()), vertex.table(), StartFrom.earliest(),
+                ringGeneration(vertex.resolution()),
+                CaptureRunUnit.readCursorPublisher(
+                        vertex.resolution().chainId().value(), vertex.pipelineId(), vertex.table()),
+                order -> new Watermark(FrontierOrders.pack(chain, order), axis));
+    }
+
+    /**
+     * The generation the source's ring is open under, read once while the job is assembled, and zero for a
+     * source that reads no chain of its own.
+     *
+     * <p>Only a read with an incremental tail through the shared ring opens a chain, so a snapshot-only or
+     * srs-disabled read has no record here and no ring anyone fills — its rows reach the sink from the
+     * snapshot buffer rather than the ring, and there is no stream of changes for them to be ordered
+     * against. Reading the record rather than re-deriving the plan keeps one answer to that question: the
+     * capture run writes the record, so its presence is what "this source reads a shared ring" means.
+     */
+    private long ringGeneration(SourceCaptureResolution resolution) {
+        return storePort.meta().read(resolution.chainId().value()).map(SrsMeta::epoch).orElse(0L);
     }
 
     /**
@@ -367,7 +652,7 @@ final class StoreBackedDagSource implements DagSource {
         }
     }
 
-    private static final class PdkSinkWriterBinder implements SinkWriterBinder {
+    static final class PdkSinkWriterBinder implements SinkWriterBinder {
 
         @Override
         public SupplierEx<? extends SinkWriter> bind(

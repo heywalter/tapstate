@@ -266,6 +266,12 @@ engine.job-failed:
 engine.no-such-job:
   message: "Pipeline {pipeline} has no running job to act on."
   solution: "Start the pipeline before pausing or resuming it, and check the id for typos."
+engine.frontier-order-not-encodable:
+  message: "Chain {chain} reached generation {epoch} position {seq}, past what the engine encodes an ordering value in."
+  solution: "Report this with the pipeline: the range is a build-time width, and no configuration widens it."
+engine.frontier-pinned:
+  message: "Chain {chain} has not advanced its durable position for {minutes} minutes ({cause}; the bound combined for it has run {gap} ahead)."
+  solution: "The source keeps its log from that position onwards, so act before the log's retention passes it: if the chain is waiting on changes still pending upstream, find what is holding them; if it is starved of positions, the sink has nothing to advance to and the source must supply them."
 monitor.no-observation:
   message: "No observation is available for pipeline {pipeline}."
   solution: "Check the pipeline id for typos; a freshly started pipeline may take a moment to publish its first observation."
@@ -320,3 +326,66 @@ transform.script-no-process:
 transform.script-output-invalid:
   message: "The js transform script produced output that is not a valid record: {detail}."
   solution: "Ensure process returns a record (or emits one) whose before, after and schema are objects or null."
+nest.sibling-embeds-target-different-parent-keys:
+  message: "The embeds under {embedPath} join on different parent fields: {fields}."
+  solution: "Have every embed under one parent join on the same parent field; that field is the parent's identity."
+nest.embed-target-not-parent-key:
+  message: "The embeds under {embedPath} join on {fields}, which does not identify its rows; its key is {parentKey}."
+  solution: "Join on the parent's key. A field that merely refers to another table makes every row sharing a value one identity, so a nest embeds rows that belong to a parent rather than rows a parent refers to."
+nest.embed-path-conflict:
+  message: "Embeds {embedPathA} and {embedPathB} both target the path {path}."
+  solution: "Give each embed a path of its own, or one silently overwrites the other in the document."
+nest.root-key-required:
+  message: "The nest rooted at {rootAlias} declares no key."
+  solution: "Declare root.key: it is the identity children are grouped under, and the assembled document has none without it."
+nest.array-key-unresolvable:
+  message: "Embed {embedPath} declares no array key, and table {table} has no primary key to take one from."
+  solution: "Declare arrayKey on that embed; without an element identity, updates pile up as duplicates."
+nest.resolver-vertex-limit-exceeded:
+  message: "This nest compiles to {vertices} resolver vertices, past the limit of {limit}."
+  solution: "Flatten the tree or split the pipeline: every vertex takes a thread of its own."
+nest.chain-axis-limit-exceeded:
+  message: "This pipeline draws from {chains} chains, past the limit of {limit}."
+  solution: "Split the pipeline: each table it reads spends one of the axes a bound can travel on."
+nest.append-mode-conflicts-with-key-tracking:
+  message: "Root {rootAlias} is append-only, and embed {embedPath} tracks structural key changes."
+  solution: "Use an upsert root, or turn key tracking off: moving a subtree holds emissions back until it lands, which append-only forbids."
+nest.snapshot-passthrough-forbidden:
+  message: "A nest writing {rootCollection} cannot pass its snapshot reads straight to the sink."
+  solution: "Let the nest assemble snapshot reads like any other change; passing them through writes unassembled rows."
+nest.memory-budget-below-partition-count:
+  message: "A nest was asked to hold {entries} entries in memory, spread across {partitions} partitions."
+  solution: "Ask for at least as many entries as there are partitions: the budget is spent per partition, so anything smaller is rounded up to one entry each and holds the partition count whatever it was set to."
+nest.memory-budget-changed-while-running:
+  message: "Nest state {namespace} is already configured to hold {configured} entries in memory on this process, and this pipeline asks for {requested}."
+  solution: "Restart the process to pick up the new budget: what a state map holds is settled the first time that map is configured and cannot be changed while the process runs, so restarting the pipeline alone would leave it on the earlier number."
+nest.state-paths-changed:
+  message: "Nest {stepId} stored its state under {recorded}, and now compiles to {compiled}."
+  solution: "Stop the pipeline and start it again rather than resuming: renaming an embed path or inserting a level leaves the stored state where nothing reads it, and the new paths start empty beside documents that are not."
+nest.root-fanout-limit-exceeded:
+  message: "Document {rootKey} holds {elements} elements, past the per-document limit of {limit}."
+  solution: "Raise the limit if the data really is this wide, or narrow what the nest embeds."
+nest.migration-parking-limit-exceeded:
+  message: "Rows on their way to {address} have parked {changes} changes, past the limit of {limit}."
+  solution: "These rows are in no document while they sit there and the durable position is held below the change that moved them, so this is worth looking at rather than only raising. Reaching it usually means the half of the move that collects them is not being worked - check that side before raising the limit."
+nest.pending-limit-exceeded:
+  message: "Key {key} of nest state {namespace} holds {pending} changes waiting for something that has not arrived, past the limit of {limit}."
+  solution: "Check whether the parent rows are simply late or are never coming - a load reading children before their parents fills these queues and empties them again, where a broken reference fills them for good. Raise the limit if the wait is real and this deep."
+nest.tombstone-limit-exceeded:
+  message: "Document {key} of nest state {namespace} keeps {tombstones} records of deleted elements that cannot be dropped yet, past the limit of {limit}."
+  solution: "A record of a deletion is kept only until a restart could no longer replay the deletion, so this many means the durable position is not advancing - find what is holding the frontier back rather than raising the limit, which only buys time."
+nest.parent-absent:
+  message: "An event of chain {chain} in {bucket} at {order} hangs from a row that is gone, and was handed over after {heldFor} rather than placed in a document."
+  solution: "A dangling reference in the source is normal and nothing was lost - the event was never going to appear in any document. A long wait means the reference has dangled all along; a short one means the parent row was deleted while its children were still arriving."
+nest.state-served-from-cold-layer:
+  message: "Nest namespace {namespace} served {backfills} of {accesses} state reads from storage rather than memory ({share}), {millis} each; {entries} of {stored} entries are in memory ({resident})."
+  solution: "Raise this pipeline's in-memory entry budget so more of its working set stays resident, or accept the round trips if the throughput they allow is enough."
+nest.key-change-tracking-requires-before-image:
+  message: "Stream {alias} tracks structural key changes, but source table {table} provides no before image."
+  solution: "Configure the source to emit full row images, or turn key tracking off for that stream."
+nest.state-far-exceeds-memory-budget:
+  message: "Nest level {embedPath} of pipeline {pipeline} is estimated to hold {estimatedEntries} entries, {multiple} times the {budget} it keeps in memory, so nearly every read of its state would come from storage."
+  solution: "Raise this pipeline's entries_in_memory so more of that level stays resident, or accept the round trips if the throughput they allow is enough."
+nest.capacity-estimate-incomplete:
+  message: "Nest level {embedPath} of pipeline {pipeline} could be sized from {counted} of the {total} inputs feeding it; the rest report no row count, so what was estimated is a floor."
+  solution: "Discover the sources feeding that level so their tables report row counts, then apply again to have it sized on all of them."

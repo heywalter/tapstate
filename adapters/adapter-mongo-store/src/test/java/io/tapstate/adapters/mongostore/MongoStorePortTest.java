@@ -34,4 +34,18 @@ class MongoStorePortTest {
                         "connections", "source_schemas", "connector_artifacts", "connector_catalog",
                         "connector_specs", "connection_test_results", "srs_meta");
     }
+
+    /**
+     * Operator state is the one area whose contents cannot be worked out again from anything else that
+     * survived, and the promise its port makes is that a write having returned means the change is
+     * durable. Acknowledging on the primary alone reports a write done that a lost primary then takes
+     * with it, after the frontier has already advanced past the change on the strength of it - a loss
+     * nothing reports. Pinned here for the same reason the layout above is: a silent relaxation to a
+     * faster concern would fail the build rather than quietly weaken what a returning write means.
+     */
+    @Test
+    void acknowledgesOperatorStateOnAMajorityThatHasJournalledIt() {
+        assertThat(MongoStorePort.NEST_STATE_WRITE_CONCERN.getWObject()).isEqualTo("majority");
+        assertThat(MongoStorePort.NEST_STATE_WRITE_CONCERN.getJournal()).isTrue();
+    }
 }

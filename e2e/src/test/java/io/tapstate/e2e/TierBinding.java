@@ -75,4 +75,13 @@ public interface TierBinding {
      * a reading like the two above, not an error.
      */
     Optional<String> failureCode(String pipelineId);
+
+    /**
+     * Reads how many changes a pipeline's nests could never place in a document, added up over its
+     * namespaces, from its metrics face; empty when it has published no observation yet, on the same terms
+     * as the readings above. A pipeline that discarded nothing answers zero rather than empty - the metric
+     * is published only where rows were lost, so no entry is the healthy answer rather than an unmeasured
+     * one, and that is the one place this reading's emptiness differs from the others'.
+     */
+    Optional<Long> deadLettered(String pipelineId);
 }

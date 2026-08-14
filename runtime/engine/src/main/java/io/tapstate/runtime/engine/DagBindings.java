@@ -5,6 +5,7 @@ import com.hazelcast.jet.core.ProcessorMetaSupplier;
 import io.tapstate.core.model.FromRef;
 import io.tapstate.core.model.Step;
 import io.tapstate.core.model.SyncElement;
+import io.tapstate.runtime.engine.nest.NestBinding;
 import io.tapstate.spi.sink.SinkWriter;
 import io.tapstate.spi.transform.TransformPort;
 import java.util.List;
@@ -29,6 +30,12 @@ import java.util.function.Function;
  *   <li>{@code upstreams} - a resolved {@code from:} reference to the producer vertex keys it names
  *       (source ids or step ids). Reference resolution against the source universe lives with the
  *       caller, so the engine never sees the table universe.
+ *   <li>{@code sourceKeys} - a source id to the vertex keys reading it, one per table it selects. A
+ *       source reading a single table keeps the source id as its one key, so a graph over such
+ *       sources is keyed exactly as it was before a source could read several.
+ *   <li>{@code nest} - what a nest node needs that the engine will not decide: the table behind each
+ *       embedded alias, where each of its vertices keeps state, and where a change that can never
+ *       reach a document goes. A pipeline with no nest never asks for it.
  * </ul>
  */
 public record DagBindings(
@@ -36,13 +43,28 @@ public record DagBindings(
         Function<Step, SupplierEx<? extends TransformPort>> transformPorts,
         Function<SyncElement, SupplierEx<? extends SinkWriter>> sinkWriters,
         Function<FromRef, List<String>> upstreams,
-        Function<String, List<String>> sourceKeys) {
+        Function<String, List<String>> sourceKeys,
+        NestBinding nest) {
 
+    /** Bindings for a pipeline with no nest in it, which therefore needs nothing a nest would. */
     public DagBindings(
             Function<String, ProcessorMetaSupplier> sourceVertices,
             Function<Step, SupplierEx<? extends TransformPort>> transformPorts,
             Function<SyncElement, SupplierEx<? extends SinkWriter>> sinkWriters,
             Function<FromRef, List<String>> upstreams) {
-        this(sourceVertices, transformPorts, sinkWriters, upstreams, sourceId -> List.of(sourceId));
+        this(sourceVertices, transformPorts, sinkWriters, upstreams, null);
+    }
+
+    /**
+     * Bindings whose sources each read the one table they are named by - the shape a graph has whenever
+     * no source selects several - leaving only the nest to be supplied.
+     */
+    public DagBindings(
+            Function<String, ProcessorMetaSupplier> sourceVertices,
+            Function<Step, SupplierEx<? extends TransformPort>> transformPorts,
+            Function<SyncElement, SupplierEx<? extends SinkWriter>> sinkWriters,
+            Function<FromRef, List<String>> upstreams,
+            NestBinding nest) {
+        this(sourceVertices, transformPorts, sinkWriters, upstreams, sourceId -> List.of(sourceId), nest);
     }
 }

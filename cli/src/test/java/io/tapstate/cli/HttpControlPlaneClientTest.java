@@ -443,6 +443,60 @@ class HttpControlPlaneClientTest {
             Map<?, ?> sent = (Map<?, ?>) JsonReader.parse(seen.get().body());
             assertThat(sent.get("drafts")).isInstanceOf(List.class);
             assertThat(seen.get().body()).contains("src_kfk.tap.yml").contains("kind: source");
+            assertThat(applied.warnings())
+                    .as("a body with no warnings array decodes to none, not to a null the caller must guard")
+                    .isEmpty();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void applyDecodesTheServerWarningsApartFromTheOutcomes() throws Exception {
+        // The server carries an advisory finding as its code plus named params — the same shape the
+        // validation diagnostics travel in — and the CLI renders it from its own bundled catalog.
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/artifacts:apply", 200,
+                "{\"outcomes\":[{\"id\":\"src_kfk\",\"kind\":\"source\",\"change\":\"CREATED\",\"contentHash\":\"h1\"}],"
+                        + "\"warnings\":[{\"code\":\"nest.resident-demand-over-budget\","
+                        + "\"params\":{\"path\":\"orders.items\",\"rows\":120000}}]}",
+                seen);
+        try {
+            ApplyOutcome outcome = new HttpControlPlaneClient().apply(baseOf(server), "tok-abc",
+                    List.of(new LocalDraft("src_kfk.tap.yml", "kind: source\nid: src_kfk\n")));
+
+            assertThat(outcome).isInstanceOf(ApplyOutcome.Applied.class);
+            ApplyOutcome.Applied applied = (ApplyOutcome.Applied) outcome;
+            assertThat(applied.items()).extracting(ApplyOutcome.Item::id).containsExactly("src_kfk");
+            assertThat(applied.warnings()).singleElement().satisfies(warning -> {
+                assertThat(warning.code()).isEqualTo("nest.resident-demand-over-budget");
+                assertThat(warning.params()).containsEntry("path", "orders.items");
+            });
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void applySkipsAWarningEntryWithNoCodeRatherThanFailingTheWholeDecode() throws Exception {
+        // Same tolerance the outcome decode already has: one unexpected entry costs its own line, never
+        // the applied result — the batch did land on the server, and saying otherwise would be a lie.
+        AtomicReference<CapturedRequest> seen = new AtomicReference<>();
+        HttpServer server = apiServer("/api/artifacts:apply", 200,
+                "{\"outcomes\":[{\"id\":\"src_kfk\",\"kind\":\"source\",\"change\":\"CREATED\",\"contentHash\":\"h1\"}],"
+                        + "\"warnings\":[{\"params\":{\"path\":\"orders.items\"}},"
+                        + "{\"code\":\"nest.resident-demand-over-budget\"}]}",
+                seen);
+        try {
+            ApplyOutcome outcome = new HttpControlPlaneClient().apply(baseOf(server), "tok-abc",
+                    List.of(new LocalDraft("src_kfk.tap.yml", "kind: source\nid: src_kfk\n")));
+
+            ApplyOutcome.Applied applied = (ApplyOutcome.Applied) outcome;
+            assertThat(applied.items()).hasSize(1);
+            assertThat(applied.warnings()).singleElement().satisfies(warning -> {
+                assertThat(warning.code()).isEqualTo("nest.resident-demand-over-budget");
+                assertThat(warning.params()).as("a warning with no params decodes to an empty map").isEmpty();
+            });
         } finally {
             server.stop(0);
         }

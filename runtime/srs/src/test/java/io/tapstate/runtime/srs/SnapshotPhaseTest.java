@@ -1,6 +1,8 @@
 package io.tapstate.runtime.srs;
 
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.event.Envelope;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.spi.capture.CaptureBatch;
 import io.tapstate.spi.capture.CaptureConfig;
 import io.tapstate.spi.capture.CaptureListener;
@@ -37,6 +39,11 @@ class SnapshotPhaseTest {
         return new CaptureConfig("mysql", Map.of(), List.of("orders"));
     }
 
+    /** A read whose source selects two streams, which one bounded batch covers together. */
+    private static CaptureConfig multiTableConfig() {
+        return new CaptureConfig("mysql", Map.of(), List.of("orders", "customers"));
+    }
+
     private static Envelope row(int id) {
         return Envelope.read(id, "orders", Map.of("id", id), Map.of());
     }
@@ -48,9 +55,12 @@ class SnapshotPhaseTest {
         List<Envelope> sink = new ArrayList<>();
 
         long count = SnapshotPhase.run(
-                port, config(), "chain", new SourcePosition("p0"), new RecordingMeta(new ArrayList<>()), sink::add);
+                port, config(), "chain", List.of("orders"), new SourcePosition("p0"),
+                1L, new RecordingMeta(new ArrayList<>()), sink::add);
 
-        assertThat(sink).containsExactlyElementsOf(rows);
+        // Straight through in batch order, each row stamped with the generation and otherwise untouched.
+        assertThat(sink).containsExactlyElementsOf(
+                rows.stream().map(r -> r.withOrder(SourceOrder.snapshotRow(1L))).toList());
         assertThat(count).isEqualTo(3);
     }
 
@@ -83,8 +93,8 @@ class SnapshotPhaseTest {
         FakeBatch batch = new FakeBatch(List.of(row(1)));
 
         SnapshotPhase.run(
-                new FakePort(batch), config(), "chain", new SourcePosition("p0"),
-                new RecordingMeta(new ArrayList<>()), e -> {});
+                new FakePort(batch), config(), "chain", List.of("orders"), new SourcePosition("p0"),
+                1L, new RecordingMeta(new ArrayList<>()), e -> {});
 
         assertThat(batch.closed).isTrue();
     }
@@ -96,14 +106,171 @@ class SnapshotPhaseTest {
         Consumer<Envelope> sink = e -> trace.add("event");
 
         SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain",
-                new SourcePosition("binlog.000042:1024"), meta, sink);
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
+                new SourcePosition("binlog.000042:1024"), 1L, meta, sink);
 
         // The cdc-start position is the source log position sampled at snapshot start: recorded before the
         // snapshot drains, so the cdc tail resumes from before the snapshot and the idempotent sink absorbs
         // the overlap -- a change made during the snapshot is never missed.
         assertThat(meta.cdcStart).isEqualTo("binlog.000042:1024");
-        assertThat(trace).containsExactly("cdc-start", "event", "event");
+        assertThat(trace).startsWith("cdc-start", "event", "event");
+    }
+
+    @Test
+    void stampsEverySnapshotRowWithTheGenerationTheSnapshotBeganIn() {
+        List<Envelope> sink = new ArrayList<>();
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
+                new SourcePosition("p0"), 4L, new RecordingMeta(new ArrayList<>()), sink::add);
+
+        // A snapshot row has no position in the change stream, so nothing else can say where it sits
+        // against the changes that follow. Every row of one snapshot shares the reserved sequence, which
+        // puts all of them before every change of their generation.
+        assertThat(sink).extracting(event -> event.position().order())
+                .containsOnly(SourceOrder.snapshotRow(4L));
+        assertThat(sink).extracting(event -> event.position().token()).containsOnlyNulls();
+    }
+
+    @Test
+    void recordsTheSeamPositionTogetherWithTheGenerationItsRowsArePinnedTo() {
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>());
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
+                new SourcePosition("binlog.000042:1024"), 4L, meta, e -> { });
+
+        assertThat(meta.cdcStart).isEqualTo("binlog.000042:1024");
+        assertThat(meta.pinnedEpoch).isEqualTo(4L);
+    }
+
+    @Test
+    void aSnapshotThatNeverDrainedKeepsItsGenerationWhenItRerunsUnderANewRing() {
+        // The chain recorded a seam under generation 1 and this table never finished draining, so the ring
+        // that is running now is a rebuild -- generation 2. The rerun's rows must stay on generation 1.
+        SrsMeta interrupted = new SrsMeta("chain", null, List.of(), "binlog.000042:1024", List.of(), null,
+                List.of(), 2L, 1L);
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>(), interrupted);
+        List<Envelope> sink = new ArrayList<>();
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
+                new SourcePosition("binlog.000042:1024"), 2L, meta, sink::add);
+
+        // This is the whole reason the two generations are kept apart. Rows of a rerun that took the
+        // current generation would beat every change generation 1 already applied and roll each of those
+        // rows back to its snapshot value -- silently, and only while the snapshot is running.
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(1L));
+        assertThat(meta.pinnedEpoch).isEqualTo(1L);
+    }
+
+    @Test
+    void aSnapshotOfATableThatAlreadyDrainedTakesTheGenerationRunningNow() {
+        // Same recorded seam, but this table drained: whatever runs now is a new snapshot -- a re-mine --
+        // and it is a new baseline of truth, so it is entitled to beat what came before.
+        SrsMeta drained = new SrsMeta("chain", null, List.of(), "binlog.000042:1024", List.of(), null,
+                List.of("orders"), 2L, 1L);
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>(), drained);
+        List<Envelope> sink = new ArrayList<>();
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
+                new SourcePosition("binlog.000099:1"), 2L, meta, sink::add);
+
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(2L));
+        assertThat(meta.pinnedEpoch).isEqualTo(2L);
+    }
+
+    @Test
+    void aChainThatRecordedNoSeamHasNoSnapshotToResumeAndTakesTheGenerationRunningNow() {
+        SrsMeta neverSnapshotted = new SrsMeta("chain", null, List.of(), null, List.of(), null,
+                List.of(), 2L, 0L);
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>(), neverSnapshotted);
+        List<Envelope> sink = new ArrayList<>();
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), config(), "chain", List.of("orders"),
+                new SourcePosition("p0"), 2L, meta, sink::add);
+
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(2L));
+    }
+
+    @Test
+    void marksTheTableSnapshotCompleteOnlyAfterTheDrainHasFinished() {
+        List<String> trace = new ArrayList<>();
+        RecordingMeta meta = new RecordingMeta(trace);
+        Consumer<Envelope> sink = e -> trace.add("event");
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
+                new SourcePosition("binlog.000042:1024"), 1L, meta, sink);
+
+        // The two marks answer different questions and must not be conflated: the cdc-start position is
+        // written before the drain (it means the snapshot has started, and must precede it or a change made
+        // during the snapshot would be missed), while the completion mark is written after the drain
+        // returns. A reader asking "has this table's snapshot finished?" can only be answered by the
+        // second: the presence of a cdc-start position means started, never finished.
+        assertThat(trace).containsExactly("cdc-start", "event", "event", "snapshot-complete");
+        assertThat(meta.completed).containsExactly("chain/orders");
+    }
+
+    @Test
+    void marksEveryTableOfTheSelectionCompleteBecauseOneDrainReadsThemAll() {
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>());
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), multiTableConfig(), "chain",
+                List.of("orders", "customers"), new SourcePosition("p0"), 1L, meta, e -> { });
+
+        // One bounded read covers every selected stream, so when it returns to exhaustion each of them has
+        // been read to exhaustion. Marking only the first would leave the rest looking un-drained -- which a
+        // reader answers "no" to "has this table's snapshot finished?" with, about a table that has.
+        assertThat(meta.completed).containsExactlyInAnyOrder("chain/orders", "chain/customers");
+    }
+
+    @Test
+    void oneTableOfTheSelectionStillUndrainedKeepsTheGenerationForAllOfThem() {
+        // The seam was recorded under generation 1 and the ring running now is a rebuild -- generation 2.
+        // One of the two selected tables drained before the interruption; the other did not.
+        SrsMeta interrupted = new SrsMeta("chain", null, List.of(), "binlog.000042:1024", List.of(), null,
+                List.of("orders"), 2L, 1L);
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>(), interrupted);
+        List<Envelope> sink = new ArrayList<>();
+
+        SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1)))), multiTableConfig(), "chain",
+                List.of("orders", "customers"), new SourcePosition("binlog.000042:1024"), 2L, meta, sink::add);
+
+        // The whole selection is re-read by the one drain, the already-drained table included. Judging the
+        // resume on that table alone would call this a fresh re-mine and stamp its rows with the generation
+        // running now -- which beats every change generation 1 already applied to them and rolls each of
+        // those rows back to its snapshot value, silently, exactly what pinning exists to prevent.
+        assertThat(meta.pinnedEpoch).isEqualTo(1L);
+        assertThat(sink).extracting(event -> event.position().order()).containsOnly(SourceOrder.snapshotRow(1L));
+    }
+
+    @Test
+    void doesNotMarkTheSnapshotCompleteWhenTheDrainFailsPartway() {
+        List<Envelope> drained = new ArrayList<>();
+        Consumer<Envelope> failingOnSecond = e -> {
+            if (!drained.isEmpty()) {
+                throw new IllegalStateException("sink down");
+            }
+            drained.add(e);
+        };
+        RecordingMeta meta = new RecordingMeta(new ArrayList<>());
+
+        assertThatThrownBy(() -> SnapshotPhase.run(
+                new FakePort(new FakeBatch(List.of(row(1), row(2)))), config(), "chain", List.of("orders"),
+                new SourcePosition("p0"), 1L, meta, failingOnSecond))
+                .isInstanceOf(IllegalStateException.class);
+
+        // An aborted snapshot is not a completed one. The mark is what downstream reads as "every row of
+        // this table has been through", so marking a partial drain would assert the table is exhausted
+        // when rows are still missing -- and the cdc-start position, already written, would be the only
+        // trace left of a run that got half way.
+        assertThat(meta.completed).isEmpty();
+        assertThat(meta.cdcStart).isEqualTo("p0");
     }
 
     @Test
@@ -114,8 +281,8 @@ class SnapshotPhaseTest {
         };
 
         assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(batch), config(), "chain", new SourcePosition("p0"),
-                new RecordingMeta(new ArrayList<>()), failing))
+                new FakePort(batch), config(), "chain", List.of("orders"), new SourcePosition("p0"),
+                1L, new RecordingMeta(new ArrayList<>()), failing))
                 .isInstanceOf(IllegalStateException.class);
 
         // try-with-resources releases the source even when the drain fails partway.
@@ -127,8 +294,8 @@ class SnapshotPhaseTest {
         List<String> trace = new ArrayList<>();
 
         assertThatThrownBy(() -> SnapshotPhase.run(
-                new FakePort(new FakeBatch(List.of())), config(), "chain",
-                new SourcePosition("p0"), new RecordingMeta(trace), null))
+                new FakePort(new FakeBatch(List.of())), config(), "chain", List.of("orders"),
+                new SourcePosition("p0"), 1L, new RecordingMeta(trace), null))
                 .isInstanceOf(NullPointerException.class);
 
         // Args are validated up front: a null sink fails fast without first recording the cdc-start position.
@@ -189,7 +356,10 @@ class SnapshotPhaseTest {
         }
     }
 
-    /** A meta store that records only the cdc-start position; the other facets are unused in the snapshot phase. */
+    /**
+     * A meta store that records the two marks the snapshot phase writes -- the cdc-start position and the
+     * per-table completion -- in call order; the other facets are unused in the snapshot phase.
+     */
     private static final class RecordingMeta implements SrsMetaStore {
         @Override
         public java.util.List<String> miningChainIdsWithConsumer(String pipelineId) {
@@ -202,21 +372,42 @@ class SnapshotPhaseTest {
         }
 
         private final List<String> trace;
+        private final SrsMeta stored;
+        final List<String> completed = new ArrayList<>();
         String cdcStart;
+        long pinnedEpoch;
 
         RecordingMeta(List<String> trace) {
+            this(trace, new SrsMeta("chain", null, List.of(), null, List.of(), null));
+        }
+
+        RecordingMeta(List<String> trace, SrsMeta stored) {
             this.trace = trace;
+            this.stored = stored;
         }
 
         @Override
-        public void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
+        public void setCdcStart(String miningChainId, String cdcStartPosition, long snapshotEpoch) {
             this.cdcStart = cdcStartPosition;
+            this.pinnedEpoch = snapshotEpoch;
             trace.add("cdc-start");
         }
 
         @Override
-        public Optional<SrsMeta> read(String miningChainId) {
+        public long openEpoch(String miningChainId) {
+            // A snapshot reads the generation it runs under; opening one is the coordinator's job.
             throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void markSnapshotComplete(String miningChainId, String table) {
+            completed.add(miningChainId + "/" + table);
+            trace.add("snapshot-complete");
+        }
+
+        @Override
+        public Optional<SrsMeta> read(String miningChainId) {
+            return Optional.of(stored);
         }
 
         @Override
@@ -240,7 +431,7 @@ class SnapshotPhaseTest {
         }
 
         @Override
-        public void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
+        public void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition position) {
             throw new UnsupportedOperationException();
         }
 

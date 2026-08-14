@@ -329,7 +329,10 @@ verbs exit with code `3`.
 
 ## Documentation
 
+- [All documentation](docs/)
 - [Quickstart](docs/quickstart-online.md)
+- [Tutorials](docs/tutorials/) - worked scenarios with sample data
+- [Nest](docs/nest/) - assembling one document out of many tables
 - Architecture: coming soon
 - Connectors: coming soon
 - Deployment: coming soon

@@ -1,4 +1,4 @@
-# Canonical first-party error codes — the build-time stability lock (ADR-0024 D5-5).
+# Canonical first-party error codes — the build-time lock that keeps them stable.
 # Sorted, one <domain>.<symbol> per line. The ErrorCodeGatesTest diffs the scanned codes
 # against this file. Adding a code = append it here in the same change set; renaming or
 # removing one = a breaking change to an external contract (review + major version).
@@ -79,6 +79,8 @@ dsl.row-expression-type-unsupported
 dsl.undefined-variable
 dsl.unknown-field
 dsl.unsupported-mode
+engine.frontier-order-not-encodable
+engine.frontier-pinned
 engine.job-failed
 engine.no-such-job
 io.document-unreadable
@@ -91,6 +93,27 @@ mcp.connector-spec-unavailable
 mcp.environment-missing
 mcp.server-rejected
 monitor.no-observation
+nest.append-mode-conflicts-with-key-tracking
+nest.array-key-unresolvable
+nest.capacity-estimate-incomplete
+nest.chain-axis-limit-exceeded
+nest.embed-path-conflict
+nest.embed-target-not-parent-key
+nest.key-change-tracking-requires-before-image
+nest.memory-budget-below-partition-count
+nest.memory-budget-changed-while-running
+nest.migration-parking-limit-exceeded
+nest.parent-absent
+nest.pending-limit-exceeded
+nest.resolver-vertex-limit-exceeded
+nest.root-fanout-limit-exceeded
+nest.root-key-required
+nest.sibling-embeds-target-different-parent-keys
+nest.snapshot-passthrough-forbidden
+nest.state-far-exceeds-memory-budget
+nest.state-paths-changed
+nest.state-served-from-cold-layer
+nest.tombstone-limit-exceeded
 role.unsupported
 source.already-exists
 source.id-mismatch

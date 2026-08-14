@@ -9,6 +9,7 @@ import io.tapstate.core.model.SourceResource;
 import io.tapstate.runtime.srs.CaptureRun;
 import io.tapstate.runtime.srs.CaptureError;
 import io.tapstate.runtime.srs.CaptureRunSpec;
+import io.tapstate.runtime.srs.MiningChainId;
 import io.tapstate.runtime.srs.SnapshotBuffer;
 import io.tapstate.runtime.srs.SrsCoordinator;
 import io.tapstate.runtime.srs.StartFrom;
@@ -20,6 +21,7 @@ import io.tapstate.core.lifecycle.TableSnapshot;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -169,26 +171,44 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
         }
     }
 
-    /** Releases live runs after a stop, or after a later source prevents a multi-source start from completing. */
+    /**
+     * Releases live runs after a stop, or after a later source prevents a multi-source start from completing.
+     *
+     * <p>Close first: stops every capture daemon so no thread leaks. Then release this pipeline's consumer
+     * membership and tear the source chain down -- a shared-ring run only; a run that opened no chain has
+     * nothing to release.
+     *
+     * <p>Every step runs even when an earlier one throws, and the first failure carries the rest as
+     * suppressed. A release abandoned half way is what leaves a chain nobody owns and a daemon nobody stops.
+     */
     private RuntimeException closeRuns(List<CaptureRun> runs, String pipelineId) {
         RuntimeException firstFailure = null;
+        Set<MiningChainId> chains = new LinkedHashSet<>();
         for (CaptureRun run : runs) {
-            // Close first: stops the capture daemon so no thread leaks. Then release this pipeline's consumer
-            // membership and tear the source chain down -- a shared-ring run only; a run that opened no chain
-            // has nothing to release.
-            try {
-                run.close();
-                run.chainId().ifPresent(chainId -> {
-                    srsCoordinator.detachConsumer(chainId, pipelineId);
-                    srsCoordinator.teardownSource(chainId);
-                });
-            } catch (RuntimeException failure) {
-                if (firstFailure == null) {
-                    firstFailure = failure;
-                } else {
-                    firstFailure.addSuppressed(failure);
-                }
+            firstFailure = runCleanup(run::close, firstFailure);
+            // Collected whether or not the close succeeded: a daemon that refused to stop does not make the
+            // consumer membership this pipeline holds any less this pipeline's to give back.
+            run.chainId().ifPresent(chains::add);
+        }
+        // Once per chain, never once per run. Two sources reading one connection are one chain with a ring
+        // per table, which is what a pipeline over a parent and a child table is; releasing it per run would
+        // have the second source release a chain the first already closed, and the release refuses that.
+        for (MiningChainId chainId : chains) {
+            firstFailure = runCleanup(() -> srsCoordinator.detachConsumer(chainId, pipelineId), firstFailure);
+            firstFailure = runCleanup(() -> srsCoordinator.teardownSource(chainId), firstFailure);
+        }
+        return firstFailure;
+    }
+
+    /** Runs one release step, keeping the first failure and hanging any later one off it as suppressed. */
+    private static RuntimeException runCleanup(Runnable cleanup, RuntimeException firstFailure) {
+        try {
+            cleanup.run();
+        } catch (RuntimeException failure) {
+            if (firstFailure == null) {
+                return failure;
             }
+            firstFailure.addSuppressed(failure);
         }
         return firstFailure;
     }
@@ -216,8 +236,7 @@ final class StoreBackedPipelineCaptureCoordinator implements PipelineCaptureCoor
                 MOCK_CDC_START,
                 retention,
                 MOCK_SCHEMA_VER,
-                monotonicWatermark(),
-                MockPositionOrder.INSTANCE);
+                monotonicWatermark());
     }
 
     @Override

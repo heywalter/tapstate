@@ -1,5 +1,6 @@
 package io.tapstate.control.restapi;
 
+import io.tapstate.core.event.ChainPosition;
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.DesiredState;
@@ -128,13 +129,23 @@ final class NoReclaimStores {
             }
 
             @Override
-            public void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
-                throw unexpected("SrsMetaStore.advanceSinkAckedSrcpos");
+            public void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition acked) {
+                throw unexpected("SrsMetaStore.advanceSinkAcked");
             }
 
             @Override
-            public void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
-                throw unexpected("SrsMetaStore.setCdcStartPosition");
+            public void setCdcStart(String miningChainId, String cdcStartPosition, long snapshotEpoch) {
+                throw unexpected("SrsMetaStore.setCdcStart");
+            }
+
+            @Override
+            public void markSnapshotComplete(String miningChainId, String table) {
+                throw unexpected("SrsMetaStore.markSnapshotComplete");
+            }
+
+            @Override
+            public long openEpoch(String miningChainId) {
+                throw unexpected("SrsMetaStore.openEpoch");
             }
 
             @Override

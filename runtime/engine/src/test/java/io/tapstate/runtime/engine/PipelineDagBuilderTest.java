@@ -294,7 +294,8 @@ class PipelineDagBuilderTest {
                 step -> (SupplierEx<TransformPort>) () -> ev -> List.of(ev),
                 syncElement -> stubWriter(),
                 ref -> List.of(),
-                sourceId -> List.of());
+                sourceId -> List.of(),
+                null);
 
         assertThatThrownBy(() -> PipelineDagBuilder.build(pipeline, bindings))
                 .isInstanceOf(IllegalStateException.class)
@@ -311,7 +312,8 @@ class PipelineDagBuilderTest {
                 step -> (SupplierEx<TransformPort>) () -> ev -> List.of(ev),
                 syncElement -> stubWriter(),
                 ref -> List.of(),
-                sourceId -> null);
+                sourceId -> null,
+                null);
 
         assertThatThrownBy(() -> PipelineDagBuilder.build(pipeline, bindings))
                 .isInstanceOf(IllegalStateException.class)

@@ -1,6 +1,8 @@
 package io.tapstate.control.core;
 
 import io.tapstate.core.common.TapstateException;
+import io.tapstate.core.event.ChainPosition;
+import io.tapstate.core.event.SourceOrder;
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
 import io.tapstate.core.lifecycle.DesiredState;
@@ -669,7 +671,8 @@ class ArtifactMutationServiceTest {
     }
 
     private static ConsumerOffset consumer(String pipelineId) {
-        return new ConsumerOffset(pipelineId, Map.of("orders", 42L), "srcpos-7");
+        return new ConsumerOffset(pipelineId, Map.of("orders", 42L),
+                new ChainPosition(new SourceOrder(1, 42), "srcpos-7"));
     }
 
     /** Records that a reclaim step ran, in the order the steps were taken, and fails it when armed. */
@@ -862,12 +865,22 @@ class ArtifactMutationServiceTest {
         }
 
         @Override
-        public void advanceSinkAckedSrcpos(String miningChainId, String pipelineId, String srcpos) {
+        public void advanceSinkAcked(String miningChainId, String pipelineId, ChainPosition acked) {
             throw new UnsupportedOperationException("the delete path never advances a chain");
         }
 
         @Override
-        public void setCdcStartPosition(String miningChainId, String cdcStartPosition) {
+        public void setCdcStart(String miningChainId, String cdcStartPosition, long snapshotEpoch) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
+        }
+
+        @Override
+        public void markSnapshotComplete(String miningChainId, String table) {
+            throw new UnsupportedOperationException("the delete path never advances a chain");
+        }
+
+        @Override
+        public long openEpoch(String miningChainId) {
             throw new UnsupportedOperationException("the delete path never advances a chain");
         }
 

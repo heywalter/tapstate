@@ -2,8 +2,12 @@ package io.tapstate.runtime.scheduler;
 
 import io.tapstate.core.lifecycle.CasOutcome;
 import io.tapstate.core.lifecycle.CheckpointDoc;
+import io.tapstate.core.lifecycle.FrontierStallPressure;
+import io.tapstate.core.lifecycle.NestColdLayerPressure;
+import io.tapstate.core.lifecycle.NestStateWindow;
 import io.tapstate.core.lifecycle.Observation;
 import io.tapstate.core.lifecycle.ObservationFailure;
+import io.tapstate.core.lifecycle.NestStateReading;
 import io.tapstate.core.lifecycle.PipelineState;
 import io.tapstate.core.lifecycle.TableSnapshot;
 import io.tapstate.core.lifecycle.StateJson;
@@ -12,12 +16,16 @@ import io.tapstate.spi.store.StateStore;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 
 /**
@@ -34,6 +42,31 @@ class ObservationPublisherTest {
     private final MutableStateStore state = new MutableStateStore();
     private final RecordingObservationStore observations = new RecordingObservationStore();
     private final ObservationPublisher publisher = new ObservationPublisher(state, observations);
+
+    /** A publisher whose only wired source is the nest readings, watching them through {@code alert}. */
+    private ObservationPublisher withWatch(
+            NestColdLayerAlert alert, Function<String, Map<String, NestStateReading>> readings) {
+        return new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(), readings,
+                new NestColdLayerWatch(new NestColdLayerPressure(0.5, 100), alert));
+    }
+
+    /** Collects the namespaces reported, which is what a caller of the publisher can observe of the watch. */
+    private static final class RecordingAlert implements NestColdLayerAlert {
+
+        private final List<String> crossed = new ArrayList<>();
+        private final List<String> cleared = new ArrayList<>();
+
+        @Override
+        public void crossed(String pipelineId, String namespace, NestStateWindow window) {
+            crossed.add(namespace);
+        }
+
+        @Override
+        public void cleared(String pipelineId, String namespace, NestStateWindow window) {
+            cleared.add(namespace);
+        }
+    }
 
     @Test
     void publishesTheActualStateAsAnObservation() {
@@ -75,6 +108,280 @@ class ObservationPublisherTest {
 
         // A missing metric means the source is not wired (here: no live job), expressed by its absence
         // rather than a zero sentinel, so only the errorCount gauge is carried.
+        assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
+    }
+
+    @Test
+    void publishWiresHowFarEachChainsFrontierTrailsIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("orders", 0L, "order_items", 480L));
+
+        wired.publish("orders");
+
+        // One entry per chain, named by it. A frontier standing still is one symptom of two causes, and the
+        // distance is what tells them apart: order_items is running ahead of positions it was ever given,
+        // while orders is exactly where its bound lets it be. A zero and a large number are both readings.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L),
+                        entry("frontierGap.orders", 0L), entry("frontierGap.order_items", 480L));
+    }
+
+    @Test
+    void publishWiresHowLongEachChainHasBeenPinnedIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("orders", 0L, "order_items", 480L),
+                id -> Map.of(),
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, NestColdLayerAlert.NONE),
+                id -> Map.of("orders", 96_000L));
+
+        wired.publish("orders");
+
+        // The two readings are carried side by side and are not interchangeable, which is why the values
+        // here differ and both are asserted by name: orders is pinned for a minute and a half at a
+        // distance of zero, and reading either number under the other's name would describe a pipeline
+        // that is not this one. order_items has a distance and is not pinned, so it has no entry here -
+        // a zero would say it is pinned and has just advanced, which is the healthy end of this scale.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L),
+                        entry("frontierGap.orders", 0L), entry("frontierGap.order_items", 480L),
+                        entry("frontierStalledMillis.orders", 96_000L));
+    }
+
+    @Test
+    void theTimePinnedIsAbsentFromTheMetricsWhenNoChainIsPinned() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("orders", 0L));
+
+        wired.publish("orders");
+
+        // A pipeline whose chains all keep up publishes no duration at all. A zero here would be a chain
+        // reporting that it is pinned and just advanced, which is a reading rather than the absence of one.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L), entry("frontierGap.orders", 0L));
+    }
+
+    @Test
+    void theFrontierGapIsAbsentFromTheMetricsWhenNoSinkReportsOne() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(
+                state, observations, id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of());
+
+        wired.publish("orders");
+
+        // Absent means unmeasured, and a zero would read as a frontier keeping up with its bound - the
+        // opposite reading, and the one an alarm over this number would stay quiet on.
+        assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
+    }
+
+    @Test
+    void publishWiresWhatEachNestNamespaceHoldsAndWhatItCostsIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root", new NestStateReading(4_000L, 900L, 30L, 210L)));
+
+        wired.publish("orders");
+
+        // Counts per namespace rather than the one ratio they imply: a ratio published here would be an
+        // average over the whole run, and a state layer that fell off its cliff a minute ago still reads
+        // as healthy in it. Two scrapes of counts give any window a reader wants.
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .containsOnly(entry("errorCount", 0L),
+                        entry("nestStateEntries.nest.orders.doc.$root", 4_000L),
+                        entry("nestStateAccesses.nest.orders.doc.$root", 900L),
+                        entry("nestStateBackfills.nest.orders.doc.$root", 30L),
+                        entry("nestStateBackfillMillis.nest.orders.doc.$root", 210L),
+                        entry("nestStatePendingHighWater.nest.orders.doc.$root", 0L));
+    }
+
+    /**
+     * The reading no other one can stand in for. What waits under a key lives inside that key's entry, so a
+     * queue growing towards the limit that bounds it moves none of the numbers above - the namespace holds
+     * the same entries, the layer behind it holds the same, and the key is hot enough to be served from
+     * memory throughout. Every published number stays flat and then the run stops.
+     *
+     * <p>Zero and absent are the same thing here on purpose, unlike the stored reading beside it: a
+     * namespace where nothing has waited has genuinely had nothing waiting, which is a fact about the run
+     * rather than a question nobody could ask.
+     */
+    @Test
+    void publishWiresHowDeepOneKeysWaitHasEverGotIntoTheMetrics() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(4_000L, 900L, 30L, 210L, 9_512L, OptionalLong.empty())));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .describedAs("a key that got within five hundred of the limit says so before it is reached")
+                .contains(entry("nestStatePendingHighWater.nest.orders.doc.$root", 9_512L));
+    }
+
+    /**
+     * What is in memory and how much there is are two numbers, and publishing only the first would say a
+     * namespace holds four thousand when it holds a hundred times that with the rest on the layer behind
+     * it. Once what stays in memory is a budget, the entries reading is what the budget costs rather than
+     * what the pipeline has.
+     */
+    @Test
+    void publishWiresHowMuchANamespaceHoldsAltogetherBesideWhatIsInMemory() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(4_000L, 900L, 30L, 210L, OptionalLong.of(400_000L))));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .contains(entry("nestStateEntries.nest.orders.doc.$root", 4_000L),
+                        entry("nestStateStored.nest.orders.doc.$root", 400_000L));
+    }
+
+    /**
+     * A run keeping its state in memory alone has no second number, and one published anyway would be the
+     * first wearing the name of the second - a namespace reading as though its cold layer held exactly what
+     * memory did, which is the one shape that says nothing is being evicted when nothing can be.
+     */
+    @Test
+    void howMuchANamespaceHoldsAltogetherIsAbsentWhereThereIsNoColdLayerToAsk() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.$root", new NestStateReading(4_000L, 900L, 30L, 210L)));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .doesNotContainKey("nestStateStored.nest.orders.doc.$root");
+    }
+
+    /**
+     * The one number about a nest that nothing else on this face can stand in for. A pipeline discarding
+     * every row it reads and one discarding none produce the same documents, the same record count and the
+     * same state readings, because the rows counted here were never going to appear in a document at all.
+     */
+    @Test
+    void publishWiresHowManyChangesANamespaceCouldNeverPlaceInADocument() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                new NestColdLayerWatch(NestColdLayerPressure.DEFAULT, NestColdLayerAlert.NONE),
+                id -> Map.of(),
+                new FrontierStallWatch(FrontierStallPressure.DEFAULT, FrontierStallAlert.NONE),
+                id -> Map.of("nest.orders.doc.items", 412L));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .contains(entry("nestDeadLettered.nest.orders.doc.items", 412L));
+    }
+
+    /**
+     * And absent, not zero, for a namespace that discarded nothing. The distinction is load-bearing here in
+     * a way it is not for the other readings: rows that never reach a document leave no other trace, so a
+     * zero published every pass is exactly what this reading would look like if it stopped being wired.
+     */
+    @Test
+    void aNamespaceThatDiscardedNothingReportsNothingRatherThanZero() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(),
+                id -> Map.of("nest.orders.doc.items", new NestStateReading(4_000L, 900L, 30L, 210L)));
+
+        wired.publish("orders");
+
+        assertThat(observations.read("orders").orElseThrow().metrics())
+                .doesNotContainKey("nestDeadLettered.nest.orders.doc.items");
+    }
+
+    /**
+     * The readings are fetched once per pass and the pass is the only place they exist together, so this is
+     * where the watch that turns them into a window has to be fed from. Fetching them a second time for it
+     * would pay for the cold layer's count twice a tick.
+     */
+    @Test
+    void publishFeedsTheReadingsItPublishesToTheColdLayerWatch() {
+        state.seed("orders", PipelineState.RUNNING);
+        RecordingAlert alert = new RecordingAlert();
+        ObservationPublisher wired = withWatch(alert,
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(100L, 4_000L, 3_800L, 19_000L, OptionalLong.of(400_000L))));
+
+        wired.publish("orders");
+
+        assertThat(alert.crossed).containsExactly("nest.orders.doc.$root");
+    }
+
+    /**
+     * Each pass is one end of a window, which is the whole reason the watch is fed from here rather than
+     * handed a reading out of context: the second pass has to be differenced against the first.
+     */
+    @Test
+    void theWindowTheWatchJudgesIsBetweenTwoPassesAndNotTheRunningTotals() {
+        state.seed("orders", PipelineState.RUNNING);
+        RecordingAlert alert = new RecordingAlert();
+        Map<String, NestStateReading> readings = new HashMap<>();
+        readings.put("nest.orders.doc.$root",
+                new NestStateReading(100L, 4_000L, 40L, 200L, OptionalLong.of(400_000L)));
+        ObservationPublisher wired = withWatch(alert, id -> Map.copyOf(readings));
+
+        wired.publish("orders");
+        readings.put("nest.orders.doc.$root",
+                new NestStateReading(100L, 5_000L, 990L, 4_750L, OptionalLong.of(400_000L)));
+        wired.publish("orders");
+
+        // The totals read 20% served from storage and the interval between the passes read 95%. Judging the
+        // totals would have found nothing: a run healthy for most of its life drowns the hour it was not.
+        assertThat(alert.crossed).containsExactly("nest.orders.doc.$root");
+    }
+
+    /**
+     * The observation is the contract; the alert is a courtesy on top of it. Written the other way round a
+     * fault in the alerting path would take the read face down with it, and the read face is what says the
+     * pipeline is alive at all.
+     */
+    @Test
+    void anAlertThatThrowsDoesNotCostThePipelineItsObservation() {
+        state.seed("orders", PipelineState.RUNNING);
+        NestColdLayerAlert throwing = new NestColdLayerAlert() {
+
+            @Override
+            public void crossed(String pipelineId, String namespace, NestStateWindow window) {
+                throw new IllegalStateException("the alerting path is broken");
+            }
+
+            @Override
+            public void cleared(String pipelineId, String namespace, NestStateWindow window) {
+            }
+        };
+        ObservationPublisher wired = withWatch(throwing,
+                id -> Map.of("nest.orders.doc.$root",
+                        new NestStateReading(100L, 4_000L, 3_800L, 19_000L, OptionalLong.of(400_000L))));
+
+        assertThatThrownBy(() -> wired.publish("orders")).isInstanceOf(IllegalStateException.class);
+
+        assertThat(observations.read("orders")).isPresent();
+    }
+
+    @Test
+    void theNestStateReadingsAreAbsentFromTheMetricsWhenNoNamespaceReportsAny() {
+        state.seed("orders", PipelineState.RUNNING);
+        ObservationPublisher wired = new ObservationPublisher(state, observations,
+                id -> OptionalLong.empty(), id -> Map.of(), id -> Map.of(), id -> Map.of(), id -> Map.of());
+
+        wired.publish("orders");
+
+        // Absent means unmeasured. Zeroes would read as a state layer holding nothing and serving every
+        // read from memory - the healthy end of both scales, and the reading an alarm stays quiet on.
         assertThat(observations.read("orders").orElseThrow().metrics()).containsOnly(entry("errorCount", 0L));
     }
 

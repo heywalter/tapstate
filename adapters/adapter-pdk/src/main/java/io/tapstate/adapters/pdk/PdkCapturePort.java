@@ -232,8 +232,18 @@ public final class PdkCapturePort implements CapturePort {
             // The cdc stream runs on this daemon thread; its failure cannot be returned to the caller, so it
             // is delivered through the listener's error channel for the runtime to observe and drive the
             // pipeline into an error state. It is logged as well, so a dead stream is visible in the logs.
+            //
+            // Coded on the way out, the way the snapshot side of this port already codes what it catches.
+            // This is the last place that knows what the failure was: nothing above understands a
+            // connector's own exception types, and the code a user is finally shown is built by walking the
+            // cause chain for something coded. Handed on uncoded, a connector that refused to start for a
+            // reason it stated precisely arrives as "the job died", with the sentence naming what to
+            // reconfigure surviving only in a log line.
             LOG.warn("cdc stream for connector {} stopped on a failure", connector.connectorId(), t);
-            listener.onError(t);
+            listener.onError(t instanceof TapstateException coded
+                    ? coded
+                    : new TapstateException(ConnectorError.CAPTURE_FAILED,
+                            Map.of("connector", connector.connectorId(), "detail", detail(t)), t));
         }
     }
 

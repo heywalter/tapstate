@@ -2,6 +2,7 @@ package io.tapstate.control.restapi;
 
 import io.tapstate.control.core.ApplyService;
 import io.tapstate.control.core.ArtifactMutationService;
+import io.tapstate.control.core.PlanAdvisories;
 import io.tapstate.control.core.ArtifactQueryService;
 import io.tapstate.control.core.AuditGate;
 import io.tapstate.control.core.BootstrapService;
@@ -597,7 +598,8 @@ class AuthTest {
 
         @Bean
         ApplyService applyService(InMemoryArtifactStore store, AuditGate auditGate) {
-            return new ApplyService(TapstateCatalog::load, store, auditGate, new EmptySchemaStore());
+            return new ApplyService(TapstateCatalog::load, store, auditGate, new EmptySchemaStore(),
+                    PlanAdvisories.none());
         }
 
         @Bean

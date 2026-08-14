@@ -149,6 +149,7 @@ public final class E2eExecutor {
             case Matcher.State state -> stateMismatch(state.expected(), pipelineId);
             case Matcher.ErrorCount errorCount -> errorCountMismatch(errorCount.expected(), pipelineId);
             case Matcher.FailureCode failureCode -> failureCodeMismatch(failureCode.expected(), pipelineId);
+            case Matcher.DeadLettered discarded -> deadLetteredMismatch(discarded.expected(), pipelineId);
         };
     }
 
@@ -200,6 +201,25 @@ public final class E2eExecutor {
                         + " expected error count "
                         + expected
                         + ", found "
+                        + actual.map(Object::toString).orElse("no published observation"));
+    }
+
+    /**
+     * Reads the same unobserved window the same way as the matchers above. The reading itself differs from
+     * theirs in one respect worth knowing: a pipeline that discarded nothing publishes no such metric at all,
+     * so an observed zero and an observed nothing are the same answer here - which is why asserting zero is
+     * a real assertion and not a tautology, since a pipeline that discarded rows publishes a number instead.
+     */
+    private Optional<String> deadLetteredMismatch(long expected, String pipelineId) {
+        Optional<Long> actual = binding.deadLettered(pipelineId);
+        if (actual.filter(published -> published == expected).isPresent()) {
+            return Optional.empty();
+        }
+        return Optional.of(
+                pipelineId
+                        + " expected "
+                        + expected
+                        + " changes that could not be placed in a document, found "
                         + actual.map(Object::toString).orElse("no published observation"));
     }
 

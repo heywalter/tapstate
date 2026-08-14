@@ -58,6 +58,11 @@ final class PdkSinkWriterFactory implements SupplierEx<SinkWriter> {
         this.targets = targets == null ? Map.of() : Map.copyOf(targets);
     }
 
+    /** The write-side models this factory will hand the sink, keyed by the stream each answers for. */
+    Map<String, TargetTable> targets() {
+        return targets;
+    }
+
     @Override
     public SinkWriter getEx() {
         ConnectorProvisioner provisioner = provisioner(localMember());
