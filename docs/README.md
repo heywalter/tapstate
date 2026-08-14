@@ -3,6 +3,7 @@
 | Start here | |
 |---|---|
 | [Quickstart](quickstart-online.md) | Bring up the stack and run a real MySQL to MongoDB sync, snapshot then CDC. |
+| [Running on your own databases](running-on-your-own-databases.md) | Run the server as a process on your machine, against a MySQL and a MongoDB you already have. |
 | [Tutorials](tutorials/) | Worked scenarios, each with its own sample data, run end to end. |
 
 | Features | |
