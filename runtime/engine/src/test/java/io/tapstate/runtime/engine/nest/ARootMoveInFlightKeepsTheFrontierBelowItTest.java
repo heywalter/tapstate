@@ -85,6 +85,29 @@ class ARootMoveInFlightKeepsTheFrontierBelowItTest {
                 .containsExactly(FrontierOrders.pack(CUSTOMERS, at(MOVED_AT)) - 1);
     }
 
+    /**
+     * The other order, and the one the cases around it do not reach: the arriving half is worked first and
+     * finds nothing parked, so what it knows - that this key is owed a document - is held in memory and
+     * nowhere else. The rows it needs are still in the document the departure has yet to empty, so nothing
+     * durable is missing; what is missing is anything to look again. Let the frontier past the change and a
+     * restart resumes above it, so the departure is never replayed, the arrival never asks again, and the
+     * document that was moved is under neither key with the job RUNNING and no count out of place.
+     *
+     * <p>Hard to notice because a move usually is worked the other way round, and every case that starts
+     * with the departure holds the bound correctly.
+     */
+    @Test
+    void theBoundStaysBelowAMoveWhoseArrivingHalfIsStillOwedTheDocument() throws Exception {
+        AssemblerProcessor gaining = assembler();
+
+        feed(gaining, ROOT_ROWS, renamed("C1", "C2"));
+
+        assertThat(boundsAfter(gaining, FAR_ABOVE))
+                .describedAs("this instance is owed a document and only it knows so; a bound past the "
+                        + "change that made it owed is a promise nothing can keep after a restart")
+                .containsExactly(FrontierOrders.pack(CUSTOMERS, at(MOVED_AT)) - 1);
+    }
+
     @Test
     void theBoundGoesPastOnceTheKeyThatWasOwedItHasTakenIt() throws Exception {
         AssemblerProcessor processor = assembler();

@@ -184,8 +184,14 @@ public final class AssemblerProcessor extends AbstractProcessor {
      * A document owed a hand-over: which key it is, and the source's time for the change that made it owed.
      * The time travels because the document goes out again once the rows land, and a send with no time on it
      * would place a change downstream at the epoch rather than where the source put it.
+     *
+     * <p>{@code since} is the position of that change, and it is what keeps the frontier beneath it. Being
+     * owed is held here and nowhere else: the rows are still in the document the other half has yet to
+     * empty, so nothing durable is missing - what is missing is anything that would look again. Let the
+     * frontier past and a restart resumes above the change, so the other half is never replayed and this
+     * one never asks, leaving the document under neither key with every count reading healthy.
      */
-    private record Owed(Object key, long ts, long awaitedSince) {
+    private record Owed(Object key, long ts, long awaitedSince, Map<String, ChainPosition> since) {
     }
 
     /** An assembler in a job that propagates no frontier: it promises nothing and passes nothing on. */
@@ -679,7 +685,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
             // reach, addressed by the key that arrived - which is the only thing this side knows.
             ParkedSubtree.At at = ParkedSubtree.At.ofRoot(key);
             if (!collect(key, document.assembly, at)) {
-                owed.put(at, new Owed(key, document.ts, clock.millis()));
+                owed.put(at, new Owed(key, document.ts, clock.millis(), event.positions()));
             }
         }
     }
@@ -743,7 +749,7 @@ public final class AssemblerProcessor extends AbstractProcessor {
         // pipeline runs.
         ParkedSubtree.At at = ParkedSubtree.At.of(change);
         if (!collect(key, assembly, at)) {
-            owed.put(at, new Owed(key, document.ts, clock.millis()));
+            owed.put(at, new Owed(key, document.ts, clock.millis(), change.positions()));
         }
     }
 
@@ -1113,6 +1119,15 @@ public final class AssemblerProcessor extends AbstractProcessor {
             }
         }
         for (Held outstanding : handedOver.values()) {
+            ChainPosition held = outstanding.since().get(chain);
+            if (held != null && (lowest == null || held.order().compareTo(lowest) < 0)) {
+                lowest = held.order();
+            }
+        }
+        // The half that arrives first holds nothing durable, which is exactly why it has to hold the
+        // frontier: what it knows - that this key is owed a document - is in memory alone, and a restart
+        // above the change that made it owed leaves nobody to ask again.
+        for (Owed outstanding : owed.values()) {
             ChainPosition held = outstanding.since().get(chain);
             if (held != null && (lowest == null || held.order().compareTo(lowest) < 0)) {
                 lowest = held.order();
